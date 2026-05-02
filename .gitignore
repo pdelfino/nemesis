@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Racket
+compiled/
+doc/
+
+# Editor backups
+*~
+.#*
+\#*\#
+
+# Claude Code per-project state
+.claude/
