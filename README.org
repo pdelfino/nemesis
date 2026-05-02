@@ -1,0 +1,91 @@
+#+TITLE: Nemesis
+#+SUBTITLE: A Racket-native, macOS-only web browser, lovingly descended from Nyxt
+#+OPTIONS: toc:nil
+
+[[https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/ADurerFortunaengraving.jpg/500px-ADurerFortunaengraving.jpg]]
+
+/Albrecht Dürer, *Nemesis (The Great Fortune)*, c. 1502. Public domain via Wikimedia Commons./
+
+* What
+
+A web browser. Written in [[https://racket-lang.org/][Racket]]. Targeting macOS first, last, and only.
+
+* Heavy lineage: this is a child of Nyxt
+
+Nemesis is *largely and extremely based on* [[https://github.com/atlas-engineer/nyxt][Nyxt]] — the keyboard-driven, Lisp-extensible web browser by [[https://atlas.engineer/][Atlas Engineer]]. Almost every architectural decision here starts with "what would Nyxt do?" and only diverges where the Common-Lisp + WebKit/GTK + Linux-first stack doesn't translate cleanly to Racket + WKWebView + macOS.
+
+In Greek mythology, *Nemesis is the daughter of Nyx*. So this is not a fork. It is family. Same lineage. Different platform of worship.
+
+* Three architectural pillars
+
+1. *Keyboard-driven.* Every action has a keybinding. The mouse is optional, decorative, and slightly embarrassing. Like Nyxt. Like Emacs.
+
+2. *Text-driven UX/UI.* Every UI surface is also reachable as text — every command introspectable, every state queryable as a string, every buffer copy-able as text. The prompt-buffer (Nyxt's defining UX innovation) is the front door. Inspired by Emacs's "everything is a buffer."
+
+3. *LLM-friendly and MCP-driven for strong agentic integration.* Nemesis exposes itself as a [[https://modelcontextprotocol.io][Model Context Protocol]] server. Tools for navigate, click, type, screenshot, DOM-query, observe, and more. The thesis is that a browser purpose-built for agents (and humans who think like agents) can do things that today's agent-via-extension setups structurally can't.
+
+* The third big influence: browsermcp
+
+[[https://github.com/browsermcp/mcp][browsermcp]] is excellent within its constraints: it runs as a browser extension on Chrome/Brave, exposing a curated set of MCP tools that lets agents drive a real browser session. The constraint is the extension API surface — anything Chrome's extension model doesn't expose, browsermcp can't either.
+
+*Nemesis owns the engine.* We can:
+
+- Inject and observe DOM at any depth, no extension permission walls.
+- Intercept and replay network requests without devtools-only limits.
+- Capture full page state including service workers, IndexedDB, etc.
+- Surface Cocoa-level events (gestures, full-screen, services menu) to the agent.
+- Run many headless tabs without a Chrome process babysitter.
+- Stream DOM mutations + console + network as MCP resources, not polled snapshots.
+
+The thesis: *a browser purpose-built for agents can be strictly stronger than browsermcp running on Chrome/Brave*, because the constraint isn't the protocol — it's the host browser. We replace the host.
+
+* Two big repos to study
+
+| Repo                 | Why                                                                                          |
+|----------------------+----------------------------------------------------------------------------------------------|
+| [[https://github.com/atlas-engineer/nyxt][atlas-engineer/nyxt]]  | Architectural source of truth. Prompt-buffer, modes, hooks, keymaps, configuration, history. |
+| [[https://github.com/browsermcp/mcp][browsermcp/mcp]]      | MCP tool-surface reference. Match-then-exceed its tool catalog.                              |
+
+* The lovingly-watched older sibling
+
+Mom is sitting right next door:
+
+#+begin_example
+~/projects/
+├── nyxt/        ← mom (Common Lisp, WebKit/GTK, Linux-first, born 2017)
+└── nemesis/     ← me (Racket, WKWebView, macOS-only, vaporware as of today)
+#+end_example
+
+Read =../nyxt/= for prior art. When in doubt about a UX question, ask: "what does mom do here, and is that the right answer on a Mac?" Sometimes yes. Sometimes very much no.
+
+* Why Racket (not Common Lisp)
+
+- =#lang= and language-oriented programming. Beautiful Racket–style DSLs for browser config and extensions.
+- =raco distribute= produces a real =.app= bundle.
+- DrRacket and =racket-mode= for live development.
+- Smaller community = less competition, more space for one person to matter.
+- Honestly: Common Lisp tooling is great if you're already in it. For someone starting today on macOS, Racket is friendlier.
+
+* Why macOS-only
+
+- WKWebView is already on every Mac. Free engine, no Chromium to ship, no GTK to fight.
+- Mac users pay for software (cf. Arc, Things, Bear, Soulver). Niche but solvent.
+- Picking one platform means actually nailing it.
+- macOS has the best built-in window management, Spaces, gestures, and clipboard story of any desktop OS.
+
+* Status
+
+Vapor. Pre-embryonic. There is no code yet — only this README, a clear stare across the projects directory at the older sibling, and a backlog of issues describing the road ahead.
+
+* Roadmap (high level)
+
+1. *Spike*: prove WKWebView is callable from Racket via Objective-C FFI.
+2. *MVP*: single-window, keyboard-driven, MCP-exposed browser.
+3. *Match Nyxt*'s prompt-buffer / modes / hooks / keymaps in Racket.
+4. *Match-then-exceed* browsermcp's tool surface.
+5. *Native macOS delights*: gestures, share sheet, Spaces, dark mode.
+6. *Decide whether anyone else cares.*
+
+* License
+
+BSD-3-Clause. Matches Nyxt's license, in case anything is ever ported between the projects in either direction.
