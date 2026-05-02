@@ -53,5 +53,6 @@ the one that gets first-class config):
   on `PATH`, and you'll get syntax highlighting + a REPL.
 
 Whatever editor you use, the project's source-of-truth checks are
-`raco fmt --check` and `raco test -p nemesis`. Editor integrations are a
-nicety, not a substitute.
+`raco fmt -i $(git ls-files '*.rkt')` followed by `git diff --exit-code`
+(the CI idiom — `raco fmt` formats in place and has no `--check` flag) and
+`raco test -p nemesis`. Editor integrations are a nicety, not a substitute.
