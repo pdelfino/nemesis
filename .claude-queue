@@ -1,0 +1,34 @@
+Project: Nemesis — a Racket-native, macOS-only web browser. See README.org.
+
+This is a brand-new project. There is no prior code yet — Phase 0 is scaffolding the local dev environment and the package skeleton. Don't try to port Nyxt code yet; that's Phase 2+.
+
+## Conventions for every issue
+
+- Make a commit per logical change, with a Conventional-Commits-style prefix (e.g. `setup: ...`, `spike: ...`, `docs: ...`). Keep commit messages short and explain *why*, not *what*.
+- After the work for an issue is done, post a short summary comment on the issue with: what landed, any commands the user should run on their Mac that you couldn't run yourself, and any blockers. Then close the issue (or label `needs-pedro` if blocked).
+- Never run interactive installers without checking — `brew install --cask racket` is fine in non-interactive mode, but `xcode-select --install` pops a GUI dialog and should be flagged for the user instead of attempted.
+
+## Racket conventions
+
+- Use `racket/base` over `racket` where possible to keep load times sane.
+- Test files live next to source under `tests/`; run `raco test -p nemesis` to validate.
+- `raco fmt --check` should pass before commit.
+- Don't introduce dependencies you don't immediately need. Each new dep gets a one-line note in the commit message.
+
+## macOS / FFI conventions
+
+- Cocoa framework loading and Obj-C bridging live under `nemesis/ffi/`.
+- Spike-only code lives under `spikes/NN-name.rkt` (numbered).
+- Never call `xcode-select --install` from a script — flag it for the user.
+- When in doubt about a Cocoa class or method, check that it actually exists on macOS 13+ before binding to it.
+
+## Don't port code yet
+
+Phase 0 issues are setup. Phase 1 is a controlled FFI spike. Phase 2+ studies Nyxt. **Do not** copy code from `~/projects/nyxt/` (Common Lisp) or attempt to translate it during Phase 0 — that's Phase 2/3 work and needs the architecture studies and ADRs first.
+
+## When to ask vs proceed
+
+- Reversible local changes (file edits, commits, raco package linking): proceed.
+- Brew installs of new tools: proceed if package is in the issue body; flag if not.
+- GUI installer prompts (xcode-select, signing certificates): flag for user, do not attempt.
+- Pushing to `main`: each issue gets its own branch + PR via claude-queue's normal flow; do not push to main directly.
