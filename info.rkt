@@ -3,7 +3,7 @@
 (define collection 'multi)
 
 (define deps '("base"))
-(define build-deps '())
+(define build-deps '("rackunit-lib"))
 
 (define version "0.0.0")
 
