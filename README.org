@@ -77,6 +77,18 @@ Read =../nyxt/= for prior art. When in doubt about a UX question, ask: "what doe
 
 Vapor. Pre-embryonic. There is no code yet — only this README, a clear stare across the projects directory at the older sibling, and a backlog of issues describing the road ahead.
 
+* Development setup
+
+Racket version is pinned to *9.1* (see =.tool-versions=). Verify with =racket --version= — it should print =Welcome to Racket v9.1 [cs].= or newer.
+
+Install on macOS via Homebrew:
+
+#+begin_src sh
+brew install --cask racket
+#+end_src
+
+Or grab the official =.pkg= from [[https://racket-lang.org/][racket-lang.org]]. Either path is fine; the =.tool-versions= file is for [[https://asdf-vm.com/][asdf]] users and as an explicit version marker — Homebrew won't read it.
+
 * Roadmap (high level)
 
 1. *Spike*: prove WKWebView is callable from Racket via Objective-C FFI.
