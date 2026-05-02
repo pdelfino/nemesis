@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Racket
+        uses: Bogdanp/setup-racket@v1.11
+        with:
+          architecture: arm64
+          distribution: full
+          variant: CS
+          version: '9.1'
+
+      # `fmt` is a CI-only tool dep — not added to info.rkt because no source
+      # file requires it at runtime; it is only invoked via `raco fmt`.
+      - name: Install raco fmt
+        run: raco pkg install --auto --batch fmt
+
+      # `raco fmt` has no --check flag; the idiom is to format in place and
+      # then assert there is no diff against the committed source.
+      - name: Lint (raco fmt)
+        run: |
+          raco fmt -i $(git ls-files '*.rkt')
+          git diff --exit-code
+
+      - name: Link nemesis package
+        run: raco pkg install --auto --batch --no-docs --link $GITHUB_WORKSPACE
+
+      - name: Test (raco test -p nemesis)
+        run: raco test -p nemesis
+
+      # Build = "all sources compile cleanly". A real .app bundle via
+      # `raco distribute` lands with #35; signed/notarized release-asset
+      # upload on a `v*` tag lands with #36.
+      - name: Build (raco make)
+        run: raco make -j 2 nemesis/main.rkt
