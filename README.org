@@ -2,7 +2,7 @@
 #+SUBTITLE: A Racket-native, macOS-only web browser, lovingly descended from Nyxt
 #+OPTIONS: toc:nil
 
-[[https://github.com/pdelfino/nemesis/actions/workflows/test.yml][https://github.com/pdelfino/nemesis/actions/workflows/test.yml/badge.svg?branch=main]]
+[[https://github.com/pdelfino/nemesis/actions/workflows/ci.yml][https://github.com/pdelfino/nemesis/actions/workflows/ci.yml/badge.svg?branch=main]]
 
 [[https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/ADurerFortunaengraving.jpg/500px-ADurerFortunaengraving.jpg]]
 
