@@ -77,7 +77,7 @@ Read =../nyxt/= for prior art. When in doubt about a UX question, ask: "what doe
 
 * Status
 
-Vapor. Pre-embryonic. There is no code yet — only this README, a clear stare across the projects directory at the older sibling, and a backlog of issues describing the road ahead.
+Embryonic. The Racket package skeleton is in place — =info.rkt= declares the collection, =nemesis/main.rkt= is the entry point, =nemesis/tests/= holds the first =rackunit= tests, and CI is wired (see badge above). The actual browser is still unimplemented: no WKWebView FFI, no prompt-buffer, no MCP server. We are at step 1 of the roadmap (proving WKWebView is callable from Racket via Objective-C FFI), with a clear stare across the projects directory at the older sibling and a backlog of issues describing the road ahead.
 
 * Development setup
 
