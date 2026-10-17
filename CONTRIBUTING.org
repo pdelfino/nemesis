@@ -10,7 +10,7 @@ Nemesis is developed on macOS first and mostly by Claude Code under the rules in
 
 * The gate
 
-=npm run gate= runs typecheck, lint, unit tests and the end-to-end smoke. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.
+=npm run gate= runs the dependency script check (=scripts/check-deps.mjs=, SECURITY.org T5), typecheck, lint, unit tests, the end-to-end smoke and the security specs. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.
 
 * Issues are the unit of work
 

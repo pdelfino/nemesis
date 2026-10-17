@@ -1,0 +1,73 @@
+#+TITLE: ADR 0001: dependency policy
+#+OPTIONS: toc:nil
+
+- Status: accepted
+- Date: 2026-OCTOBER-17
+- Threat: SECURITY.org T5, supply chain
+- Issue: #56
+
+* Context
+
+Nemesis is an Electron application that drives a coding agent with access to
+the filesystem and the network. A dependency that runs code at install time, or
+an unpinned Chromium under the window, is the cheapest way into this machine.
+The repository had the remote half of the defence already (gitleaks and
+=npm audit --audit-level=high= in CI); what was missing was the local half and
+the written rule behind it.
+
+* Decision
+
+** Every dependency is justified in one line
+
+A pull request that adds a dependency names it and says, in one line, why a
+built-in from Node or Electron does not do the job. No justification, no
+dependency. The preference order is: Electron API, Node built-in, a small
+dependency, a large dependency.
+
+** No dependency may run code at install time
+
+No installed package may declare =preinstall=, =install= or =postinstall=.
+=scripts/check-deps.mjs= walks =node_modules=, including nested copies, and
+fails with the offending package names when one does. It runs first in
+=npm run gate=, so the rule is checked locally before every commit, and again
+in CI.
+
+Electron is the single exception: it downloads its own binary. The install path
+is therefore =npm ci --ignore-scripts= followed by
+=node node_modules/electron/install.js=, which runs that one installer
+explicitly and by name instead of trusting every package in the tree.
+
+** The lockfile is the source of truth
+
+=package-lock.json= is committed and is the only accepted install input.
+=npm ci= (never =npm install=) in CI and in any unattended run, so the tree
+installed is the tree reviewed. A lockfile change belongs in the pull request
+that causes it, with the same one-line justification. =.npmrc= sets
+=engine-strict=, so the wrong Node fails loudly instead of resolving a
+different tree.
+
+** Electron is pinned and bumped fast
+
+Electron is pinned to an exact version in =package.json=, no caret. A Chromium
+or Electron security release is merged within a week of its publication, ahead
+of any feature work, because a stale Chromium is a browser-shaped hole. The
+bump carries the release note link and a green gate.
+
+** Dependabot opens the bumps, weekly and grouped
+
+=.github/dependabot.yml= runs weekly on npm and on GitHub Actions, at most five
+open pull requests. =electron=, =electron-*= and =@electron/*= are grouped into
+one pull request, because the Electron packages move together and separate
+bumps produce a broken tree. Major bumps of =@types/node= are ignored (types
+track the Node pinned in =.nvmrc=) and of =typescript= (typescript-eslint pins
+it below 6.1). Every Dependabot pull request is merged only on a green gate.
+
+* Consequences
+
+- A dependency that needs a build step at install time cannot be used here. The
+  cost is real: some native packages are out of reach, and the answer is to pick
+  a prebuilt alternative or to do without.
+- =check-deps= reads the tree on disk, so it needs an install before it can
+  speak. It fails with that instruction when =node_modules= is absent.
+- The Electron exception is one name in one allowlist, in one file. Widening it
+  is a visible diff under review, not a silent default.

@@ -21,7 +21,8 @@
     "test:e2e": "npm run build && playwright test --project=app",
     "test:security": "npm run build && playwright test --project=security --pass-with-no-tests",
     "test": "npm run test:unit && npm run test:e2e && npm run test:security",
-    "gate": "npm run typecheck && npm run lint && npm run test:unit && npm run test:e2e && npm run test:security",
+    "check-deps": "node scripts/check-deps.mjs",
+    "gate": "npm run check-deps && npm run typecheck && npm run lint && npm run test:unit && npm run test:e2e && npm run test:security",
     "electron:install": "node node_modules/electron/install.js"
   },
   "devDependencies": {
