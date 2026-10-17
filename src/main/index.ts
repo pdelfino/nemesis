@@ -1,6 +1,9 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
+import { installBufferBridge } from './buffer-bridge'
+import { createCockpitBuffers } from './buffers'
 import { installKeyBridge } from './commands/key-bridge'
+import { createCockpitDispatcher, createCockpitRegistry } from './commands/keyscheme'
 import { internalPagePreferences } from './security/web-preferences'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
@@ -37,8 +40,12 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  // The buffer list is the spine: the keymap and, later, the palette act on
+  // it, so it exists before the window that shows it (#60).
+  const buffers = createCockpitBuffers()
+  installBufferBridge(buffers)
   // Keys mean nothing until the registry and the keymaps are up (#59).
-  installKeyBridge()
+  installKeyBridge(createCockpitDispatcher(createCockpitRegistry(buffers)))
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

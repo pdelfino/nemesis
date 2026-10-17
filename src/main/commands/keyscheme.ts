@@ -1,3 +1,5 @@
+import type { BufferRegistry } from '../buffers'
+import { createCockpitBuffers } from '../buffers'
 import type { BufferKeymaps } from './keymap'
 import { defineKeymap, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher } from './dispatcher'
@@ -11,70 +13,73 @@ import { CommandRegistry, defineCommand } from './registry'
  * config dir gets the same shape when the extension door opens in M3, so the
  * format is decided once, here, before the first binding.
  *
- * The command bodies are deliberately empty for now. This issue owns the spine,
- * the registry, the chord parser and the dispatch; each buffer fills its own
- * command in when it lands.
+ * A command body stays empty until the surface it drives lands. #59 owns the
+ * spine, the registry, the chord parser and the dispatch; the two buffer
+ * commands act on the buffer registry they are given (#60).
  */
 
-export const COCKPIT_COMMANDS: readonly Command[] = [
-  defineCommand({
-    name: 'execute-command',
-    doc: 'Run a command by name.',
-    run: () => {
-      // The palette UI lands in #65; the dispatch is what M1 needs now.
-    },
-  }),
-  defineCommand({
-    name: 'keyboard-quit',
-    doc: 'Cancel the half-typed key sequence, the prompt or the running request.',
-    run: () => {
-      // The resolver already dropped the pending sequence; interrupting the
-      // agent request arrives with the session manager.
-    },
-  }),
-  defineCommand({
-    name: 'send-prompt',
-    doc: 'Send the prompt buffer to the agent.',
-    run: () => {
-      // The prompt buffer lands in #61.
-    },
-  }),
-  defineCommand({
-    name: 'switch-buffer',
-    doc: 'Switch to another buffer by name.',
-    run: () => {
-      // The buffer list lands with the cockpit buffers.
-    },
-  }),
-  defineCommand({
-    name: 'kill-buffer',
-    doc: 'Kill the current buffer.',
-    run: () => {
-      // The buffer list lands with the cockpit buffers.
-    },
-  }),
-  defineCommand({
-    name: 'search-buffer',
-    doc: 'Search in the current buffer.',
-    run: () => {
-      // Search is a CodeMirror surface; it lands with the transcript (#62).
-    },
-  }),
-  defineCommand({
-    name: 'answer-yes',
-    doc: 'Answer yes to the permission prompt.',
-    run: () => {
-      // The permission bridge answers; it lands with the permission prompt.
-    },
-  }),
-  defineCommand({
-    name: 'answer-no',
-    doc: 'Answer no to the permission prompt.',
-    run: () => {
-      // The permission bridge answers; it lands with the permission prompt.
-    },
-  }),
-]
+export function cockpitCommands(buffers: BufferRegistry): readonly Command[] {
+  return [
+    defineCommand({
+      name: 'execute-command',
+      doc: 'Run a command by name.',
+      run: () => {
+        // The palette UI lands in #65; the dispatch is what M1 needs now.
+      },
+    }),
+    defineCommand({
+      name: 'keyboard-quit',
+      doc: 'Cancel the half-typed key sequence, the prompt or the running request.',
+      run: () => {
+        // The resolver already dropped the pending sequence; interrupting the
+        // agent request arrives with the session manager.
+      },
+    }),
+    defineCommand({
+      name: 'send-prompt',
+      doc: 'Send the prompt buffer to the agent.',
+      run: () => {
+        // The prompt buffer lands in #61.
+      },
+    }),
+    defineCommand({
+      name: 'switch-buffer',
+      doc: 'Switch to another buffer by name.',
+      run: () => {
+        // Cycles to the next buffer; the fuzzy chooser over titles is #65.
+        buffers.switchToNext()
+      },
+    }),
+    defineCommand({
+      name: 'kill-buffer',
+      doc: 'Kill the current buffer.',
+      run: () => {
+        buffers.kill()
+      },
+    }),
+    defineCommand({
+      name: 'search-buffer',
+      doc: 'Search in the current buffer.',
+      run: () => {
+        // Search is a CodeMirror surface; it lands with the transcript (#62).
+      },
+    }),
+    defineCommand({
+      name: 'answer-yes',
+      doc: 'Answer yes to the permission prompt.',
+      run: () => {
+        // The permission bridge answers; it lands with the permission prompt.
+      },
+    }),
+    defineCommand({
+      name: 'answer-no',
+      doc: 'Answer no to the permission prompt.',
+      run: () => {
+        // The permission bridge answers; it lands with the permission prompt.
+      },
+    }),
+  ]
+}
 
 /** Bindings available in every buffer. */
 export const GLOBAL_KEYMAP = defineKeymap('global', {
@@ -98,9 +103,11 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
 /** The chord that abandons a half-typed sequence. */
 export const ABORT_CHORD = 'C-g'
 
-export function createCockpitRegistry(): CommandRegistry {
+export function createCockpitRegistry(
+  buffers: BufferRegistry = createCockpitBuffers(),
+): CommandRegistry {
   const registry = new CommandRegistry()
-  registry.registerAll(COCKPIT_COMMANDS)
+  registry.registerAll(cockpitCommands(buffers))
   return registry
 }
 

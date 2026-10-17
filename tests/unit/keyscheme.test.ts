@@ -10,11 +10,12 @@ import { defineKeymap, KeyResolver } from '../../src/main/commands/keymap'
 import { CommandRegistry, defineCommand } from '../../src/main/commands/registry'
 import {
   BUFFER_KEYMAPS,
-  COCKPIT_COMMANDS,
+  cockpitCommands,
   createCockpitDispatcher,
   createCockpitRegistry,
   GLOBAL_KEYMAP,
 } from '../../src/main/commands/keyscheme'
+import { BufferRegistry } from '../../src/main/buffers'
 
 function press(key: string, options: Partial<KeyPress> = {}): KeyPress {
   return {
@@ -43,7 +44,7 @@ describe('the default Emacs keyscheme (#59)', () => {
 
   it('registers every command a keymap names', () => {
     const registry = createCockpitRegistry()
-    expect(registry.list()).toHaveLength(COCKPIT_COMMANDS.length)
+    expect(registry.list()).toHaveLength(cockpitCommands(new BufferRegistry()).length)
     expect(() =>
       assertBindingsAreRegistered(registry, [GLOBAL_KEYMAP, ...Object.values(BUFFER_KEYMAPS)]),
     ).not.toThrow()

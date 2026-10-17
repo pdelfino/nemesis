@@ -1,3 +1,4 @@
+import type { BufferInfo, BufferList, BufferSpec } from './buffers'
 import type { DispatchRecord, KeyOutcome, KeyPress } from './keys'
 
 /**
@@ -10,8 +11,14 @@ export interface NemesisApi {
   readonly version: string
   /** Reports a key press to the main process, which owns the keymaps (#59). */
   sendKey(press: KeyPress): Promise<KeyOutcome>
+  /** The buffer list as the main process holds it now (#60). */
+  buffers(): Promise<BufferList>
+  /** Follows the buffer list: every create, switch and kill calls back (#60). */
+  onBuffersChanged(listener: (list: BufferList) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
+  /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */
+  readonly createBuffer?: (spec: BufferSpec) => Promise<BufferInfo>
 }
 
 declare global {
