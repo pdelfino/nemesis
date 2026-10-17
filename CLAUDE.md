@@ -26,6 +26,12 @@ docs/adr/            architecture decision records
 
 `npm run gate` = typecheck, lint, unit tests, end-to-end smoke. It runs locally before every commit. CI is the second opinion. Nothing is pushed with a red gate.
 
+Node comes from nvm and the default shell node is older: run `source ~/.nvm/nvm.sh && nvm use` once per shell before any `npm` command. `.npmrc` sets `engine-strict`, so the wrong Node fails loudly instead of silently.
+
+## Non-interactive runs (claude-queue)
+
+@.claude-queue
+
 ## Rules
 
 - Interactive sessions commit straight to `main` after a green local gate (Pedro's call, 2026-10-17: speed over ceremony). The non-interactive queue works on `issue/<number>-<slug>` and opens a draft pull request, because nobody is watching it. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
