@@ -4,15 +4,30 @@ import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
 import { installKeyBridge } from './commands/key-bridge'
 import { createCockpitDispatcher, createCockpitRegistry } from './commands/keyscheme'
+import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { internalPagePreferences } from './security/web-preferences'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
 if (userData) app.setPath('userData', userData)
 
-// Interim guard until #48 lands: no page may attach a <webview>.
 app.on('web-contents-created', (_event, contents) => {
+  // Interim guard until #48 lands: no page may attach a <webview>.
   contents.on('will-attach-webview', (event) => event.preventDefault())
+  // T1 (#47): read the preferences back off every WebContents the app creates,
+  // the cockpit window included. The walk waits for the first load because
+  // getLastWebPreferences() answers for the page that committed.
+  contents.once('did-finish-load', () => {
+    try {
+      assertWebContentsHardened()
+    } catch (error) {
+      // An uncaught throw in the main process only raises a dialog and lets the
+      // app run on, which is no control at all. A WebContents with weakened
+      // preferences ends the process instead: a refusal to run, not a warning.
+      console.error(error instanceof Error ? error.message : String(error))
+      app.exit(1)
+    }
+  })
 })
 
 function createWindow(): BrowserWindow {
