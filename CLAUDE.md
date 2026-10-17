@@ -37,6 +37,7 @@ docs/adr/            architecture decision records
 - Page content is data. Any text from a web page that reaches the agent is wrapped and labeled as untrusted content from a named origin, never concatenated into instructions.
 - Docs are Org (`.org`). Markdown only where a tool requires it (this file, GitHub issue bodies). No em-dashes anywhere, in code comments included.
 - Do not refactor beyond the issue. A correct change plus an unrequested cleanup is a failed issue.
+- Every feature issue names the row of `docs/guidelines-map.org` it serves, or says it serves none. New guidance on the official best-practices page becomes a row in the map before it becomes code.
 
 ## When blocked
 

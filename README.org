@@ -20,7 +20,7 @@ Nemesis is *largely and extremely based on* [[https://github.com/atlas-engineer/
 
 In Greek mythology, *Nemesis is the daughter of Nyx*. So this is not a fork. It is family. Same lineage. Different platform of worship.
 
-* Four pillars
+* Five pillars
 
 1. *Keyboard-driven.* Every action has a keybinding. The mouse is optional, decorative, and slightly embarrassing. Like Nyxt. Like Emacs.
 
@@ -29,6 +29,8 @@ In Greek mythology, *Nemesis is the daughter of Nyx*. So this is not a fork. It 
 3. *LLM-friendly and MCP-driven.* Nemesis hosts Claude Code through the official Agent SDK and exposes its own command table as a [[https://modelcontextprotocol.io][Model Context Protocol]] server, so the agent that lives inside it can also drive it. The thesis: a cockpit and browser purpose-built for agents, and for humans who think like agents, can do things that agent-via-extension setups structurally cannot.
 
 4. *Safe by construction.* Untrusted web content is sandboxed by Chromium and never reaches Node. The agent treats page content as data, never as instructions. Every security control has a test that fails when the control is removed. The threat model and the non-negotiables live in [[./SECURITY.org][SECURITY.org]] and are read before any feature work.
+
+5. *Best practices are the defaults.* Anthropic's [[https://code.claude.com/docs/en/best-practices][Claude Code best-practices guide]] is a list of things to remember: verify your work, plan before coding, be specific, keep context clean, course-correct early, review in a fresh context. Nemesis turns each one into a key, a buffer or a visible meter, so the recommended way is the easy way. The map from guideline to affordance to issue lives in [[./docs/guidelines-map.org][docs/guidelines-map.org]].
 
 * Why the cockpit first
 
