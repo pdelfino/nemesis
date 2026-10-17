@@ -1,0 +1,39 @@
+{
+  "name": "nemesis",
+  "productName": "Nemesis",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A keyboard-driven cockpit for Claude Code that grows into a Nyxt-style browser. Daughter of Nyx.",
+  "license": "BSD-3-Clause",
+  "author": "Pedro Delfino",
+  "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test:unit": "vitest run",
+    "test:e2e": "npm run build && playwright test --project=app",
+    "test:security": "npm run build && playwright test --project=security --pass-with-no-tests",
+    "gate": "npm run typecheck && npm run lint && npm run test:unit && npm run test:e2e && npm run test:security",
+    "electron:install": "node node_modules/electron/install.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "electron": "44.9.0",
+    "electron-vite": "6.0.0",
+    "eslint": "10.13.0",
+    "prettier": "3.9.10",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Interim policy as a meta tag; #50 serves internal pages from nemesis://
+      with the same policy as a response header. ws://localhost:* exists only
+      for the Vite dev server's hot reload.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nemesis</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header id="modeline">
+      <span id="app-name">Nemesis</span>
+      <span id="app-version"></span>
+    </header>
+    <main>
+      <section id="transcript" aria-label="transcript">
+        <p class="placeholder">The transcript buffer arrives in #62.</p>
+      </section>
+      <section id="prompt" aria-label="prompt buffer">
+        <p class="placeholder">The prompt buffer arrives in #61.</p>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

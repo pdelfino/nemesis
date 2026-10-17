@@ -1,0 +1,3 @@
+#+TITLE: Security specs
+
+One spec per row of the non-negotiables table in =SECURITY.org=. The harness and the hostile fixtures arrive with issue #46; until then this project passes with no tests on purpose (=--pass-with-no-tests=), so the gate stays honest about what exists.
