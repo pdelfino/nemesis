@@ -22,8 +22,12 @@
     "test:security": "npm run build && playwright test --project=security --pass-with-no-tests",
     "test": "npm run test:unit && npm run test:e2e && npm run test:security",
     "check-deps": "node scripts/check-deps.mjs",
+    "agent:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-smoke.mts",
     "gate": "npm run check-deps && npm run typecheck && npm run lint && npm run test:unit && npm run test:e2e && npm run test:security",
     "electron:install": "node node_modules/electron/install.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.302"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
