@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
+import { installKeyBridge } from './commands/key-bridge'
 import { internalPagePreferences } from './security/web-preferences'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
@@ -36,6 +37,8 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  // Keys mean nothing until the registry and the keymaps are up (#59).
+  installKeyBridge()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
