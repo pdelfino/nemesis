@@ -1,0 +1,78 @@
+#+TITLE: Nemesis security: threat model and non-negotiables
+#+OPTIONS: toc:2
+
+This document is read before any feature work. It is written for a careful, non-expert user who is afraid of the web and wants to be no less safe inside Nemesis than inside Brave, and for the agent (Claude Code) that writes most of the code.
+
+* What Nemesis promises
+
+A narrow, testable promise, not a vague one:
+
+1. A malicious or compromised web page cannot escape Chromium's sandbox into the application, the file system or the shell.
+2. Nothing is downloaded, opened or executed without an explicit yes from the user, and what is downloaded is quarantined.
+3. Transport is HTTPS-only and certificate errors are fatal.
+4. Device and data permissions are denied by default.
+5. Text read from a web page can never steer the agent into an action. Page content is data.
+6. The code and its dependencies are pinned, audited, and updated on a schedule tied to Chromium security releases.
+7. Builds that leave this machine are signed and notarized.
+
+* What Nemesis does not promise (say it plainly)
+
+- *Anonymity.* Nemesis does not hide who you are or where you are. Tor Browser is the tool for that, and Nemesis will never claim to be one. If a page should not know your IP address or your browser fingerprint, Nemesis is the wrong tool.
+- *Protection from a targeted attacker with an unpatched Chromium exploit.* No browser protects against that. Nemesis shrinks the window by updating fast.
+- *Protection from yourself.* If you type a password into a site you were tricked into opening, HTTPS and the URL display help, and a human still decides. Nemesis stores no passwords and autofills nothing in version 1.
+- *High-value accounts.* Banking, tax portals and email stay in Brave or Safari until Nemesis is signed, notarized, and has shipped engine updates on time for three consecutive months.
+
+* Threats in scope and their controls
+
+** T1. A page tries to reach the app, the file system or the shell
+Controls: Chromium sandbox on for every renderer (=sandbox: true=), one process per site, =contextIsolation: true=, =nodeIntegration: false= and =nodeIntegrationInWorker: false= everywhere, =webSecurity= never disabled, no =allowRunningInsecureContent=, no =experimentalFeatures=, no =enableBlinkFeatures=, no =webview= tag (buffers are =WebContentsView= instances created by the main process), a preload script that exposes only typed, allowlisted functions through =contextBridge=, and IPC handlers that validate the sender frame's origin before doing anything. Electron fuses set at packaging: =RunAsNode= off, =EnableNodeOptionsEnvironmentVariable= off, =EnableNodeCliInspectArguments= off, =EnableCookieEncryption= on, =OnlyLoadAppFromAsar= on, =EnableEmbeddedAsarIntegrityValidation= on.
+
+** T2. Drive-by downloads, malware, dangerous handlers
+Controls: downloads are opt-in per file (the user confirms, with the filename, size and origin shown), land in a dedicated quarantine folder, are never opened automatically, and carry the macOS quarantine attribute (asserted by a test). =shell.openExternal= is called only for =http= and =https= URLs after confirmation. External protocol handlers (=mailto=, =tel=, custom schemes) prompt, never auto-launch. =navigateOnDragDrop= off.
+
+** T3. Phishing and insecure transport
+Controls: HTTPS-only with upgrade; a plain =http= navigation is blocked with an explanation, no click-through in version 1. Certificate errors are fatal, the =certificate-error= event is never overridden. The URL bar rejects =javascript:=, =file:= and top-level =data:= navigations. Internal pages are served from a privileged custom scheme, never from =file://=, and carry a strict Content Security Policy. The displayed URL is always the committed URL of the top frame.
+
+** T4. Page content steering the agent (prompt injection)
+Controls: any text extracted from a page and handed to Claude is wrapped in a delimited block labeled as untrusted content from a named origin, never concatenated into instructions. The agent never executes instructions found in page text. Tools with side effects (sending, submitting forms, purchasing, downloading, running commands, writing files outside the session folder) require the user's explicit confirmation through the SDK permission callback. A =PreToolUse= hook denies side-effect tools while the current buffer is a page from a domain not on the user's allowlist. Every agent action is written to the transcript with its tool name and arguments.
+
+** T5. Supply chain
+Controls: =package-lock.json= committed; =npm ci --ignore-scripts= with Electron's own installer as the single explicit exception; =npm audit --audit-level=high= and gitleaks in CI; Dependabot weekly with Electron grouped; Electron pinned and bumped within a week of a Chromium security release; no dependency without a one-line justification in the pull request; no dependency that needs a lifecycle script; code signing and notarization before any build leaves this machine.
+
+** T6. Permissions and device access
+Controls: =setPermissionRequestHandler= and =setPermissionCheckHandler= deny camera, microphone, geolocation, notifications, clipboard read, MIDI, USB, HID, serial and Bluetooth by default. Allow is per site and per session, never persisted in version 1. =setDevicePermissionHandler= denies all devices.
+
+** T7. Privacy baseline
+Controls: a persistent default session partition for your own browsing and an ephemeral partition wiped on close; WebRTC IP handling set to the public interface only; DNS over HTTPS stays off inside the app so the system hosts blocklist applies; blocker mode on by default; no telemetry, no crash reports leaving the machine, no analytics of any kind.
+
+* Non-negotiables, each with a test
+
+Every rule below has a test under =tests/e2e/security/= that fails when the rule is broken. A pull request that removes or weakens one of these is rejected regardless of what else it does.
+
+| Rule                                                              | Test asserts                                                         |
+|-------------------------------------------------------------------+----------------------------------------------------------------------|
+| No page can see =process=, =require= or any Node global           | a loaded page evaluating them gets =undefined=                        |
+| Every renderer runs sandboxed with context isolation              | =webPreferences= of every WebContents, read at runtime                |
+| No =webview= tag, no =allowpopups=                                | =will-attach-webview= rejects; markup scan of internal pages         |
+| New windows are controlled                                        | =window.open= from a page yields a controlled buffer or nothing      |
+| Navigation is controlled                                          | =will-navigate= blocks =file:=, =javascript:=, top-level =data:=      |
+| HTTPS-only                                                        | an =http= navigation is blocked, an invalid certificate is fatal     |
+| Permissions denied by default                                     | each listed permission resolves to denied without a user decision   |
+| Downloads opt-in and quarantined                                  | a download lands only in the quarantine folder, with the attribute  |
+| Internal pages carry a strict CSP                                 | an injected inline script does not execute                          |
+| IPC validates the sender                                          | a message from a page origin to a privileged channel is dropped     |
+| Page text reaches the agent only as labeled data                  | the wrapped block is present and instruction text is not executed   |
+| Side-effect tools need confirmation on untrusted pages            | the hook denies without a user decision                             |
+| Fuses set at packaging                                            | =@electron/fuses= read-back on the built binary                      |
+
+* Rules for the agent that builds Nemesis
+
+- Changes under =src/main/security/=, =src/preload/=, the permission bridge in =src/main/agent/=, =SECURITY.org= and the security tests are reviewed in an interactive session by Pedro with Claude before merge. The non-interactive queue may propose them, never merge them.
+- A security control is written test-first: the failing test lands in the same pull request as the control.
+- No new dependency without a one-line justification. No dependency that requires a lifecycle script. Prefer Electron and Node built-ins over packages.
+- Never log tokens, cookies, page content or prompts to stdout or to files outside the session folder.
+- When an Electron or Chromium security release ships, the version bump is the next thing merged.
+
+* Reporting
+
+This is a personal project. Open an issue with the =security= label. There is no bounty, and there is a thank you.

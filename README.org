@@ -1,5 +1,5 @@
 #+TITLE: Nemesis
-#+SUBTITLE: A Racket-native, macOS-only web browser, lovingly descended from Nyxt
+#+SUBTITLE: A keyboard-driven cockpit for Claude Code that grows into a browser. Daughter of Nyx.
 #+OPTIONS: toc:nil
 
 [[https://github.com/pdelfino/nemesis/actions/workflows/ci.yml][https://github.com/pdelfino/nemesis/actions/workflows/ci.yml/badge.svg?branch=main]]
@@ -10,95 +10,97 @@
 
 * What
 
-A web browser. Written in [[https://racket-lang.org/][Racket]]. Targeting macOS first, last, and only.
+A desktop app for talking to Claude Code the way an Emacs user wants to: a prompt buffer with Emacs keys, a transcript that is a real text document you can search and copy from, every action a named command bound to a key, and nothing drawn through a terminal emulator. Built on Electron and TypeScript. Written for one user first, mostly by Claude Code, under rules that keep it safe.
+
+It starts as a cockpit for Claude Code. It is designed so that a web browser in the Nyxt tradition is a later buffer type in the same codebase, not a second project.
 
 * Heavy lineage: this is a child of Nyxt
 
-Nemesis is *largely and extremely based on* [[https://github.com/atlas-engineer/nyxt][Nyxt]] — the keyboard-driven, Lisp-extensible web browser by [[https://atlas.engineer/][Atlas Engineer]]. Almost every architectural decision here starts with "what would Nyxt do?" and only diverges where the Common-Lisp + WebKit/GTK + Linux-first stack doesn't translate cleanly to Racket + WKWebView + macOS.
+Nemesis is *largely and extremely based on* [[https://github.com/atlas-engineer/nyxt][Nyxt]], the keyboard-driven, Lisp-extensible web browser by [[https://atlas.engineer/][Atlas Engineer]]. Almost every architectural decision here starts with "what would Nyxt do?" and only diverges where the Common Lisp plus renderer-bridge stack does not translate cleanly to TypeScript running inside the renderer's own runtime.
 
 In Greek mythology, *Nemesis is the daughter of Nyx*. So this is not a fork. It is family. Same lineage. Different platform of worship.
 
-* Three architectural pillars
+* Four pillars
 
 1. *Keyboard-driven.* Every action has a keybinding. The mouse is optional, decorative, and slightly embarrassing. Like Nyxt. Like Emacs.
 
-2. *Text-driven UX/UI.* Every UI surface is also reachable as text — every command introspectable, every state queryable as a string, every buffer copy-able as text. The prompt-buffer (Nyxt's defining UX innovation) is the front door. Inspired by Emacs's "everything is a buffer."
+2. *Text-driven UX.* Every UI surface is also reachable as text: every command introspectable, every state queryable as a string, every buffer copyable as text. The prompt buffer, Nyxt's defining UX innovation, is the front door. Inspired by Emacs's "everything is a buffer".
 
-3. *LLM-friendly and MCP-driven for strong agentic integration.* Nemesis exposes itself as a [[https://modelcontextprotocol.io][Model Context Protocol]] server. Tools for navigate, click, type, screenshot, DOM-query, observe, and more. The thesis is that a browser purpose-built for agents (and humans who think like agents) can do things that today's agent-via-extension setups structurally can't.
+3. *LLM-friendly and MCP-driven.* Nemesis hosts Claude Code through the official Agent SDK and exposes its own command table as a [[https://modelcontextprotocol.io][Model Context Protocol]] server, so the agent that lives inside it can also drive it. The thesis: a cockpit and browser purpose-built for agents, and for humans who think like agents, can do things that agent-via-extension setups structurally cannot.
 
-* The third big influence: browsermcp
+4. *Safe by construction.* Untrusted web content is sandboxed by Chromium and never reaches Node. The agent treats page content as data, never as instructions. Every security control has a test that fails when the control is removed. The threat model and the non-negotiables live in [[./SECURITY.org][SECURITY.org]] and are read before any feature work.
 
-[[https://github.com/browsermcp/mcp][browsermcp]] is excellent within its constraints: it runs as a browser extension on Chrome/Brave, exposing a curated set of MCP tools that lets agents drive a real browser session. The constraint is the extension API surface — anything Chrome's extension model doesn't expose, browsermcp can't either.
+* Why the cockpit first
 
-*Nemesis owns the engine.* We can:
+The daily pain is talking to Claude Code. iTerm2 is stable but cannot be customized the way Emacs can. Emacs has the bindings, but hosting the Claude Code terminal UI inside a terminal emulator flickers, breaks scrolling, and fights the display engine. Nemesis never runs the terminal UI at all: it drives Claude Code headless through the SDK and draws the conversation itself.
 
-- Inject and observe DOM at any depth, no extension permission walls.
-- Intercept and replay network requests without devtools-only limits.
-- Capture full page state including service workers, IndexedDB, etc.
-- Surface Cocoa-level events (gestures, full-screen, services menu) to the agent.
-- Run many headless tabs without a Chrome process babysitter.
-- Stream DOM mutations + console + network as MCP resources, not polled snapshots.
+The cockpit's core, buffers, a prompt buffer, keymaps and a command registry, is also half of a Nyxt-style browser. Building the first builds the second.
 
-The thesis: *a browser purpose-built for agents can be strictly stronger than browsermcp running on Chrome/Brave*, because the constraint isn't the protocol — it's the host browser. We replace the host.
+* Why TypeScript and Electron
 
-* Two big repos to study
+Picked by ecosystem, not taste.
 
-| Repo                 | Why                                                                                          |
-|----------------------+----------------------------------------------------------------------------------------------|
-| [[https://github.com/atlas-engineer/nyxt][atlas-engineer/nyxt]]  | Architectural source of truth. Prompt-buffer, modes, hooks, keymaps, configuration, history. |
-| [[https://github.com/browsermcp/mcp][browsermcp/mcp]]      | MCP tool-surface reference. Match-then-exceed its tool catalog.                              |
+- The [[https://platform.claude.com/docs/en/agent-sdk/overview][Claude Agent SDK]] is first-party TypeScript and runs in the Electron main process as a library. Permissions, hooks, sessions, resume and subagents come without an adapter to maintain.
+- Chromium is the rendering engine, so a browser is a buffer type away, and the Chrome DevTools Protocol lets Claude Code launch, drive and test the app it builds.
+- [[https://codemirror.net/][CodeMirror 6]] is every text surface, with a mature Emacs keymap.
+- TypeScript has the largest corpus of anything an agent writes. Electron and CodeMirror are a decade old and documented to death. Boring is a feature.
 
-* The lovingly-watched older sibling
+What this rules out, knowingly: the deepest macOS integration (Swift with AppKit reaches further) and a small memory footprint. Accepted.
 
-Mom is sitting right next door:
+* Stack
 
-#+begin_example
-~/projects/
-├── nyxt/        ← mom (Common Lisp, WebKit/GTK, Linux-first, born 2017)
-└── nemesis/     ← me (Racket, WKWebView, macOS-only, vaporware as of today)
-#+end_example
+| Layer           | Choice                                                     |
+|-----------------+------------------------------------------------------------|
+| Shell           | Electron, current stable, bumped deliberately              |
+| Language        | TypeScript, strict                                         |
+| Text surfaces   | CodeMirror 6 with the Replit Emacs keymap                  |
+| Agent           | Claude Agent SDK (TypeScript) in the main process          |
+| Storage         | Markdown transcripts on disk, SQLite via better-sqlite3    |
+| Tests           | Vitest for units, Playwright for Electron end to end       |
+| Build           | electron-vite, electron-builder for the =.app=             |
+| Agent door      | MCP server over stdio exposing the command table           |
 
-Read =../nyxt/= for prior art. When in doubt about a UX question, ask: "what does mom do here, and is that the right answer on a Mac?" Sometimes yes. Sometimes very much no.
+* Safety posture, in one paragraph
 
-* Why Racket (not Common Lisp)
-
-- =#lang= and language-oriented programming. Beautiful Racket–style DSLs for browser config and extensions.
-- =raco distribute= produces a real =.app= bundle.
-- DrRacket and =racket-mode= for live development.
-- Smaller community = less competition, more space for one person to matter.
-- Honestly: Common Lisp tooling is great if you're already in it. For someone starting today on macOS, Racket is friendlier.
-
-* Why macOS-only
-
-- WKWebView is already on every Mac. Free engine, no Chromium to ship, no GTK to fight.
-- Mac users pay for software (cf. Arc, Things, Bear, Soulver). Niche but solvent.
-- Picking one platform means actually nailing it.
-- macOS has the best built-in window management, Spaces, gestures, and clipboard story of any desktop OS.
+Nemesis is not an anonymity browser and will never claim to be one. Its promise is narrower and testable: a malicious page cannot escape Chromium's sandbox into the app, downloads are opt-in and quarantined, transport is HTTPS-only, permissions are denied by default, the agent cannot be steered by text it reads on a page, dependencies are pinned and audited, and the engine is updated within a week of a Chromium security release. Banking and other high-value accounts stay in Brave or Safari until Nemesis is signed, notarized, and has shipped engine updates on time for three months. Details in [[./SECURITY.org][SECURITY.org]].
 
 * Status
 
-Vapor. Pre-embryonic. There is no code yet — only this README, a clear stare across the projects directory at the older sibling, and a backlog of issues describing the road ahead.
+Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/42][#42]]. No application code before 2026-NOVEMBER-01: October is milestone M0, a week of living inside Emacs's agent-shell to learn what a Claude cockpit needs before building one.
 
 * Development setup
 
-Racket version is pinned to *9.1* (see =.tool-versions=). Verify with =racket --version= — it should print =Welcome to Racket v9.1 [cs].= or newer.
+- Node 24 LTS through nvm (=.nvmrc=), npm with a committed lockfile.
+- Once code lands: =nvm use=, =npm ci --ignore-scripts=, =node node_modules/electron/install.js=, then =npm run gate= (typecheck, lint, tests). The gate runs locally before every commit; GitHub Actions is the second opinion at ready-for-review.
+- Claude Code reads =CLAUDE.md= at the root. The non-interactive queue reads =.claude-queue=.
 
-Install on macOS via Homebrew:
+* Roadmap
 
-#+begin_src sh
-brew install --cask racket
-#+end_src
+| Milestone | Outcome                                                                                   |
+|-----------+-------------------------------------------------------------------------------------------|
+| M0        | A week in agent-shell. Notes on what a cockpit needs. No code.                            |
+| Security  | Threat model ratified, hardening baseline, security test suite. Blocks M1 features.       |
+| M1        | Cockpit MVP: one window, prompt buffer, transcript, permissions, M-x, transcripts on disk. |
+| M2        | Sessions and resume, diff buffers, search across transcripts, multiple windows.           |
+| M3        | Extension door: user config, live reload, eval, MCP server over the command table.        |
+| M4        | Browser buffers in the Nyxt tradition: prompt buffer over URLs, hints, history, blocker.   |
+| M5        | Distribution: signed and notarized =.app=, update policy.                                 |
 
-Or grab the official =.pkg= from [[https://racket-lang.org/][racket-lang.org]]. Either path is fine; the =.tool-versions= file is for [[https://asdf-vm.com/][asdf]] users and as an explicit version marker — Homebrew won't read it.
+* History
 
-* Roadmap (high level)
+- 2026-MAY-02: born as a Racket-native, macOS-only browser over WKWebView through an Objective-C bridge. Phase 0 scaffolding landed through claude-queue. The plan stalled before the FFI spike that was its go or no-go gate.
+- 2026-OCTOBER-17: pivot to TypeScript and Electron, cockpit first, after a long design review of Emacs, Nyxt, agent-shell, Pel, llm-lang and Pille. Racket-era issues 1 to 41 stay for the record; superseded ones are closed with a pointer to #42.
 
-1. *Spike*: prove WKWebView is callable from Racket via Objective-C FFI.
-2. *MVP*: single-window, keyboard-driven, MCP-exposed browser.
-3. *Match Nyxt*'s prompt-buffer / modes / hooks / keymaps in Racket.
-4. *Match-then-exceed* browsermcp's tool surface.
-5. *Native macOS delights*: gestures, share sheet, Spaces, dark mode.
-6. *Decide whether anyone else cares.*
+* Repos and documents to study
+
+| Reference                                                         | Why                                                                         |
+|-------------------------------------------------------------------+-----------------------------------------------------------------------------|
+| [[https://github.com/atlas-engineer/nyxt][atlas-engineer/nyxt]]                                      | Architectural source of truth: prompt buffer, modes, hooks, keymaps, history |
+| [[https://github.com/xenodium/agent-shell][xenodium/agent-shell]]                                     | The reference Claude cockpit inside Emacs; M0 lives here                     |
+| [[https://platform.claude.com/docs/en/agent-sdk/overview][Claude Agent SDK]]                                  | The agent runtime Nemesis hosts                                              |
+| [[https://www.electronjs.org/docs/latest/tutorial/security][Electron security checklist]]                   | Every item is a non-negotiable in SECURITY.org                               |
+| [[https://github.com/browsermcp/mcp][browsermcp/mcp]]                                             | MCP tool-surface reference for M3 and M4; match then exceed                  |
+| [[https://github.com/minbrowser/min][minbrowser/min]]                                            | Proof that a daily-use browser on Electron is realistic                      |
 
 * License
 

@@ -1,45 +1,56 @@
 name: ci
 
+# Local-first: the full gate runs on every commit on the developer's machine
+# (see CONTRIBUTING.org). Actions is the second opinion at ready-for-review.
+
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  ci:
-    runs-on: macos-latest
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  gate:
+    name: typecheck, lint, test, audit
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Racket
-        uses: Bogdanp/setup-racket@v1.11
-        with:
-          architecture: arm64
-          distribution: full
-          variant: CS
-          version: '9.1'
-
-      # `fmt` is a CI-only tool dep — not added to info.rkt because no source
-      # file requires it at runtime; it is only invoked via `raco fmt`.
-      - name: Install raco fmt
-        run: raco pkg install --auto --batch fmt
-
-      # `raco fmt` has no --check flag; the idiom is to format in place and
-      # then assert there is no diff against the committed source.
-      - name: Lint (raco fmt)
+      # Until application code lands (milestone M1), package.json does not
+      # exist and this job passes trivially. The steps below switch on the
+      # moment it appears.
+      - id: code
         run: |
-          raco fmt -i $(git ls-files '*.rkt')
-          git diff --exit-code
+          if [ -f package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
 
-      - name: Link nemesis package
-        run: raco pkg install --auto --batch --no-docs --link $GITHUB_WORKSPACE
+      - if: steps.code.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
 
-      - name: Test (raco test -p nemesis)
-        run: raco test -p nemesis
+      # Supply chain rule: no lifecycle scripts from dependencies. Electron's
+      # own binary download is the single explicit exception.
+      - if: steps.code.outputs.present == 'true'
+        run: npm ci --ignore-scripts
+      - if: steps.code.outputs.present == 'true'
+        run: node node_modules/electron/install.js
 
-      # Build = "all sources compile cleanly". A real .app bundle via
-      # `raco distribute` lands with #35; signed/notarized release-asset
-      # upload on a `v*` tag lands with #36.
-      - name: Build (raco make)
-        run: raco make -j 2 nemesis/main.rkt
+      - if: steps.code.outputs.present == 'true'
+        run: npm run gate
+
+      - if: steps.code.outputs.present == 'true'
+        run: npm audit --audit-level=high

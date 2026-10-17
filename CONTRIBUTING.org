@@ -1,0 +1,34 @@
+#+TITLE: Contributing to Nemesis
+
+Nemesis is developed on macOS first and mostly by Claude Code under the rules in =CLAUDE.md= and =SECURITY.org=. Humans follow the same rules.
+
+* Toolchain
+
+- Node 24 LTS through nvm: =nvm use= reads =.nvmrc=.
+- npm with the committed =package-lock.json=. Install with =npm ci --ignore-scripts= and then =node node_modules/electron/install.js=. Lifecycle scripts from dependencies are never run; Electron's binary download is the single explicit exception.
+- No global tools are required. Playwright downloads nothing extra for Electron.
+
+* The gate
+
+=npm run gate= runs typecheck, lint, unit tests and the end-to-end smoke. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.
+
+* Issues are the unit of work
+
+Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). Issues bigger than one file carry =## Approach= with the chosen design before anyone edits code. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment.
+
+* Pull requests
+
+One issue, one branch (=issue/<number>-<slug>=), one draft pull request. Small commits with a Conventional Commits prefix. The pull request description names the issue, the Verify commands that were run, and any new dependency with its one-line justification.
+
+Pull requests that touch =src/main/security/=, =src/preload/=, the permission bridge in =src/main/agent/=, =SECURITY.org= or =tests/e2e/security/= are reviewed interactively by the maintainer before merge, whoever authored them.
+
+* Style
+
+- Documentation in Org. Markdown only where a tool requires it.
+- No em-dashes, in code comments included.
+- Dates in prose with the month name, for example 2026-OCTOBER-17. Filenames and code stay ISO.
+- Keybinding notation follows Emacs: =C-x C-s=, =M-x=.
+
+* License
+
+BSD-3-Clause, matching Nyxt.
