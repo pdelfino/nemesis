@@ -17,7 +17,7 @@ jobs:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
@@ -28,7 +28,7 @@ jobs:
     name: typecheck, lint, test, audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Until application code lands (milestone M1), package.json does not
       # exist and this job passes trivially. The steps below switch on the
