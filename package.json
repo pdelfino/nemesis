@@ -19,7 +19,7 @@
     "format": "prettier --write .",
     "test:unit": "vitest run",
     "test:e2e": "npm run build && playwright test --project=app",
-    "test:security": "npm run build && playwright test --project=security --pass-with-no-tests",
+    "test:security": "npm run build && playwright test --project=security",
     "test": "npm run test:unit && npm run test:e2e && npm run test:security",
     "check-deps": "node scripts/check-deps.mjs",
     "agent:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-smoke.mts",

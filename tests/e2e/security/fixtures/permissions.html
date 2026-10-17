@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>permissions</title>
+  </head>
+  <body>
+    <h1>Permission probes</h1>
+    <p>
+      One button per device or data permission. Each writes its outcome to #result-&lt;name&gt;, so
+      a spec can assert "denied" without a user decision (SECURITY.org, T6).
+    </p>
+    <div id="buttons"></div>
+    <ul id="results"></ul>
+    <script>
+      var probes = {
+        geolocation: function () {
+          return new Promise(function (resolve, reject) {
+            navigator.geolocation.getCurrentPosition(
+              function () {
+                resolve('granted')
+              },
+              function (error) {
+                reject(new Error(error.message || 'geolocation denied'))
+              },
+              { timeout: 5000 },
+            )
+          })
+        },
+        notifications: function () {
+          return Notification.requestPermission()
+        },
+        camera: function () {
+          return navigator.mediaDevices.getUserMedia({ video: true }).then(function () {
+            return 'granted'
+          })
+        },
+        microphone: function () {
+          return navigator.mediaDevices.getUserMedia({ audio: true }).then(function () {
+            return 'granted'
+          })
+        },
+        'clipboard-read': function () {
+          return navigator.clipboard.readText().then(function () {
+            return 'granted'
+          })
+        },
+        midi: function () {
+          return navigator.requestMIDIAccess({ sysex: true }).then(function () {
+            return 'granted'
+          })
+        },
+        bluetooth: function () {
+          return navigator.bluetooth.requestDevice({ acceptAllDevices: true }).then(function () {
+            return 'granted'
+          })
+        },
+        usb: function () {
+          return navigator.usb.requestDevice({ filters: [] }).then(function () {
+            return 'granted'
+          })
+        },
+        hid: function () {
+          return navigator.hid.requestDevice({ filters: [] }).then(function () {
+            return 'granted'
+          })
+        },
+        serial: function () {
+          return navigator.serial.requestPort().then(function () {
+            return 'granted'
+          })
+        },
+      }
+
+      globalThis.__permissions = {}
+
+      function report(name, outcome) {
+        globalThis.__permissions[name] = outcome
+        document.getElementById('result-' + name).textContent = name + ': ' + outcome
+      }
+
+      Object.keys(probes).forEach(function (name) {
+        var button = document.createElement('button')
+        button.id = 'request-' + name
+        button.type = 'button'
+        button.textContent = name
+        button.addEventListener('click', function () {
+          report(name, 'pending')
+          try {
+            Promise.resolve(probes[name]()).then(
+              function (outcome) {
+                report(name, String(outcome))
+              },
+              function (error) {
+                report(name, 'denied: ' + (error && error.message ? error.message : error))
+              },
+            )
+          } catch (error) {
+            report(name, 'unavailable: ' + (error && error.message ? error.message : error))
+          }
+        })
+        document.getElementById('buttons').appendChild(button)
+
+        var item = document.createElement('li')
+        item.id = 'result-' + name
+        item.textContent = name + ': untested'
+        document.getElementById('results').appendChild(item)
+      })
+    </script>
+  </body>
+</html>
