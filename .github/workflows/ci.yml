@@ -26,7 +26,9 @@ jobs:
 
   gate:
     name: typecheck, lint, test, audit
-    runs-on: ubuntu-latest
+    # macOS: the app targets macOS and Playwright drives the real Electron
+    # binary, which needs a display that Linux runners lack without xvfb.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
 
