@@ -49,6 +49,13 @@ main {
   padding: 0.8rem;
   min-height: 6rem;
 }
+/* The current buffer carries the point, so it says so (#60). */
+[data-buffer-type][data-current] {
+  box-shadow: inset 2px 0 0 var(--ink);
+}
+[data-buffer-type][hidden] {
+  display: none;
+}
 .placeholder {
   color: var(--muted);
   margin: 0;

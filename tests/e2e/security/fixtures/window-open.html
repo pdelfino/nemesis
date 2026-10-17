@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>window open</title>
+  </head>
+  <body>
+    <h1>New windows</h1>
+    <p>Three ways a page asks for a window (SECURITY.org, T1: new windows are controlled).</p>
+    <button id="open-window" type="button">window.open</button>
+    <button id="open-named" type="button">window.open with features</button>
+    <a id="blank-link" href="/node-probe.html" target="_blank" rel="noopener">target=_blank</a>
+    <p id="result">pending</p>
+    <script>
+      function record(label, handle) {
+        var kind = handle === null || handle === undefined ? 'null' : typeof handle
+        document.getElementById('result').textContent = label + ' -> ' + kind
+        globalThis.__windowOpen = { label: label, handle: kind }
+      }
+      document.getElementById('open-window').addEventListener('click', function () {
+        record('window.open', window.open('/node-probe.html'))
+      })
+      document.getElementById('open-named').addEventListener('click', function () {
+        record(
+          'window.open features',
+          window.open('/node-probe.html', 'popup', 'width=200,height=200,nodeIntegration=yes'),
+        )
+      })
+    </script>
+  </body>
+</html>

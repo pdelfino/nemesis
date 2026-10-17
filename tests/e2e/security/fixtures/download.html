@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>download</title>
+  </head>
+  <body>
+    <h1>Downloads</h1>
+    <p>
+      One kilobyte served as an attachment, offered three ways (SECURITY.org, T2: downloads are
+      opt-in and quarantined).
+    </p>
+    <a id="download-link" href="/download.bin" download="nemesis-fixture.bin">download.bin</a>
+    <button id="download-click" type="button">click it for me</button>
+    <button id="download-navigate" type="button">navigate to it</button>
+    <script>
+      document.getElementById('download-click').addEventListener('click', function () {
+        document.getElementById('download-link').click()
+      })
+      document.getElementById('download-navigate').addEventListener('click', function () {
+        window.location.href = '/download.bin'
+      })
+    </script>
+  </body>
+</html>

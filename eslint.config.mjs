@@ -33,6 +33,13 @@ export default tseslint.config(
     },
   },
   {
+    // Repository scripts run under plain Node, outside any tsconfig.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },
+    },
+  },
+  {
     // The renderer never touches Node or Electron directly. SECURITY.org T1.
     files: ['src/renderer/**/*.ts'],
     rules: {

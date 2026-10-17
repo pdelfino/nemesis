@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>node probe</title>
+  </head>
+  <body>
+    <h1>Node probe</h1>
+    <p>
+      A hostile page looking for a way out of the renderer: Node globals, the module loader, and the
+      preload bridge Nemesis exposes to its own internal pages (SECURITY.org, T1).
+    </p>
+    <pre id="probe">pending</pre>
+    <p id="verdict">pending</p>
+    <script>
+      // Every name a page would use to reach Node, the app or the shell.
+      var names = [
+        'process',
+        'require',
+        'module',
+        'exports',
+        'global',
+        'Buffer',
+        '__dirname',
+        '__filename',
+        'setImmediate',
+        'electron',
+        'nemesis',
+      ]
+      var found = {}
+      var leaked = []
+      for (var i = 0; i < names.length; i += 1) {
+        var name = names[i]
+        var kind = 'undefined'
+        try {
+          kind = typeof globalThis[name]
+        } catch (error) {
+          kind = 'throws'
+        }
+        found[name] = kind
+        if (kind !== 'undefined') leaked.push(name)
+      }
+      document.getElementById('probe').textContent = JSON.stringify(found)
+      document.getElementById('verdict').textContent = leaked.length === 0 ? 'clean' : 'leaked'
+      // Left for a spec to read directly as well as through the DOM.
+      globalThis.__nodeProbe = { found: found, leaked: leaked }
+    </script>
+  </body>
+</html>

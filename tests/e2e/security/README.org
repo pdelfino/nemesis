@@ -1,3 +1,38 @@
 #+TITLE: Security specs
 
-One spec per row of the non-negotiables table in =SECURITY.org=. The harness and the hostile fixtures arrive with issue #46; until then this project passes with no tests on purpose (=--pass-with-no-tests=), so the gate stays honest about what exists.
+One spec per row of the non-negotiables table in =SECURITY.org=. A row without a
+failing spec is not a control yet, so the spec lands in the same pull request as
+the code it guards.
+
+* The harness
+
+=_harness.ts= is the only way a spec here starts the app. It gives every spec
+the same ground:
+
+- =launchNemesis()= builds on a throwaway =userData= directory, launches the
+  built app in =out/= with =NODE_ENV=test= so the main process resolves the
+  deterministic Agent SDK mock in =src/main/agent/mock.ts=, hands back the
+  cockpit window, and deletes the profile on =close()=.
+- =openPageBuffer(url)= loads a URL in its own hardened, preload-free
+  =WebContents=, the way a page buffer will hold one, and reports Chromium's
+  refusal in =loadError= when the load never commits.
+- =fixtureServer()= serves =fixtures/= on a random loopback port over plain HTTP
+  and on another over HTTPS, with a self-signed certificate issued at test time
+  by =_certificate.ts= (=node:crypto= signs but does not issue, so that file
+  encodes the X.509 structure in DER by hand rather than adding a dependency).
+  Both ports are printed when the server starts.
+
+=example.spec.ts= is that shape end to end. Copy it.
+
+* The fixtures
+
+| File                | For                                                             |
+|---------------------+-----------------------------------------------------------------|
+| =node-probe.html=   | =process=, =require=, the module loader, the preload bridge     |
+| =window-open.html=  | =window.open=, window features, =target=_blank=                 |
+| =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB) |
+| =injection.html=    | prompt-injection text, visible, hidden and in a comment         |
+| =permissions.html=  | one button per device or data permission, outcome per =li=      |
+
+The fixtures are hostile on purpose and harmless in fact: no fixture reaches the
+network, and nothing outside this directory is served.

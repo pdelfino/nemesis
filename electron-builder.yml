@@ -1,0 +1,15 @@
+# electron-builder configuration. Distribution proper (targets, signing,
+# notarization, updates) is milestone M5; what lives here now is the one piece
+# the security baseline needs: the afterPack hook that flips the Electron fuses
+# before the app is signed (SECURITY.org T1, #47).
+appId: com.pdelfino.nemesis
+productName: Nemesis
+afterPack: scripts/after-pack.mjs
+# OnlyLoadAppFromAsar and EnableEmbeddedAsarIntegrityValidation are fuses about
+# the asar, so there has to be one.
+asar: true
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
