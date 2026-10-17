@@ -24,11 +24,11 @@ docs/adr/            architecture decision records
 
 ## Gate
 
-`npm run gate` = typecheck, lint, unit tests, end-to-end smoke. It runs locally before every commit. CI is the second opinion. A pull request stays a draft until the gate is green locally.
+`npm run gate` = typecheck, lint, unit tests, end-to-end smoke. It runs locally before every commit. CI is the second opinion. Nothing is pushed with a red gate.
 
 ## Rules
 
-- One issue, one branch, one draft pull request. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
+- Interactive sessions commit straight to `main` after a green local gate (Pedro's call, 2026-10-17: speed over ceremony). The non-interactive queue works on `issue/<number>-<slug>` and opens a draft pull request, because nobody is watching it. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
 - Done means the issue's checklist is resolved: tick what landed, strike what was abandoned with a reason, bold what remains, then a one-line "verified with ..." comment.
 - No new dependency without a one-line justification in the pull request. No dependency that needs a lifecycle script. Prefer Electron and Node built-ins.
 - Security controls are test-first: the failing spec under `tests/e2e/security/` lands in the same pull request as the control.

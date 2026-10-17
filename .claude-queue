@@ -4,7 +4,7 @@ Issue #43 is the plan. Work only issues that carry a milestone, the `queue-ready
 
 ## Conventions for every issue
 
-- One branch per issue named `issue/<number>-<slug>`, one draft pull request, small commits with a Conventional Commits prefix. Explain why, not what.
+- One branch per issue named `issue/<number>-<slug>`, one draft pull request (the queue is unattended, so the pull request is its review surface; interactive sessions commit to main directly). Small commits with a Conventional Commits prefix. Explain why, not what.
 - Run `npm run gate` before every commit once package.json exists. Do not open the pull request for review with a red gate.
 - When the work is done: tick the issue checklist, strike abandoned items with a reason, bold anything that remains, post a one-line "verified with ..." comment naming the commands and specs, and label `claude-queue:solved`. If blocked, label `needs-pedro` with the exact question and stop.
 - Never add a dependency without a one-line justification in the pull request. Never add a dependency that needs a lifecycle script.

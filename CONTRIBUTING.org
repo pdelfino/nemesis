@@ -16,9 +16,9 @@ Nemesis is developed on macOS first and mostly by Claude Code under the rules in
 
 Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). Issues bigger than one file carry =## Approach= with the chosen design before anyone edits code. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment.
 
-* Pull requests
+* Commits and pull requests
 
-One issue, one branch (=issue/<number>-<slug>=), one draft pull request. Small commits with a Conventional Commits prefix. The pull request description names the issue, the Verify commands that were run, and any new dependency with its one-line justification.
+Interactive sessions commit straight to =main= after a green local gate; speed over ceremony is the maintainer's call. The unattended queue works on =issue/<number>-<slug>= and opens a draft pull request, which is its review surface. Small commits with a Conventional Commits prefix. A commit or pull request names the issue, the Verify commands that were run, and any new dependency with its one-line justification.
 
 Pull requests that touch =src/main/security/=, =src/preload/=, the permission bridge in =src/main/agent/=, =SECURITY.org= or =tests/e2e/security/= are reviewed interactively by the maintainer before merge, whoever authored them.
 
