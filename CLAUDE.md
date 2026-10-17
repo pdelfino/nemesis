@@ -1,6 +1,6 @@
 # Nemesis: instructions for Claude Code
 
-Read `README.org` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #42; every unit of work is an issue with `## Verify` and `## Do not touch`.
+Read `README.org` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #43; every unit of work is an issue with `## Verify` and `## Do not touch`.
 
 ## Stack (do not substitute)
 

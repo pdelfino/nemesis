@@ -66,7 +66,7 @@ Nemesis is not an anonymity browser and will never claim to be one. Its promise 
 
 * Status
 
-Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/42][#42]]. No application code before 2026-NOVEMBER-01: October is milestone M0, a week of living inside Emacs's agent-shell to learn what a Claude cockpit needs before building one.
+Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/43][#43]]. No application code before 2026-NOVEMBER-01: October is milestone M0, a week of living inside Emacs's agent-shell to learn what a Claude cockpit needs before building one.
 
 * Development setup
 
@@ -89,7 +89,7 @@ Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue
 * History
 
 - 2026-MAY-02: born as a Racket-native, macOS-only browser over WKWebView through an Objective-C bridge. Phase 0 scaffolding landed through claude-queue. The plan stalled before the FFI spike that was its go or no-go gate.
-- 2026-OCTOBER-17: pivot to TypeScript and Electron, cockpit first, after a long design review of Emacs, Nyxt, agent-shell, Pel, llm-lang and Pille. Racket-era issues 1 to 41 stay for the record; superseded ones are closed with a pointer to #42.
+- 2026-OCTOBER-17: pivot to TypeScript and Electron, cockpit first, after a long design review of Emacs, Nyxt, agent-shell, Pel, llm-lang and Pille. Racket-era issues 1 to 41 stay for the record; superseded ones are closed with a pointer to #43.
 
 * Repos and documents to study
 
