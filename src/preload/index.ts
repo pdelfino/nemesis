@@ -19,8 +19,9 @@ const base = {
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and
-// create-buffer is how they open a second transcript (#60). Both exist only
-// under test; the shipped surface does not carry them.
+// create-buffer is how they open a second transcript (#60). Both are gated at
+// runtime on NODE_ENV=test: the shipped bundle carries the code and exposes
+// neither unless the process was launched with that variable set.
 const api: NemesisApi = Object.freeze(
   process.env['NODE_ENV'] === 'test'
     ? {
