@@ -1,14 +1,27 @@
 # macOS
 .DS_Store
 
-# Racket
-compiled/
-doc/
+# Node / Electron
+node_modules/
+dist/
+out/
+release/
+*.tsbuildinfo
+npm-debug.log*
+
+# Tests
+coverage/
+playwright-report/
+test-results/
+
+# Local secrets and env (never committed; the SDK uses the claude CLI login)
+.env
+.env.*
 
 # Editor backups
 *~
 .#*
 \#*\#
 
-# Claude Code per-project state
+# Claude Code per-project state (CLAUDE.md at the root is tracked)
 .claude/
