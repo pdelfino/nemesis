@@ -16,6 +16,12 @@ import { SessionRecorder } from './transcripts'
 const userData = process.env['NEMESIS_USER_DATA']
 if (userData) app.setPath('userData', userData)
 
+// The mark (#91). A development run is the stock Electron binary, which shows
+// the Electron logo in the Dock and the app switcher unless the app sets its
+// own; the packaged .app carries the icon in its bundle instead (#35), so the
+// path into the checkout is only resolved when there is a checkout to resolve.
+const iconPath = app.isPackaged ? undefined : join(__dirname, '../../resources/icon-512.png')
+
 app.on('web-contents-created', (_event, contents) => {
   // Interim guard until #48 lands: no page may attach a <webview>.
   contents.on('will-attach-webview', (event) => event.preventDefault())
@@ -41,6 +47,9 @@ function createWindow(): BrowserWindow {
     height: 800,
     show: false,
     title: 'Nemesis',
+    // Windows and Linux take the window icon from here; macOS ignores it and
+    // reads the Dock icon set below.
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: internalPagePreferences(join(__dirname, '../preload/index.js')),
   })
   win.once('ready-to-show', () => win.show())
@@ -75,6 +84,8 @@ function readSettings(): Settings {
 }
 
 void app.whenReady().then(() => {
+  // app.dock exists on macOS only.
+  if (iconPath && app.dock) app.dock.setIcon(iconPath)
   const settings = readSettings()
   // The buffer list is the spine: the keymap and, later, the palette act on
   // it, so it exists before the window that shows it (#60).
