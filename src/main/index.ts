@@ -11,6 +11,7 @@ import {
   DOWNLOAD_SOURCE,
   EXTERNAL_SOURCE,
   OPEN_FILE_SOURCE,
+  VERIFY_SOURCE,
 } from './commands/confirm'
 import { installKeyBridge } from './commands/key-bridge'
 import {
@@ -50,7 +51,7 @@ import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
-import { Verifier } from './verify'
+import { Verifier, verifyQuestion } from './verify'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
@@ -282,12 +283,15 @@ void app.whenReady().then(() => {
   // The verify key (#81): the check of the attached issue, else the settings'
   // verify entry, else npm run gate, run as a child of the cockpit with the
   // user's permissions in the folder it was started in, never through the
-  // agent's tool path. The issue comes through the user's own gh login.
+  // agent's tool path. The issue comes through the user's own gh login, and
+  // its command, remote text, is confirmed in the prompt buffer before its
+  // first run (#98).
   const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
   const verifier = new Verifier({
     cwd: process.cwd(),
     settingsCommand: settings.verify,
     issueBody: () => issues.current?.body ?? null,
+    confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
   })
   // A window of the screen into the prompt as an image (#81): the system's
   // capture under the user's screen-recording permission, the file written

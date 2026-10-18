@@ -26,12 +26,15 @@ export interface LaunchedApp {
  *
  * A spec that needs a setting (the appearance pin of #33, for one) passes it
  * in `settings`; the keys are merged over the profile's own, so a spec can
- * even point the sessions folder elsewhere.
+ * even point the sessions folder elsewhere. A spec that needs the main
+ * process to see an environment variable (a PATH with a fake `gh` first on
+ * it, #98) passes it in `env`, merged over the test runner's own.
  */
 export async function launchApp(
   prefix = 'nemesis-e2e-',
   chromiumSwitches: readonly string[] = [],
   settings: Readonly<Record<string, unknown>> = {},
+  env: Readonly<Record<string, string>> = {},
 ): Promise<LaunchedApp> {
   const userData = mkdtempSync(join(tmpdir(), prefix))
   const sessionsDir = join(userData, 'sessions')
@@ -56,6 +59,7 @@ export async function launchApp(
       NODE_ENV: 'test',
       NEMESIS_USER_DATA: userData,
       NEMESIS_DOWNLOADS: downloadsDir,
+      ...env,
     },
   })
   return { app, userData, sessionsDir, downloadsDir }

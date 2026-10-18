@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 import { launchApp } from './_launch'
 
@@ -61,8 +62,44 @@ function eventsIn(sessionsDir: string, id: string): AgentEvent[] {
     .map((line) => JSON.parse(line) as AgentEvent)
 }
 
+/** The palette's candidates in order, the highlighted one starred. */
+function candidates(page: Page): Promise<string[]> {
+  return page
+    .locator('#palette-candidates li')
+    .evaluateAll((items) =>
+      items.map(
+        (item) =>
+          `${item.firstChild?.textContent ?? ''}${item.getAttribute('aria-selected') === 'true' ? ' *' : ''}`,
+      ),
+    )
+}
+
 /** The fake check: output on both streams and a telling exit code, through the user's shell. */
 const CHECK = 'echo check output; echo check error 1>&2; exit 3'
+
+/** The check the fixture issue's Verify section names: remote text, confirmed before it runs (#98). */
+const ISSUE_CHECK = 'echo issue evidence; exit 5'
+
+/**
+ * A folder with a fake `gh` first on the PATH: attach-issue runs `gh issue
+ * view`, and this one answers with the fixture issue whatever the number.
+ */
+function fakeGh(): string {
+  const bin = mkdtempSync(join(tmpdir(), 'nemesis-gh-'))
+  mkdirSync(join(bin, 'bin'))
+  writeFileSync(
+    join(bin, 'issue.json'),
+    JSON.stringify({
+      number: 98,
+      title: 'Confirm the check',
+      body: `## Why\nRemote text.\n\n## Verify\n- \`${ISSUE_CHECK}\` prints the evidence.\n`,
+    }),
+  )
+  writeFileSync(join(bin, 'bin', 'gh'), '#!/bin/sh\ncat "$(dirname "$0")/../issue.json"\n', {
+    mode: 0o755,
+  })
+  return join(bin, 'bin')
+}
 
 // The guide's first practice as keys (#81): C-c C-v runs the check the
 // settings name (no issue is attached, so the issue source is skipped) with
@@ -70,9 +107,16 @@ const CHECK = 'echo check output; echo check error 1>&2; exit 3'
 // evidence block folded under a header with the exit code; a test run the
 // agent makes through its shell tool is evidence too; attach-check adds a
 // criterion to the prompt from two reads, the verify command as the
-// candidate for the check.
-test('verify runs the settings check into an evidence block with its exit code, a test run of the agent is evidence, attach-check adds a criterion to the prompt', async () => {
-  const { app, sessionsDir } = await launchApp('nemesis-e2e-', [], { verify: CHECK })
+// candidate for the check. Once an issue is attached, its command is remote
+// text: the key asks in the prompt buffer with "Do not run" first, a RET
+// refuses, the yes runs it and holds for the next press (#98).
+test('verify runs the settings check into an evidence block with its exit code, a test run of the agent is evidence, attach-check adds a criterion to the prompt, an attached issue is confirmed before it runs', async () => {
+  const { app, sessionsDir } = await launchApp(
+    'nemesis-e2e-',
+    [],
+    { verify: CHECK },
+    { PATH: `${fakeGh()}${delimiter}${process.env['PATH'] ?? ''}` },
+  )
   try {
     const page = await app.firstWindow()
     await page.waitForLoadState('domcontentloaded')
@@ -170,6 +214,63 @@ test('verify runs the settings check into an evidence block with its exit code, 
     await page.keyboard.press('Control+c')
     await expect(transcript).toContainText('You said: Example cases: a@b.com is true')
     await expect(prompt).toHaveText('')
+
+    // attach-issue, through the fake gh: the notice names the command.
+    await runCommand(page, 'attach-issue')
+    await expect(page.locator('#palette-prompt')).toHaveText('Attach issue:')
+    await page.keyboard.type('98')
+    await page.keyboard.press('Enter')
+    await expect
+      .poll(() => lines(page))
+      .toContain(`Attached issue #98: Confirm the check. C-c C-v runs its check: ${ISSUE_CHECK}.`)
+    await expect(prompt).toBeFocused()
+
+    // C-c C-v asks, the exact command in the prompt line and "Do not run"
+    // highlighted: RET refuses, nothing runs, no evidence lands.
+    const palette = page.locator('#palette')
+    const issueEvidence = async (): Promise<number> =>
+      (await events(page)).filter((event) => event.type === 'evidence' && event.source === 'issue')
+        .length
+    await page.keyboard.press('Control+c')
+    await page.keyboard.press('Control+v')
+    await expect(palette).toBeVisible()
+    await expect(page.locator('#palette-prompt')).toHaveText(
+      `Run the attached issue's check in a shell? ${ISSUE_CHECK}`,
+    )
+    expect(await candidates(page)).toEqual(['Do not run *', 'Run it with your permissions'])
+    await page.keyboard.press('Enter')
+    await expect(palette).toBeHidden()
+    await expect.poll(() => lines(page)).toContain(`Not run: ${ISSUE_CHECK}`)
+    expect(await lines(page)).not.toContain(`Verifying: ${ISSUE_CHECK} (from the attached issue)`)
+    expect(await issueEvidence()).toBe(0)
+    await expect(prompt).toBeFocused()
+
+    // A second C-c C-v asks again; the yes candidate runs it into an evidence block.
+    await page.keyboard.press('Control+c')
+    await page.keyboard.press('Control+v')
+    await expect(palette).toBeVisible()
+    await page.keyboard.press('Control+n')
+    expect(await candidates(page)).toEqual(['Do not run', 'Run it with your permissions *'])
+    await page.keyboard.press('Enter')
+    await expect
+      .poll(() => lines(page))
+      .toContain(`Verifying: ${ISSUE_CHECK} (from the attached issue)`)
+    await expect
+      .poll(async () => lineStarting(await lines(page), `Evidence: ${ISSUE_CHECK} (exit 5, `))
+      .toMatch(/^Evidence: .* \(exit 5, \d+\.\ds\)…$/)
+    await expect.poll(issueEvidence).toBe(1)
+    expect((await events(page)).find((event) => event.source === 'issue')).toMatchObject({
+      command: ISSUE_CHECK,
+      exitCode: 5,
+      output: 'issue evidence\n',
+    })
+    await expect(prompt).toBeFocused()
+
+    // The yes holds for the session: a third press runs without a question.
+    await page.keyboard.press('Control+c')
+    await page.keyboard.press('Control+v')
+    await expect.poll(issueEvidence).toBe(2)
+    await expect(palette).toBeHidden()
   } finally {
     await app.close()
   }

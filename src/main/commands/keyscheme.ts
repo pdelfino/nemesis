@@ -18,7 +18,7 @@ import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
-import { describeSource, Verifier } from '../verify'
+import { describeSource, Verifier, verifyQuestion } from '../verify'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -33,6 +33,7 @@ import {
   investigatePrompt,
   screenshotPrompt,
 } from './guide-prompts'
+import { confirm, VERIFY_SOURCE } from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -126,10 +127,11 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       cwd: process.cwd(),
       fetch: () => Promise.reject(new CommandError('No issue fetcher is installed')),
     })
+  const prompter = partial.prompter ?? new Prompter()
   return {
     buffers,
     permissions,
-    prompter: partial.prompter ?? new Prompter(),
+    prompter,
     help: partial.help ?? new HelpBuffers(buffers),
     keys: partial.keys ?? new KeyReader(),
     agent,
@@ -147,7 +149,9 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.plans ??
       new PlanBuffers(buffers, permissions, { leavePlanMode: () => agent.leavePlanMode() }),
     specs: partial.specs ?? new SpecBuffers(buffers),
-    // Without the app there is no gh login, no shell to run a check in and no screen.
+    // Without the app there is no gh login, no shell to run a check in and no
+    // screen; the question before an issue's command still goes through the
+    // prompter (#98).
     issues,
     verifier:
       partial.verifier ??
@@ -155,6 +159,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         cwd: process.cwd(),
         settingsCommand: null,
         issueBody: () => issues.current?.body ?? null,
+        confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
         run: () =>
           Promise.resolve({
             exitCode: null,
@@ -279,6 +284,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       name: 'new-task',
       doc: 'Start a fresh session in this window; the next prompt carries no context over.',
       run: () => {
+        // A fresh session forgets the yes given to an issue's check (#98).
+        verifier.forgetApprovals()
         agent.newTask().catch(report('new-task'))
       },
     }),
@@ -286,6 +293,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       name: 'clear',
       doc: 'Clear the context: a fresh session in this window, as /clear does between tasks.',
       run: () => {
+        verifier.forgetApprovals()
         agent.newTask().catch(report('clear'))
       },
     }),
@@ -333,6 +341,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       doc: 'Resume a past session: its transcript is shown and the next prompt continues it.',
       run: () => {
         prompter.read({ source: 'sessions', prompt: 'Resume session:' }, async (id) => {
+          verifier.forgetApprovals()
           await agent.resume(id, sessions.history(id))
         })
       },
@@ -353,6 +362,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             prompter.read({ source: 'matches', prompt }, async (id) => {
               const match = transcripts.matches[Number(id)]
               if (match === undefined) return
+              verifier.forgetApprovals()
               await agent.resume(match.sessionId, sessions.history(match.sessionId))
               const transcript = buffers.list().find((buffer) => buffer.kind === 'transcript')
               if (transcript !== undefined) buffers.switchTo(transcript.id)
@@ -451,6 +461,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         const spec = specs.current
         if (spec === null) throw new CommandError('No spec buffer is open')
         specs.take(spec.bufferId)
+        verifier.forgetApprovals()
         agent
           .newTask()
           .then(() => prompts.submit(freshSessionPrompt(spec.filePath, spec.text)))
@@ -480,6 +491,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           async (text) => {
             try {
               await issues.attach(text)
+              // A new attach, even of the same issue, asks before its check runs (#98).
+              verifier.forgetApprovals()
             } catch (error) {
               help.show(
                 `Could not attach the issue: ${error instanceof Error ? error.message : String(error)}`,
