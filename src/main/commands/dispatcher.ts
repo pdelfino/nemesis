@@ -98,7 +98,7 @@ export class KeyDispatcher {
   private readonly records: DispatchRecord[] = []
 
   constructor(
-    private readonly registry: CommandRegistry,
+    readonly registry: CommandRegistry,
     private readonly resolver: KeyResolver,
     private readonly reader: KeyReader = new KeyReader(),
   ) {}

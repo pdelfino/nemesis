@@ -6,9 +6,14 @@ import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
 import { confirm, CONFIRM_SOURCES, DOWNLOAD_SOURCE, EXTERNAL_SOURCE } from './commands/confirm'
 import { installKeyBridge } from './commands/key-bridge'
-import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyscheme'
+import {
+  cockpitKeymapLayers,
+  createCockpitDispatcher,
+  resolveCockpitDeps,
+} from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
+import { installMenu } from './menu'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
 import { describeExternal, ExternalPolicy } from './security/external'
@@ -216,7 +221,11 @@ void app.whenReady().then(() => {
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({ prompter: deps.prompter, help: deps.help })
   // Keys mean nothing until the registry and the keymaps are up (#59).
-  installKeyBridge(createCockpitDispatcher(deps))
+  const dispatcher = createCockpitDispatcher(deps)
+  installKeyBridge(dispatcher)
+  // The menu bar lists every command with its chord as text (#30). Built once
+  // here; a reload of the keymaps (#71) calls installMenu again.
+  installMenu(dispatcher.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged })
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

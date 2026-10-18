@@ -8,7 +8,7 @@ import type { BufferType } from '../../shared/keys'
 
 /** Where the invocation came from, for commands that care. */
 export interface CommandContext {
-  readonly source: 'key' | 'palette' | 'test'
+  readonly source: 'key' | 'palette' | 'menu' | 'test'
   /** The chord that ran it, in Emacs notation, when a key did. */
   readonly chord?: string
   readonly bufferType?: BufferType | null
