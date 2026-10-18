@@ -33,6 +33,11 @@ export interface ReadSpec {
   readonly source: string
   /** The words before the query: `M-x`, `Describe command:`. */
   readonly prompt: string
+  /**
+   * Called when the read ends without a choice: `C-g`, or a newer read
+   * taking its place. A confirmation (#51) needs the no as much as the yes.
+   */
+  readonly onCancel?: (() => void) | undefined
 }
 
 /** What to do with the choice. Not called on a cancel. */
@@ -45,6 +50,7 @@ export type PaletteListener = (request: PaletteRequest) => void
 interface PendingRead {
   readonly request: PaletteRequest
   readonly consume: PaletteConsumer
+  readonly cancel: (() => void) | undefined
 }
 
 export class Prompter {
@@ -84,7 +90,9 @@ export class Prompter {
       prompt: spec.prompt,
       candidates: source.candidates(),
     }
-    this.current = { request, consume }
+    const dropped = this.current
+    this.current = { request, consume, cancel: spec.onCancel }
+    dropped?.cancel?.()
     for (const listener of [...this.listeners]) listener(request)
     return request
   }
@@ -98,7 +106,10 @@ export class Prompter {
     const read = this.current
     if (read === null || read.request.id !== answer.id) return {}
     this.current = null
-    if (answer.choice === null) return {}
+    if (answer.choice === null) {
+      read.cancel?.()
+      return {}
+    }
     if (!read.request.candidates.some((candidate) => candidate.id === answer.choice)) {
       throw new CommandError(`"${answer.choice}" is not among the candidates`)
     }

@@ -38,7 +38,7 @@ the same ground:
 | =window-open.html=  | =window.open=, window features, =target=_blank=                 |
 | =navigation.html=   | =location= set to =file:=, a =javascript:= URL and a top-level =data:= URL |
 | =webview.html=      | a =webview= tag in markup and by script, =allowpopups= asked for |
-| =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB) |
+| =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB); a =mailto:= and a custom-scheme link |
 | =injection.html=    | prompt-injection text, visible, hidden and in a comment         |
 | =permissions.html=  | one button per device or data permission, outcome per =li=      |
 | =pwned.js=          | a remote script the internal page's CSP must refuse to fetch    |

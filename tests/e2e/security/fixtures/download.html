@@ -13,6 +13,11 @@
     <a id="download-link" href="/download.bin" download="nemesis-fixture.bin">download.bin</a>
     <button id="download-click" type="button">click it for me</button>
     <button id="download-navigate" type="button">navigate to it</button>
+    <p>
+      Two links to handlers rather than pages (T2: external protocols prompt, never auto-launch).
+    </p>
+    <a id="mailto-link" href="mailto:nyx@example.org?subject=Nemesis">write to nyx</a>
+    <a id="custom-link" href="zoommtg://zoom.us/join?confno=1">join a call</a>
     <script>
       document.getElementById('download-click').addEventListener('click', function () {
         document.getElementById('download-link').click()

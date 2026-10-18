@@ -1,13 +1,17 @@
 import { app, BrowserWindow, session } from 'electron'
 import { join } from 'node:path'
 import { PermissionBridge } from './agent/permission-bridge'
-import { installSessionBridge } from './agent/session-bridge'
+import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
+import { confirm, CONFIRM_SOURCES, DOWNLOAD_SOURCE, EXTERNAL_SOURCE } from './commands/confirm'
 import { installKeyBridge } from './commands/key-bridge'
 import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
+import { Prompter } from './commands/prompter'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
+import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
+import { describeExternal, ExternalPolicy } from './security/external'
 import { COCKPIT_URL, registerInternalScheme, serveInternalPages } from './security/internal-scheme'
 import { applyNavigationPolicy } from './security/navigation-policy'
 import {
@@ -26,6 +30,9 @@ import { SessionRecorder } from './transcripts'
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
 if (userData) app.setPath('userData', userData)
+// And at a throwaway downloads folder, so no spec leaves a file in ~/Downloads (#51).
+const downloadsPath = process.env['NEMESIS_DOWNLOADS']
+if (downloadsPath) app.setPath('downloads', downloadsPath)
 
 // T3 (#50): internal pages live on nemesis://app, a privileged scheme that
 // Electron only accepts before the app is ready. The handler that serves it
@@ -44,12 +51,28 @@ const iconPath = app.isPackaged ? undefined : join(__dirname, '../../resources/i
 const permissionPolicy = new PermissionPolicy()
 app.on('will-quit', () => permissionPolicy.clear())
 
+// T2 (#51): a download or an external link is a question in the prompt
+// buffer before anything lands or launches. The prompter exists this early so
+// the two policies can ask through it; the palette commands share it below.
+const prompter = new Prompter()
+const downloads = new DownloadPolicy({
+  quarantineDir: join(app.getPath('downloads'), QUARANTINE_FOLDER),
+  confirm: (request) => confirm(prompter, DOWNLOAD_SOURCE, describeDownload(request)),
+})
+const external = new ExternalPolicy({
+  confirm: (request) => confirm(prompter, EXTERNAL_SOURCE, describeExternal(request)),
+})
+
 app.on('web-contents-created', (_event, contents) => {
   // T6 (#49): whatever partition this WebContents uses gets the deny-by-default
   // handlers the moment it exists, so a partition the app creates later (#54)
   // cannot miss them. Electron grants everything on a session without them.
   permissionPolicy.apply(contents.session)
   permissionPolicy.watch(contents)
+  // T2 (#51): downloads on whatever session this WebContents uses are
+  // refused until the user says yes, and a link to an external handler asks.
+  downloads.apply(contents.session)
+  external.watch(contents)
   // T7 (#54): WebRTC uses the public interface only. Electron keeps the
   // setting per WebContents, so it is applied here, to every one.
   applyWebRTCPolicy(contents)
@@ -124,6 +147,21 @@ function readSettings(): Settings {
  */
 const REQUEST_LOG = '__nemesisRequests'
 
+/** The URLs handed to the system, for the downloads spec (#51). Main process only, under test only. */
+const EXTERNAL_LOG = '__nemesisExternal'
+
+/** One stream of the cockpit's own notices out of several policies. */
+function mergeNotices(...sources: readonly EventSource[]): EventSource {
+  return {
+    on: (listener) => {
+      const offs = sources.map((source) => source.on(listener))
+      return () => {
+        for (const off of offs) off()
+      }
+    },
+  }
+}
+
 void app.whenReady().then(() => {
   // T3 (#50): the built renderer is served on nemesis://app before the
   // cockpit window asks for it. The dev server path above skips this origin.
@@ -132,6 +170,9 @@ void app.whenReady().then(() => {
   // handlers and the WebRTC policy, before any WebContents exists. The page
   // buffer (#73) names its partition from this module.
   const partitions = createPartitions(permissionPolicy)
+  for (const one of [session.defaultSession, partitions.persistent, partitions.ephemeral]) {
+    downloads.apply(one)
+  }
   if (process.env['NODE_ENV'] === 'test') {
     // Installed before the cockpit window loads, so the first request the
     // app makes is already in the log the spec reads.
@@ -141,6 +182,7 @@ void app.whenReady().then(() => {
       [EPHEMERAL_PARTITION]: partitions.ephemeral,
     })
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
+    ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
@@ -162,10 +204,12 @@ void app.whenReady().then(() => {
     permissions,
     recorder,
     model: settings.model,
-    notices: permissionPolicy,
+    notices: mergeNotices(permissionPolicy, downloads, external),
   })
-  // The palette reads a choice for a command, and help answers in a buffer (#65).
-  const deps = resolveCockpitDeps({ buffers, permissions })
+  // The palette reads a choice for a command, and help answers in a buffer (#65);
+  // the same prompter reads the yes or no of a download or an external link (#51).
+  const deps = resolveCockpitDeps({ buffers, permissions, prompter })
+  for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({ prompter: deps.prompter, help: deps.help })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   installKeyBridge(createCockpitDispatcher(deps))

@@ -159,6 +159,8 @@ export interface Nemesis {
   readonly window: Page
   /** The throwaway profile, deleted by `close`. */
   readonly userData: string
+  /** The downloads path of this launch, inside the profile; the quarantine folder is under it (#51). */
+  readonly downloadsDir: string
   /**
    * Opens a URL in a hardened, preload-free WebContents, as a page buffer.
    * `withPreload` attaches the cockpit's preload to the hostile page instead,
@@ -182,7 +184,7 @@ export async function launchNemesis(): Promise<Nemesis> {
   // request reaches the handler, which is the control under test. The
   // switch grants nothing: that would be `--use-fake-ui-for-media-stream`,
   // which no spec may pass.
-  const { app, userData } = await launchApp('nemesis-security-', [
+  const { app, userData, downloadsDir } = await launchApp('nemesis-security-', [
     '--use-fake-device-for-media-stream',
   ])
   const window = await app.firstWindow()
@@ -242,6 +244,7 @@ export async function launchNemesis(): Promise<Nemesis> {
     app,
     window,
     userData,
+    downloadsDir,
     openPageBuffer,
     close: async () => {
       for (const buffer of buffers.reverse()) {
