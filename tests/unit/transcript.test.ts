@@ -124,8 +124,11 @@ describe('the transcript document', () => {
       user,
       { type: 'context-usage', usedTokens: 2000, windowTokens: 200_000 },
       { type: 'nudge', text: '2 corrections in a row' },
+      { type: 'permission-mode', mode: 'plan' },
     )
-    expect(state.doc.toString()).toBe(['You', 'hello', '', '2 corrections in a row'].join('\n'))
+    expect(state.doc.toString()).toBe(
+      ['You', 'hello', '', '2 corrections in a row', '', 'Permission mode: plan'].join('\n'),
+    )
     expect(
       transactionFor(state, { type: 'context-usage', usedTokens: 1, windowTokens: 2 }),
     ).toBeNull()

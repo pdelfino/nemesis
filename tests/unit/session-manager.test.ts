@@ -6,6 +6,7 @@ import { PromptQueue } from '../../src/main/agent/prompt-queue'
 import { denyEveryTool } from '../../src/main/agent/session'
 import {
   describeCheckpoints,
+  PLAN_MODE_REMINDER,
   SessionManager,
   undoPrompt,
 } from '../../src/main/agent/session-manager'
@@ -153,6 +154,48 @@ describe('the session manager', () => {
     expect(events.slice(before)).toEqual([
       { type: 'notice', text: 'Resume: mock-session is already the current session.' },
     ])
+    await agent.stop()
+  })
+
+  it('starts the session in the mode set before it, and tells the running one of a change (#82)', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    expect(agent.permissionMode).toBe('default')
+    expect(await agent.togglePlanMode()).toBe('plan')
+    expect(events).toEqual([
+      { type: 'permission-mode', mode: 'plan' },
+      { type: 'nudge', text: PLAN_MODE_REMINDER },
+    ])
+    let turn = nextTurn(agent)
+    await agent.send('hello')
+    await turn
+    expect(events.find((event) => event.type === 'started')).toMatchObject({
+      permissionMode: 'plan',
+    })
+    // Off again: the session is told, no second callout.
+    expect(await agent.togglePlanMode()).toBe('default')
+    expect(await agent.togglePlanMode()).toBe('plan')
+    expect(events.filter((event) => event.type === 'nudge')).toHaveLength(1)
+    // An approved plan goes back to the mode plan mode replaced.
+    await agent.leavePlanMode()
+    expect(agent.permissionMode).toBe('default')
+    await agent.leavePlanMode()
+    expect(
+      events
+        .filter((event) => event.type === 'permission-mode')
+        .map((e) => (e.type === 'permission-mode' ? e.mode : '')),
+    ).toEqual(['plan', 'default', 'plan', 'default'])
+    // A fresh session owes the callout again.
+    await agent.newTask()
+    await agent.togglePlanMode()
+    expect(events.filter((event) => event.type === 'nudge')).toHaveLength(2)
+    turn = nextTurn(agent)
+    await agent.send('again')
+    await turn
+    expect(events.filter((event) => event.type === 'started').at(-1)).toMatchObject({
+      sessionId: 'mock-session-2',
+      permissionMode: 'plan',
+    })
     await agent.stop()
   })
 

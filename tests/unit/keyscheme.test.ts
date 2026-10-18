@@ -55,6 +55,11 @@ describe('the default Emacs keyscheme (#59)', () => {
     // A diff buffer's file opens on the Org key for a link (#68).
     expect(BUFFER_KEYMAPS.diff?.commandFor('C-c C-o')).toBe('open-diff-file')
     expect(GLOBAL_KEYMAP.commandFor('C-c C-o')).toBeUndefined()
+    // Plan mode as a key, and the plan buffer's approve and reject over the
+    // global send and compact (#82).
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-p')).toBe('toggle-plan-mode')
+    expect(BUFFER_KEYMAPS.plan?.commandFor('C-c C-c')).toBe('approve-plan')
+    expect(BUFFER_KEYMAPS.plan?.commandFor('C-c C-k')).toBe('reject-plan')
   })
 
   it('registers every command a keymap names', () => {

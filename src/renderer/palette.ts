@@ -205,7 +205,8 @@ function activeBufferType(): BufferType | null {
     value === 'transcript' ||
     value === 'permission' ||
     value === 'help' ||
-    value === 'diff'
+    value === 'diff' ||
+    value === 'plan'
     ? value
     : null
 }

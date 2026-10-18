@@ -70,6 +70,7 @@ describe('the Org rendering', () => {
     const text = render([
       { type: 'nudge', text: '2 corrections in a row' },
       { type: 'context-usage', usedTokens: 1, windowTokens: 2 },
+      { type: 'permission-mode', mode: 'plan' },
     ])
     expect(text).toBe(
       [
@@ -77,6 +78,8 @@ describe('the Org rendering', () => {
         '#+date: [2026-10-17 Sat 12:30]',
         '',
         '- 2 corrections in a row',
+        '',
+        '- Permission mode: plan',
         '',
       ].join('\n'),
     )

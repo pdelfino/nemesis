@@ -168,6 +168,17 @@ export interface AgentNudgeEvent {
   readonly text: string
 }
 
+/**
+ * The permission mode changed (#82): plan mode toggled on or off, or a plan
+ * approved and the session back in the mode plan mode replaced. The mode
+ * line shows the mode at all times from this and from `started`; the
+ * transcript notes it.
+ */
+export interface AgentPermissionModeEvent {
+  readonly type: 'permission-mode'
+  readonly mode: AgentPermissionMode
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -184,6 +195,7 @@ export type AgentEvent =
   | AgentNoticeEvent
   | AgentContextUsageEvent
   | AgentNudgeEvent
+  | AgentPermissionModeEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

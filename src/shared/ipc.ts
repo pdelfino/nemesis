@@ -40,6 +40,7 @@ import type {
   KeyOutcome,
   KeyPress,
 } from './keys'
+import type { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL, PlanAnswer, PlanContent } from './plan'
 import type {
   HELP_SHOWN_CHANNEL,
   HelpContent,
@@ -65,6 +66,7 @@ export interface InvokeChannels {
   readonly [PROMPT_DRAFT_CHANNEL]: { payload: string; answer: void }
   readonly [PROMPT_STATE_CHANNEL]: { payload: undefined; answer: PromptState }
   readonly [PALETTE_ANSWER_CHANNEL]: { payload: PaletteAnswer; answer: PaletteOutcome }
+  readonly [PLAN_ANSWER_CHANNEL]: { payload: PlanAnswer; answer: void }
 }
 
 /** Main to renderer, pushed: `webContents.send` on one side, `ipcRenderer.on` on the other. */
@@ -76,6 +78,7 @@ export interface PushChannels {
   readonly [HELP_SHOWN_CHANNEL]: HelpContent
   readonly [TRANSCRIPT_GOTO_CHANNEL]: TranscriptGoto
   readonly [DIFF_SHOWN_CHANNEL]: DiffContent
+  readonly [PLAN_SHOWN_CHANNEL]: PlanContent
 }
 
 export type InvokeChannel = keyof InvokeChannels

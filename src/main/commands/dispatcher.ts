@@ -14,7 +14,14 @@ import type { CommandRegistry } from './registry'
  * process resolves it against the keymaps and runs the command.
  */
 
-const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission', 'help', 'diff']
+const BUFFER_TYPES: readonly BufferType[] = [
+  'prompt',
+  'transcript',
+  'permission',
+  'help',
+  'diff',
+  'plan',
+]
 
 /** How many dispatches are kept in memory for describe and for the tests. */
 const LOG_LIMIT = 200

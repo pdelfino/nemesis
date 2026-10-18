@@ -28,6 +28,11 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *                 line `beta` replaced by the text, then the reply (#68)
  *   `ask: ...`    an AskUserQuestion with three options through `canUseTool`,
  *                 then `You chose: <answer>` (#63)
+ *   `plan: ...`   an ExitPlanMode call through `canUseTool` with a two-step
+ *                 plan for the text as its `plan`, as the CLI injects the
+ *                 plan file's content; allowed, the reply quotes the plan
+ *                 as approved, the edited one when `updatedInput` carried
+ *                 it, and denied, the reply quotes the feedback (#82)
  *   `stream: ...` text frames `... 1`, `... 2`, one every few ms, until the
  *                 turn is interrupted; the turn then ends as the CLI ends an
  *                 interrupted one, with an error result (#84)
@@ -54,7 +59,7 @@ import type { AgentDriver, AgentQueryHandle } from './session'
 
 const MOCK_MODEL = 'claude-mock-1'
 const MOCK_SESSION_ID = 'mock-session'
-const MOCK_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'AskUserQuestion'] as const
+const MOCK_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'AskUserQuestion', 'ExitPlanMode'] as const
 /** The file every `edit:` prompt edits, and what it held before (#68). */
 const MOCK_FILE = '/mock/notes.txt'
 const MOCK_FILE_TEXT = 'alpha\nbeta\ngamma\n'
@@ -68,6 +73,9 @@ const INTERRUPTED = 'Interrupted by the user'
 const MOCK_CONTEXT_WINDOW = 200_000
 /** What a turn adds to the context, and what a fresh or compacted one holds. */
 const TURN_TOKENS = 2_000
+
+/** Where every `plan:` prompt says its plan file is; the file never exists (#82). */
+const MOCK_PLAN_FILE = '/mock/plans/plan.md'
 
 /** The three options every `ask:` prompt offers; the spec answers with `2` (#63). */
 const MOCK_OPTIONS = [
@@ -282,6 +290,35 @@ class MockQuery implements AgentQueryHandle {
       )
       yield this.assistant([{ type: 'text', text: reply, citations: null }])
       yield this.result(reply)
+      return
+    }
+
+    if (prompt.startsWith('plan:')) {
+      const goal = prompt.slice(5).trim() || 'do the thing'
+      const toolUseId = `mock-tool-${this.turns}`
+      const plan = `# Plan\n\n1. ${goal}\n2. Run the gate\n`
+      const input = { plan, planFilePath: MOCK_PLAN_FILE }
+      yield this.assistant([{ type: 'tool_use', id: toolUseId, name: 'ExitPlanMode', input }])
+      const decision = await this.ask('ExitPlanMode', input)
+      if (decision.behavior === 'allow') {
+        // The CLI reads the edited plan off the updated input, when the user edited it.
+        const approved = decision.updatedInput?.['plan']
+        const text = typeof approved === 'string' ? approved : plan
+        const edited = text !== plan
+        yield this.toolResult(
+          toolUseId,
+          `User has approved your plan${edited ? ' (edited by user)' : ''}.\n\n## Approved Plan:\n${text}`,
+          false,
+        )
+        const reply = `Approved plan${edited ? ', as you edited it' : ''}:\n${text}`
+        yield this.assistant([{ type: 'text', text: reply, citations: null }])
+        yield this.result(reply)
+      } else {
+        yield this.toolResult(toolUseId, decision.message, true)
+        const reply = `Plan sent back with feedback:\n${decision.message}`
+        yield this.assistant([{ type: 'text', text: reply, citations: null }])
+        yield this.result(reply)
+      }
       return
     }
 

@@ -12,6 +12,7 @@ import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
 import { HelpBuffers } from '../help'
+import { PlanBuffers } from '../plans'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
 import type { KeymapLayer } from './describe'
@@ -22,7 +23,7 @@ import { defineKeymap, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
-import { CommandRegistry, defineCommand } from './registry'
+import { CommandError, CommandRegistry, defineCommand } from './registry'
 
 /**
  * The default Emacs keyscheme for the cockpit (#59).
@@ -49,7 +50,11 @@ import { CommandRegistry, defineCommand } from './registry'
  * instruction, `side-question` asks a throwaway fork and answers in the help
  * buffer, and `correct` counts the next prompt as a correction. The diffs
  * of the session (#68): `list-diffs` reads one Edit or Write off the palette
- * and opens it in a diff buffer, where `C-c C-o` is `open-diff-file`.
+ * and opens it in a diff buffer, where `C-c C-o` is `open-diff-file`. The
+ * guide's plan mode (#82): `toggle-plan-mode` on `C-c C-p` flips the
+ * session's permission mode, and in the plan buffer the agent's plan opens
+ * in, `C-c C-c` is `approve-plan` and `C-c C-k` is `reject-plan`, both
+ * acted on by the renderer, which holds the text as edited.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -73,6 +78,8 @@ export interface CockpitDeps {
   readonly transcripts: TranscriptSearch
   /** The Edit and Write calls of the session, as `list-diffs` opens them (#68). */
   readonly diffs: DiffBuffers
+  /** The plans the agent asks to leave plan mode with, as plan buffers (#82). */
+  readonly plans: PlanBuffers
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -98,6 +105,9 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         confirm: () => Promise.resolve(false),
         open: () => Promise.resolve('No file opener is installed'),
       }),
+    plans:
+      partial.plans ??
+      new PlanBuffers(buffers, permissions, { leavePlanMode: () => agent.leavePlanMode() }),
   }
 }
 
@@ -122,6 +132,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     sessions,
     transcripts,
     diffs,
+    plans,
   } = deps
   return [
     defineCommand({
@@ -303,6 +314,32 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'toggle-plan-mode',
+      doc: 'Plan mode on or off: on, the agent reads and plans and runs no tool until a plan is approved.',
+      run: () => {
+        agent.togglePlanMode().catch(report('toggle-plan-mode'))
+      },
+    }),
+    defineCommand({
+      name: 'approve-plan',
+      doc: 'Approve the plan in the current plan buffer, as edited; the session leaves plan mode.',
+      run: () => {
+        // The text lives in the renderer, edited: when the dispatch answers
+        // with this name, the plan buffer sends it through the plan bridge
+        // and the plan buffers settle the request (#82). A plan buffer that
+        // is not pending has nothing to approve, which the key says.
+        if (plans.pending.length === 0) throw new CommandError('No plan is pending')
+      },
+    }),
+    defineCommand({
+      name: 'reject-plan',
+      doc: 'Reject the plan in the current plan buffer; the edited text goes back as feedback.',
+      run: () => {
+        // Same path as approve-plan: the renderer answers with the text (#82).
+        if (plans.pending.length === 0) throw new CommandError('No plan is pending')
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -476,6 +513,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-c': 'send-prompt',
   'C-c C-l': 'clear',
   'C-c C-k': 'compact',
+  'C-c C-p': 'toggle-plan-mode',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
@@ -499,6 +537,11 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {
     'C-c C-o': 'open-diff-file',
+  }),
+  // In a plan buffer the send and compact keys are approve and reject (#82).
+  plan: defineKeymap('plan', {
+    'C-c C-c': 'approve-plan',
+    'C-c C-k': 'reject-plan',
   }),
 }
 

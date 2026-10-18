@@ -22,6 +22,13 @@
       <span id="app-version"></span>
       <!-- The buffer list, current buffer in brackets (#60). -->
       <span id="buffer-list" aria-label="buffer list"></span>
+      <!-- The permission mode (#82): default until the session says otherwise; C-c C-p toggles plan. -->
+      <span
+        id="permission-mode"
+        aria-label="permission mode"
+        title="Permission mode. C-c C-p toggles plan mode."
+        >default</span
+      >
       <!-- The context meter (#80): fill of the window as a fraction and a bar. -->
       <span id="context-meter" aria-label="context" data-level="none"></span>
       <!-- The cockpit's nudge (#80): shown until the next prompt. -->
@@ -31,6 +38,11 @@
       <section id="transcript" aria-label="transcript" data-buffer-type="transcript">
         <!-- A read-only CodeMirror document of the session (#62). -->
         <div id="transcript-editor"></div>
+      </section>
+      <!-- A plan buffer (#82): the agent's plan as editable text, shown while one awaits an answer. -->
+      <section id="plan" aria-label="plan" data-buffer-type="plan" hidden>
+        <div id="plan-editor"></div>
+        <p id="plan-keys" class="placeholder"></p>
       </section>
       <!-- The help buffer (#65): a read-only document, shown while a help buffer exists. -->
       <section id="help" aria-label="help" data-buffer-type="help" hidden>

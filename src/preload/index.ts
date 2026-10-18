@@ -20,6 +20,7 @@ import type {
 } from '../shared/ipc'
 import { BINDINGS_CHANNEL, DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../shared/keys'
 import { HELP_SHOWN_CHANNEL, PALETTE_ANSWER_CHANNEL, PALETTE_OPEN_CHANNEL } from '../shared/palette'
+import { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL } from '../shared/plan'
 
 // The only bridge between internal pages and the main process (SECURITY.org,
 // T1; #53). Typed functions only, never a raw ipcRenderer: every call goes
@@ -55,6 +56,8 @@ const base = {
   onHelpShown: (listener) => on(HELP_SHOWN_CHANNEL, listener),
   onTranscriptGoto: (listener) => on(TRANSCRIPT_GOTO_CHANNEL, listener),
   onDiffShown: (listener) => on(DIFF_SHOWN_CHANNEL, listener),
+  onPlanShown: (listener) => on(PLAN_SHOWN_CHANNEL, listener),
+  answerPlan: (answer) => invoke(PLAN_ANSWER_CHANNEL, answer),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

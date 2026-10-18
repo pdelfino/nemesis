@@ -188,6 +188,8 @@ export class OrgTranscript {
         return note(event.text)
       case 'nudge':
         return note(event.text)
+      case 'permission-mode':
+        return note(`Permission mode: ${event.mode}`)
       case 'context-usage':
         // The log keeps the numbers; a person reading the Org file does not need them.
         return ''

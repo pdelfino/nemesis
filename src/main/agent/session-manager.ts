@@ -1,5 +1,10 @@
 import type { RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
-import type { AgentEvent, AgentEventListener, PermissionHandler } from './events'
+import type {
+  AgentEvent,
+  AgentEventListener,
+  AgentPermissionMode,
+  PermissionHandler,
+} from './events'
 import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
 import type { AgentDriver, AgentSession, Checkpoint, ToolCall } from './session'
 import { AgentSessionError, createAgentSession, resolveDriver } from './session'
@@ -14,7 +19,10 @@ import { AgentSessionError, createAgentSession, resolveDriver } from './session'
  * a past session up by the SDK's id, with its recorded history shown first.
  * `sideQuestion` (#80) asks a throwaway copy of the session, so the answer
  * never enters its history, and the correction counter (#80) watches the
- * user turns and nudges at the second correction in a row.
+ * user turns and nudges at the second correction in a row. The permission
+ * mode lives here too (#82): the next session starts in it, the running one
+ * is told when it changes, and `togglePlanMode` is the guide's plan mode as
+ * a key, with the mode it replaced kept for when the plan is approved.
  *
  * Listeners subscribe once, here, and hear every session the manager runs in
  * turn: the prompt queue, the recorder and the window never learn that the
@@ -41,6 +49,13 @@ export type RewindTarget = 'conversation' | 'code' | 'both'
 export type SessionHistoryListener = (history: readonly AgentEvent[]) => void
 
 export const REWIND_TARGETS: readonly RewindTarget[] = ['conversation', 'code', 'both']
+
+/**
+ * The guide's callout, the first time plan mode goes on in a session (#82):
+ * not every task needs a plan. Shown in the mode line until the next prompt.
+ */
+export const PLAN_MODE_REMINDER =
+  'Plan mode: small, clear changes skip planning; C-c C-p turns it off again.'
 
 /** The checkpoint list a rewind buffer shows, with the actions the SDK exposes (#84). */
 export function describeCheckpoints(checkpoints: readonly Checkpoint[]): string {
@@ -115,6 +130,12 @@ export class SessionManager {
   private session: AgentSession | null = null
   private offSession: (() => void) | null = null
   private readonly corrections = new CorrectionCounter()
+  /** The mode the next session starts in and the running one was told (#82). */
+  private mode: AgentPermissionMode = 'default'
+  /** What plan mode replaced, so an approved plan goes back to it. */
+  private beforePlan: AgentPermissionMode = 'default'
+  /** The guide's callout went out already in this session. */
+  private planReminded = false
 
   constructor(options: SessionManagerOptions) {
     this.options = options
@@ -150,6 +171,46 @@ export class SessionManager {
   /** True while a turn is running. */
   get busy(): boolean {
     return this.session?.busy ?? false
+  }
+
+  /** The permission mode the session runs in, or the next one will (#82). */
+  get permissionMode(): AgentPermissionMode {
+    return this.mode
+  }
+
+  /**
+   * Sets the mode for the running session and the ones after it, and says
+   * so down the stream, for the mode line and the transcript (#82).
+   */
+  async setPermissionMode(mode: AgentPermissionMode): Promise<void> {
+    this.mode = mode
+    if (this.session !== null) await this.session.setPermissionMode(mode)
+    this.emit({ type: 'permission-mode', mode })
+  }
+
+  /**
+   * The guide's plan mode as a key (#82): on, the agent reads and plans and
+   * runs no tool until a plan is approved; off, back to the mode it replaced.
+   * The first time it goes on in a session, the guide's callout follows as a
+   * nudge: a small, clear change needs no plan.
+   */
+  async togglePlanMode(): Promise<AgentPermissionMode> {
+    if (this.mode === 'plan') {
+      await this.setPermissionMode(this.beforePlan)
+      return this.mode
+    }
+    this.beforePlan = this.mode
+    await this.setPermissionMode('plan')
+    if (!this.planReminded) {
+      this.planReminded = true
+      this.emit({ type: 'nudge', text: PLAN_MODE_REMINDER })
+    }
+    return this.mode
+  }
+
+  /** A plan was approved (#82): the session goes on in the mode plan mode replaced. */
+  async leavePlanMode(): Promise<void> {
+    if (this.mode === 'plan') await this.setPermissionMode(this.beforePlan)
   }
 
   /** The prompt queue sends through here; a fresh session starts on demand. */
@@ -345,6 +406,7 @@ export class SessionManager {
       permissionHandler: this.options.permissionHandler,
       ...(this.driver === null ? {} : { driver: this.driver }),
       ...(this.options.model === null ? {} : { model: this.options.model }),
+      permissionMode: this.mode,
       ...extra,
     })
     this.session = session
@@ -359,11 +421,17 @@ export class SessionManager {
    * The correction counter reads the user turns as they go by (#80): a turn
    * that opens with "no" or "wrong" is a correction, any other ends the
    * streak, and a session that stops starts the count over. The nudge goes
-   * down the stream after the turn it answers.
+   * down the stream after the turn it answers. The mode follows what the
+   * SDK reports at start, and the plan-mode callout is owed again to the
+   * next session (#82).
    */
   private watch(event: AgentEvent): void {
     if (event.type === 'user-text') this.nudgeAt(this.corrections.observe(event.text))
-    else if (event.type === 'stopped') this.corrections.reset()
+    else if (event.type === 'started') this.mode = event.permissionMode
+    else if (event.type === 'stopped') {
+      this.corrections.reset()
+      this.planReminded = false
+    }
   }
 
   private nudgeAt(streak: number): void {

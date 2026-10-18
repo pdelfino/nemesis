@@ -9,6 +9,7 @@ import type { BufferInfo, BufferList, BufferSpec } from './buffers'
 import type { DiffContent } from './diff'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
+import type { PlanAnswer, PlanContent } from './plan'
 
 /**
  * The surface internal pages see as `window.nemesis`. Implemented by the
@@ -46,6 +47,10 @@ export interface NemesisApi {
   onTranscriptGoto(listener: (target: TranscriptGoto) => void): void
   /** A diff buffer has content: list-diffs opened an Edit or a Write in it (#68). */
   onDiffShown(listener: (content: DiffContent) => void): void
+  /** A plan buffer has content: the agent asked to leave plan mode with this plan (#82). */
+  onPlanShown(listener: (content: PlanContent) => void): void
+  /** Approves or rejects the plan in a buffer, with the text as edited there (#82). */
+  answerPlan(answer: PlanAnswer): Promise<void>
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

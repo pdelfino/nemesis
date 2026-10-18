@@ -23,6 +23,7 @@ describe('the shape of a keymap', () => {
       'C-c C-c',
       'C-c C-k',
       'C-c C-l',
+      'C-c C-p',
       'C-g',
       'C-h k',
       'C-h x',
@@ -37,6 +38,11 @@ describe('the shape of a keymap', () => {
     expect(bindings.byBufferType.permission).toEqual({
       chords: ['1', '2', '3', '4', 'a', 'n', 'y'],
       prefixes: [],
+    })
+    // The plan buffer's own send and compact keys (#82).
+    expect(bindings.byBufferType.plan).toEqual({
+      chords: ['C-c C-c', 'C-c C-k'],
+      prefixes: ['C-c'],
     })
     expect(JSON.stringify(bindings)).not.toContain('switch-buffer')
   })

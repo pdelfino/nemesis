@@ -22,6 +22,7 @@ import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import { DiffBuffers } from './diffs'
 import { installMenu } from './menu'
+import { PlanBuffers } from './plans'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
 import { describeExternal, ExternalPolicy } from './security/external'
@@ -222,11 +223,18 @@ void app.whenReady().then(() => {
   // and what search-transcripts scans (#69).
   const sessions = new SessionIndex({ sessionsDir: settings.sessionsDir })
   const transcripts = new TranscriptSearch({ sessionsDir: settings.sessionsDir })
+  // The guide's plan mode (#82): the one tool that leaves it, ExitPlanMode,
+  // is taken here in front of the bridge and becomes a plan buffer; every
+  // other request reaches the bridge untouched. An approval tells the manager
+  // to leave plan mode, which is why the two reference each other.
+  const plans: PlanBuffers = new PlanBuffers(buffers, permissions, {
+    leavePlanMode: (): Promise<void> => agent.leavePlanMode(),
+  })
   // The manager holds that session and swaps it on new-task or a rewind (#84).
-  const agent = new SessionManager({
+  const agent: SessionManager = new SessionManager({
     cwd: process.cwd(),
     model: settings.model,
-    permissionHandler: permissions,
+    permissionHandler: plans,
   })
   // The Edit and Write calls of the session, listed and opened as diff
   // buffers (#68). The collector reads the live events and a resumed
@@ -245,7 +253,7 @@ void app.whenReady().then(() => {
     agent,
     permissions,
     recorder,
-    notices: mergeNotices(permissionPolicy, downloads, external, diffs),
+    notices: mergeNotices(permissionPolicy, downloads, external, diffs, plans),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
@@ -258,9 +266,10 @@ void app.whenReady().then(() => {
     sessions,
     transcripts,
     diffs,
+    plans,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
-  installPaletteBridge({ prompter: deps.prompter, help: deps.help, transcripts, diffs })
+  installPaletteBridge({ prompter: deps.prompter, help: deps.help, transcripts, diffs, plans })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher = createCockpitDispatcher(deps)
   installKeyBridge(dispatcher)

@@ -22,7 +22,14 @@ import {
  * with Emacs keys of its own never sees `C-x` or `C-c C-c`.
  */
 
-const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission', 'help', 'diff']
+const BUFFER_TYPES: readonly BufferType[] = [
+  'prompt',
+  'transcript',
+  'permission',
+  'help',
+  'diff',
+  'plan',
+]
 
 /** Told what a key ran, so a buffer can act on it (the prompt sends on `send-prompt`). */
 export type CommandListener = (outcome: KeyOutcome, bufferType: BufferType | null) => void
