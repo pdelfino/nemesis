@@ -15,3 +15,4 @@ a lower number does.
 |----------------------------------+----------------------------------------------------------------+----------+-------|
 | [[file:02-prompt-buffer.org][02-prompt-buffer.org]] | Nyxt's prompt buffer and prompter against the Nemesis palette  | ADR 0003 | #13   |
 | [[file:04-keymaps.org][04-keymaps.org]]             | nkeymaps and Nyxt's input dispatch against the Nemesis keymaps | ADR 0002 | #15   |
+| [[file:01-top-level.org][01-top-level.org]]       | Nyxt's browser, window and buffer ownership against the Nemesis main-process scope | #70, #73 | #12   |
