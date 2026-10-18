@@ -1,9 +1,13 @@
 import type {
   CanUseTool,
+  ModelUsage,
   Options,
+  RewindFilesResult,
+  SDKAssistantMessage,
   SDKMessage,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
+import { randomUUID } from 'node:crypto'
 import type {
   AgentEvent,
   AgentEventListener,
@@ -32,7 +36,33 @@ export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>
   setPermissionMode(mode: AgentPermissionMode): Promise<void>
   setModel(model?: string): Promise<void>
+  /** Restores the files the agent touched since the user message named (#84). */
+  rewindFiles(userMessageId: string): Promise<RewindFilesResult>
   close(): void
+}
+
+/**
+ * One checkpoint per user turn (#84): the point the rewind buffer lists and
+ * the SDK can take the files or the conversation back to. `uuid` is the id
+ * the user message was sent under, which `rewindFiles` takes; `before` is
+ * the SDK's uuid for the last assistant message ahead of it, which a resume
+ * at that point takes, or null when nothing came before.
+ */
+export interface Checkpoint {
+  /** 1 for the first prompt of the session. */
+  readonly index: number
+  readonly uuid: string
+  readonly before: string | null
+  /** The prompt, as the user sent it. */
+  readonly text: string
+  /** When the prompt was sent, in ms since the epoch. */
+  readonly at: number
+}
+
+/** A tool call the assistant made, as the undo prompt quotes it (#84). */
+export interface ToolCall {
+  readonly name: string
+  readonly input: Record<string, unknown>
 }
 
 /** The slice of the SDK the cockpit uses. `mock.ts` is the other implementation. */
@@ -47,6 +77,15 @@ export interface AgentSessionOptions {
   readonly permissionMode?: AgentPermissionMode | undefined
   /** Resume a session by its id instead of starting a new one. */
   readonly resume?: string | undefined
+  /** With `resume`: keep the conversation up to this chain entry only (#84). */
+  readonly resumeAt?: string | undefined
+  /** With `resume`: the checkpoints the kept conversation still has (#84). */
+  readonly checkpoints?: readonly Checkpoint[] | undefined
+  /**
+   * With `resume`: a copy of that session under a new id, so what is said
+   * here never reaches the original (#80). A side question runs this way.
+   */
+  readonly fork?: true | undefined
   /** Who answers a tool permission request. Denies everything when omitted. */
   readonly permissionHandler?: PermissionHandler | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
@@ -55,6 +94,62 @@ export interface AgentSessionOptions {
 
 export class AgentSessionError extends Error {
   override readonly name = 'AgentSessionError'
+}
+
+/**
+ * The guide's `/compact <instructions>`, typed in the prompt buffer and sent
+ * by `C-c C-k` (#80). The CLI under the SDK runs it as the local command it
+ * is; the session opens no checkpoint for it, since it is not a prompt.
+ */
+const COMPACT_COMMAND = /^\s*\/compact(\s|$)/
+
+export function isCompactCommand(text: string): boolean {
+  return COMPACT_COMMAND.test(text)
+}
+
+/** The text that compacts with `instruction`, or without one when it is blank. */
+export function compactCommand(instruction: string): string {
+  const trimmed = instruction.trim()
+  return trimmed.length === 0 ? '/compact' : `/compact ${trimmed}`
+}
+
+/**
+ * What the last request carried into the model (#80): the input tokens plus
+ * what was read from and written to the cache, which together are the
+ * conversation as the model saw it. The output tokens are not in the window
+ * yet; the next request will carry them as input.
+ */
+export function usedTokensOf(message: SDKAssistantMessage): number {
+  const usage = message.message.usage
+  return (
+    usage.input_tokens +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  )
+}
+
+/**
+ * The window of the main model, from the per-model totals a result carries
+ * (#80): the entry under the session's model name, or failing that the one
+ * that carried the most tokens, since subagents and helpers run under other
+ * names. Null until a result has said.
+ */
+export function contextWindowOf(
+  modelUsage: Readonly<Record<string, ModelUsage>>,
+  model: string | null,
+): number | null {
+  const own = model === null ? undefined : modelUsage[model]
+  if (own !== undefined && own.contextWindow > 0) return own.contextWindow
+  let best: ModelUsage | null = null
+  for (const usage of Object.values(modelUsage)) {
+    if (usage.contextWindow <= 0) continue
+    if (best === null || tokensOf(usage) > tokensOf(best)) best = usage
+  }
+  return best?.contextWindow ?? null
+}
+
+function tokensOf(usage: ModelUsage): number {
+  return usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens
 }
 
 /**
@@ -150,19 +245,27 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
     ]
   }
 
+  // A frame produced inside a subagent names the main-thread tool call that
+  // started it; the events carry that id, so the transcript can nest them (#85).
+  const child =
+    message.type === 'assistant' || message.type === 'user'
+      ? parentOf(message.parent_tool_use_id)
+      : {}
+
   if (message.type === 'assistant') {
     const events: AgentEvent[] = []
     for (const block of message.message.content) {
       if (block.type === 'text') {
-        events.push({ type: 'assistant-text', text: block.text })
+        events.push({ type: 'assistant-text', text: block.text, ...child })
       } else if (block.type === 'thinking') {
-        events.push({ type: 'assistant-thinking', text: block.thinking })
+        events.push({ type: 'assistant-thinking', text: block.thinking, ...child })
       } else if (block.type === 'tool_use') {
         events.push({
           type: 'tool-use',
           toolUseId: block.id,
           name: block.name,
           input: isRecord(block.input) ? block.input : {},
+          ...child,
         })
       }
     }
@@ -180,9 +283,21 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
         toolUseId: block.tool_use_id,
         isError: block.is_error === true,
         text: textOf(block.content),
+        ...child,
       })
     }
     return events
+  }
+
+  if (message.type === 'system' && message.subtype === 'compact_boundary') {
+    const { trigger, pre_tokens, post_tokens } = message.compact_metadata
+    const after = post_tokens === undefined ? '' : `, ${post_tokens} after`
+    return [
+      {
+        type: 'notice',
+        text: `Compacted the conversation (${trigger}): ${pre_tokens} tokens before${after}.`,
+      },
+    ]
   }
 
   if (message.type === 'result') {
@@ -198,6 +313,10 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
   }
 
   return []
+}
+
+function parentOf(id: string | null): { readonly parentToolUseId?: string } {
+  return id === null ? {} : { parentToolUseId: id }
 }
 
 function describe(error: unknown): string {
@@ -221,6 +340,14 @@ export class AgentSession {
   private modelValue: string | null
   private permissionModeValue: AgentPermissionMode
   private interrupted = false
+  private inTurn = false
+  private readonly checkpointList: Checkpoint[]
+  /** The SDK's uuid of the last assistant message seen: the chain entry a resume keeps up to. */
+  private lastEntry: string | null
+  private readonly toolCalls: ToolCall[] = []
+  /** The last request's tokens and the model's window, for the meter (#80). */
+  private usedTokens: number | null = null
+  private windowTokens: number | null = null
 
   constructor(options: AgentSessionOptions) {
     this.options = options
@@ -229,6 +356,8 @@ export class AgentSession {
     this.sessionIdValue = options.resume ?? null
     this.modelValue = options.model ?? null
     this.permissionModeValue = options.permissionMode ?? 'default'
+    this.checkpointList = [...(options.checkpoints ?? [])]
+    this.lastEntry = options.resumeAt ?? null
   }
 
   /** The SDK's id for this session, known once it has started. Resume takes it. */
@@ -247,6 +376,21 @@ export class AgentSession {
 
   get running(): boolean {
     return this.handle !== null
+  }
+
+  /** True from a send until the turn it started ends. */
+  get busy(): boolean {
+    return this.inTurn
+  }
+
+  /** The checkpoints so far, oldest first: one per prompt sent (#84). */
+  checkpoints(): readonly Checkpoint[] {
+    return [...this.checkpointList]
+  }
+
+  /** The tool calls of the latest turn, in order; what `undo` quotes (#84). */
+  lastToolCalls(): readonly ToolCall[] {
+    return [...this.toolCalls]
   }
 
   /** Subscribe to the event stream. The returned function unsubscribes. */
@@ -290,12 +434,48 @@ export class AgentSession {
     // The user's turn joins the stream before anything the agent answers to
     // it, so a listener reads the conversation in order (#62).
     this.emit({ type: 'user-text', text })
-    // The query is already bound to its session, so the frame carries no id.
+    // The message goes out under a uuid of ours, so the checkpoint it opens
+    // can be named back to the SDK (#84). The query is already bound to its
+    // session, so the frame carries no session id.
+    const uuid = randomUUID()
+    // A compaction is a command to the CLI, not a prompt: no checkpoint (#80).
+    if (!isCompactCommand(text)) {
+      this.checkpointList.push({
+        index: this.checkpointList.length + 1,
+        uuid,
+        before: this.lastEntry,
+        text,
+        at: Date.now(),
+      })
+    }
+    this.toolCalls.length = 0
+    this.inTurn = true
     this.input.push({
       type: 'user',
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
+      uuid,
     })
+  }
+
+  /**
+   * Stops the running turn and keeps the session, as Esc does in the CLI
+   * (#84): the context stays, the next prompt continues it. Resolves to
+   * false when no turn was running.
+   */
+  async interrupt(): Promise<boolean> {
+    const handle = this.handle
+    if (handle === null || !this.inTurn) return false
+    await handle.interrupt()
+    return true
+  }
+
+  /** Restores the files the agent touched since the checkpoint (#84). */
+  async rewindFiles(checkpoint: Checkpoint): Promise<RewindFilesResult> {
+    if (this.handle === null) await this.start()
+    const handle = this.handle
+    if (handle === null) throw new AgentSessionError('The session did not start')
+    return handle.rewindFiles(checkpoint.uuid)
   }
 
   async setPermissionMode(mode: AgentPermissionMode): Promise<void> {
@@ -330,8 +510,14 @@ export class AgentSession {
       cwd: this.options.cwd,
       permissionMode: this.permissionModeValue,
       canUseTool: this.canUseTool,
+      // Files are snapshotted before an edit, so a checkpoint can restore them (#84).
+      enableFileCheckpointing: true,
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.resume === undefined ? {} : { resume: this.options.resume }),
+      ...(this.options.resumeAt === undefined ? {} : { resumeSessionAt: this.options.resumeAt }),
+      ...(this.options.fork === true && this.options.resume !== undefined
+        ? { forkSession: true }
+        : {}),
     }
   }
 
@@ -356,18 +542,43 @@ export class AgentSession {
   private async read(handle: AgentQueryHandle): Promise<void> {
     try {
       for await (const message of handle) {
+        if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+          this.lastEntry = message.uuid
+          this.usedTokens = usedTokensOf(message)
+        }
+        if (message.type === 'result') {
+          this.windowTokens = contextWindowOf(message.modelUsage, this.modelValue)
+        }
+        if (message.type === 'system' && message.subtype === 'compact_boundary') {
+          const after = message.compact_metadata.post_tokens
+          if (after !== undefined) this.usedTokens = after
+        }
         for (const event of eventsFromMessage(message)) {
           if (event.type === 'started') {
             this.sessionIdValue = event.sessionId
             this.modelValue = event.model
             this.permissionModeValue = event.permissionMode
+          } else if (event.type === 'tool-use') {
+            this.toolCalls.push({ name: event.name, input: event.input })
+          } else if (event.type === 'turn-end') {
+            this.inTurn = false
           }
           this.emit(event)
+        }
+        // The meter is told once a turn, after the result that carries the
+        // window: the last request's tokens against it (#80).
+        if (message.type === 'result' && this.usedTokens !== null && this.windowTokens !== null) {
+          this.emit({
+            type: 'context-usage',
+            usedTokens: this.usedTokens,
+            windowTokens: this.windowTokens,
+          })
         }
       }
     } catch (error) {
       this.emit({ type: 'error', message: describe(error) })
     } finally {
+      this.inTurn = false
       this.emit({ type: 'stopped', reason: this.interrupted ? 'interrupted' : 'ended' })
     }
   }

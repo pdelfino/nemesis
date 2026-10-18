@@ -9,6 +9,7 @@ import { EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { BufferType, KeyOutcome } from '../shared/keys'
+import { followAppearance } from './theme'
 
 /**
  * The help buffer (#65): what describe-command and describe-key answer, as a
@@ -39,7 +40,7 @@ export function installHelpBuffer(): HelpBuffer {
         EditorState.readOnly.of(true),
         search(),
         EditorView.lineWrapping,
-        EditorView.theme({}, { dark: matchMedia('(prefers-color-scheme: dark)').matches }),
+        followAppearance(),
       ],
     }),
   })

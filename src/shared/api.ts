@@ -1,7 +1,17 @@
-import type { AgentEvent, PromptQueueState, PromptReceipt, PromptState } from './agent'
+import type {
+  AgentEvent,
+  PromptInsert,
+  PromptQueueState,
+  PromptReceipt,
+  PromptState,
+  TranscriptGoto,
+} from './agent'
 import type { BufferInfo, BufferList, BufferSpec } from './buffers'
+import type { DiffContent } from './diff'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
+import type { PlanAnswer, PlanContent } from './plan'
+import type { SpecContent } from './spec'
 
 /**
  * The surface internal pages see as `window.nemesis`. Implemented by the
@@ -35,6 +45,18 @@ export interface NemesisApi {
   answerPalette(answer: PaletteAnswer): Promise<PaletteOutcome>
   /** The help buffer has new text: describe-command or describe-key answered (#65). */
   onHelpShown(listener: (content: HelpContent) => void): void
+  /** The transcript's point should go to this line: a search match was opened (#69). */
+  onTranscriptGoto(listener: (target: TranscriptGoto) => void): void
+  /** A diff buffer has content: list-diffs opened an Edit or a Write in it (#68). */
+  onDiffShown(listener: (content: DiffContent) => void): void
+  /** A plan buffer has content: the agent asked to leave plan mode with this plan (#82). */
+  onPlanShown(listener: (content: PlanContent) => void): void
+  /** Approves or rejects the plan in a buffer, with the text as edited there (#82). */
+  answerPlan(answer: PlanAnswer): Promise<void>
+  /** A spec buffer has content: the agent wrote the spec of an interview (#85). */
+  onSpecShown(listener: (content: SpecContent) => void): void
+  /** A command adds text to the prompt being composed: attach-check, screenshot-window (#81). */
+  onPromptInsert(listener: (insert: PromptInsert) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

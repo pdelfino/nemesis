@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'vitest'
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { describe, expect, it, vi } from 'vitest'
+import type { SDKAssistantMessage, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { mockDriver } from '../../src/main/agent/mock'
 import type { AgentSession } from '../../src/main/agent/session'
-import { createAgentSession, denyEveryTool, eventsFromMessage } from '../../src/main/agent/session'
+import {
+  compactCommand,
+  contextWindowOf,
+  createAgentSession,
+  denyEveryTool,
+  eventsFromMessage,
+  isCompactCommand,
+  usedTokensOf,
+} from '../../src/main/agent/session'
 import type {
   AgentEvent,
   PermissionDecision,
@@ -70,7 +78,13 @@ describe('an agent session', () => {
     await agent.send('hello')
     const turn = await agent.waitForTurn()
 
-    expect(kinds(events)).toEqual(['user-text', 'started', 'assistant-text', 'turn-end'])
+    expect(kinds(events)).toEqual([
+      'user-text',
+      'started',
+      'assistant-text',
+      'turn-end',
+      'context-usage',
+    ])
     expect(events[2]).toEqual({ type: 'assistant-text', text: 'You said: hello' })
     expect(turn).toMatchObject({ type: 'turn-end', isError: false, result: 'You said: hello' })
     await agent.stop()
@@ -107,6 +121,7 @@ describe('an agent session', () => {
       'tool-result',
       'assistant-text',
       'turn-end',
+      'context-usage',
     ])
     expect(asked).toHaveLength(1)
     expect(asked[0]).toMatchObject({ toolName: 'Bash', input: { path: '/mock/notes.txt' } })
@@ -226,6 +241,75 @@ describe('an agent session', () => {
     await expect(agent.start()).rejects.toThrow(/already started/)
     await agent.stop()
   })
+
+  // Course corrections (#84): the turn stops, the session stays.
+  it('interrupts a streaming turn and keeps the session for the next prompt', async () => {
+    const agent = session()
+    const events = collect(agent)
+    expect(await agent.interrupt()).toBe(false)
+    await agent.send('stream: tick')
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.type === 'assistant-text')).toBe(true)
+    })
+    expect(agent.busy).toBe(true)
+    const turn = agent.waitForTurn()
+    expect(await agent.interrupt()).toBe(true)
+    expect(await turn).toMatchObject({ type: 'turn-end', isError: true, result: /Interrupted/ })
+    expect(agent.busy).toBe(false)
+    expect(kinds(events)).not.toContain('stopped')
+
+    await agent.send('after')
+    expect((await agent.waitForTurn()).result).toBe('You said: after')
+    expect(kinds(events).filter((kind) => kind === 'started')).toHaveLength(1)
+    await agent.stop()
+  })
+
+  it('opens one checkpoint per prompt, each naming the entry ahead of it', async () => {
+    const agent = session()
+    expect(agent.checkpoints()).toEqual([])
+    await agent.send('one')
+    await agent.waitForTurn()
+    await agent.send('two\nmore')
+    await agent.waitForTurn()
+
+    const checkpoints = agent.checkpoints()
+    expect(checkpoints.map((c) => [c.index, c.text])).toEqual([
+      [1, 'one'],
+      [2, 'two\nmore'],
+    ])
+    expect(checkpoints[0]?.before).toBeNull()
+    // The second checkpoint keeps the conversation up to the reply to the first.
+    expect(checkpoints[1]?.before).toMatch(/^00000000-0000-4000-8000-/)
+    expect(checkpoints[0]?.uuid).not.toBe(checkpoints[1]?.uuid)
+    await agent.stop()
+  })
+
+  it('remembers the tool calls of the latest turn only', async () => {
+    const agent = session({
+      permissionHandler: {
+        requestPermission(): Promise<PermissionDecision> {
+          return Promise.resolve({ behavior: 'allow' })
+        },
+      },
+    })
+    await agent.send('tool: Bash')
+    await agent.waitForTurn()
+    expect(agent.lastToolCalls()).toEqual([{ name: 'Bash', input: { path: '/mock/notes.txt' } }])
+    await agent.send('plain')
+    await agent.waitForTurn()
+    expect(agent.lastToolCalls()).toEqual([])
+    await agent.stop()
+  })
+
+  it('rewinds files through the SDK at a checkpoint', async () => {
+    const agent = session()
+    await agent.send('one')
+    await agent.waitForTurn()
+    const [checkpoint] = agent.checkpoints()
+    if (checkpoint === undefined) throw new Error('no checkpoint')
+    expect(await agent.rewindFiles(checkpoint)).toMatchObject({ canRewind: true, filesChanged: [] })
+    await agent.stop()
+  })
 })
 
 describe('the default permission handler', () => {
@@ -248,5 +332,174 @@ describe('the event mapping', () => {
     // Partial frames arrive only when the session asks for them, and it does not.
     const partial = { type: 'stream_event', session_id: 'mock-session' } as unknown as SDKMessage
     expect(eventsFromMessage(partial)).toEqual([])
+  })
+
+  it('names the parent tool call on every frame produced inside a subagent (#85)', () => {
+    const inside: SDKMessage = {
+      type: 'assistant',
+      parent_tool_use_id: 'agent-1',
+      uuid: '00000000-0000-4000-8000-000000000001',
+      session_id: 'mock-session',
+      message: {
+        id: 'm1',
+        container: null,
+        content: [
+          { type: 'text', text: 'Found it.', citations: null },
+          { type: 'tool_use', id: 'read-1', name: 'Read', input: { path: '/x' } },
+        ],
+        context_management: null,
+        diagnostics: null,
+        model: 'claude-mock-1',
+        role: 'assistant',
+        stop_details: null,
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        type: 'message',
+        usage: {} as SDKAssistantMessage['message']['usage'],
+      },
+    }
+    expect(eventsFromMessage(inside)).toEqual([
+      { type: 'assistant-text', text: 'Found it.', parentToolUseId: 'agent-1' },
+      {
+        type: 'tool-use',
+        toolUseId: 'read-1',
+        name: 'Read',
+        input: { path: '/x' },
+        parentToolUseId: 'agent-1',
+      },
+    ])
+    const result: SDKMessage = {
+      type: 'user',
+      parent_tool_use_id: 'agent-1',
+      uuid: '00000000-0000-4000-8000-000000000002',
+      session_id: 'mock-session',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'read-1', content: 'alpha', is_error: false },
+        ],
+      },
+    }
+    expect(eventsFromMessage(result)).toEqual([
+      {
+        type: 'tool-result',
+        toolUseId: 'read-1',
+        isError: false,
+        text: 'alpha',
+        parentToolUseId: 'agent-1',
+      },
+    ])
+    // A main-thread frame carries no parent at all, not a null one.
+    const main = { ...inside, parent_tool_use_id: null }
+    expect(eventsFromMessage(main).every((event) => !('parentToolUseId' in event))).toBe(true)
+  })
+})
+
+// The context meter and the compaction (#80), over the mock's usage numbers:
+// a turn adds 2000 tokens, `usage: N` sets the context, `/compact` brings it
+// back down with a boundary frame the way the CLI does.
+describe('the context meter and compaction (#80)', () => {
+  it('reports the last request against the window once a turn, after the result', async () => {
+    const agent = session()
+    const events = collect(agent)
+    await agent.send('hello')
+    await agent.waitForTurn()
+    expect(events.at(-1)).toEqual({
+      type: 'context-usage',
+      usedTokens: 2000,
+      windowTokens: 200_000,
+    })
+    await agent.send('usage: 150000')
+    await agent.waitForTurn()
+    expect(kinds(events).slice(-3)).toEqual(['assistant-text', 'turn-end', 'context-usage'])
+    expect(events.at(-1)).toEqual({
+      type: 'context-usage',
+      usedTokens: 150_000,
+      windowTokens: 200_000,
+    })
+    await agent.stop()
+  })
+
+  it('compacts on /compact: a notice with the sizes, the context down, and no checkpoint', async () => {
+    const agent = session()
+    const events = collect(agent)
+    await agent.send('usage: 150000')
+    await agent.waitForTurn()
+    await agent.send('/compact keep the file list')
+    await agent.waitForTurn()
+    expect(kinds(events).slice(-4)).toEqual(['user-text', 'notice', 'turn-end', 'context-usage'])
+    expect(events.at(-3)).toEqual({
+      type: 'notice',
+      text: 'Compacted the conversation (manual): 152000 tokens before, 2000 after.',
+    })
+    expect(events.at(-1)).toMatchObject({ usedTokens: 2000 })
+    // The compaction is a command to the CLI, not a prompt: nothing to rewind to.
+    expect(agent.checkpoints().map((c) => c.text)).toEqual(['usage: 150000'])
+    await agent.stop()
+  })
+
+  it('spells the compact command and knows it when it sees it', () => {
+    expect(compactCommand('')).toBe('/compact')
+    expect(compactCommand('  \n ')).toBe('/compact')
+    expect(compactCommand(' focus on the API ')).toBe('/compact focus on the API')
+    expect(isCompactCommand('/compact')).toBe(true)
+    expect(isCompactCommand('  /compact now')).toBe(true)
+    expect(isCompactCommand('/compacted')).toBe(false)
+    expect(isCompactCommand('compact this')).toBe(false)
+  })
+
+  it('reads the window off the result and the used tokens off the reply', () => {
+    const reply = {
+      message: {
+        usage: { input_tokens: 100, cache_read_input_tokens: 50, cache_creation_input_tokens: 25 },
+      },
+    } as unknown as SDKAssistantMessage
+    expect(usedTokensOf(reply)).toBe(175)
+    const nulls = {
+      message: {
+        usage: {
+          input_tokens: 7,
+          cache_read_input_tokens: null,
+          cache_creation_input_tokens: null,
+        },
+      },
+    } as unknown as SDKAssistantMessage
+    expect(usedTokensOf(nulls)).toBe(7)
+
+    const usage = (tokens: number, contextWindow: number) => ({
+      inputTokens: tokens,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0,
+      contextWindow,
+      maxOutputTokens: 1,
+    })
+    // The session's own model first, then the model that carried the most.
+    expect(contextWindowOf({ main: usage(10, 200), helper: usage(900, 50) }, 'main')).toBe(200)
+    expect(contextWindowOf({ main: usage(10, 200), helper: usage(900, 50) }, 'other')).toBe(50)
+    expect(contextWindowOf({ main: usage(10, 200) }, null)).toBe(200)
+    expect(contextWindowOf({}, 'main')).toBeNull()
+    expect(contextWindowOf({ main: usage(10, 0) }, 'main')).toBeNull()
+  })
+
+  it('forks a resumed session under a new id, so a side question writes nowhere near it', async () => {
+    const driver = mockDriver()
+    const first = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    await first.send('one')
+    await first.waitForTurn()
+    const fork = createAgentSession({
+      cwd: '/tmp/nemesis-unit',
+      driver,
+      resume: 'mock-session',
+      fork: true,
+    })
+    await fork.send('aside')
+    await fork.waitForTurn()
+    expect(fork.sessionId).toBe('mock-session-2')
+    expect(first.sessionId).toBe('mock-session')
+    await fork.stop()
+    await first.stop()
   })
 })

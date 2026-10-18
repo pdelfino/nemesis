@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { KeyPress } from '../../src/shared/keys'
 import {
   assertBindingsAreRegistered,
-  isInternalSender,
   KeyDispatcher,
   parseKeyPress,
 } from '../../src/main/commands/dispatcher'
@@ -48,6 +47,30 @@ describe('the default Emacs keyscheme (#59)', () => {
     // The help keys, Emacs 28's (#65).
     expect(GLOBAL_KEYMAP.commandFor('C-h x')).toBe('describe-command')
     expect(GLOBAL_KEYMAP.commandFor('C-h k')).toBe('describe-key')
+    // Search across transcripts (#69), on the free C-x s.
+    expect(GLOBAL_KEYMAP.commandFor('C-x s')).toBe('search-transcripts')
+    // The guide's context keys (#80).
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-l')).toBe('clear')
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-k')).toBe('compact')
+    // A diff buffer's file opens on the Org key for a link (#68).
+    expect(BUFFER_KEYMAPS.diff?.commandFor('C-c C-o')).toBe('open-diff-file')
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-o')).toBeUndefined()
+    // Plan mode as a key, and the plan buffer's approve and reject over the
+    // global send and compact (#82).
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-p')).toBe('toggle-plan-mode')
+    expect(BUFFER_KEYMAPS.plan?.commandFor('C-c C-c')).toBe('approve-plan')
+    expect(BUFFER_KEYMAPS.plan?.commandFor('C-c C-k')).toBe('reject-plan')
+    // The spec buffer's one action over the global send (#85); the three
+    // guideline commands are M-x only.
+    expect(BUFFER_KEYMAPS.spec?.commandFor('C-c C-c')).toBe('start-fresh-session-from-spec')
+    for (const name of ['interview', 'investigate', 'ask-codebase']) {
+      expect(GLOBAL_KEYMAP.entries().some((entry) => entry.command === name)).toBe(false)
+    }
+    // The verify key (#81); attach-issue, attach-check and screenshot-window are M-x only.
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-v')).toBe('verify')
+    for (const name of ['attach-issue', 'attach-check', 'screenshot-window']) {
+      expect(GLOBAL_KEYMAP.entries().some((entry) => entry.command === name)).toBe(false)
+    }
   })
 
   it('registers every command a keymap names', () => {
@@ -199,19 +222,52 @@ describe('what the main process accepts from a page', () => {
       /Unknown buffer type/,
     )
   })
+})
 
-  it('accepts only the top frame of an internal page (SECURITY.org)', () => {
-    expect(isInternalSender({ url: 'file:///app/out/renderer/index.html', parent: null })).toBe(
-      true,
-    )
-    expect(isInternalSender({ url: 'file:///app/out/renderer/index.html', parent: {} })).toBe(false)
-    expect(isInternalSender({ url: 'https://example.com/', parent: null })).toBe(false)
-    expect(isInternalSender(null)).toBe(false)
-    expect(
-      isInternalSender(
-        { url: 'http://localhost:5173/index.html', parent: null },
-        'http://localhost:5173',
-      ),
-    ).toBe(true)
+// The guide's context commands (#80): clear is a fresh session, correct
+// counts toward the nudge, side-question reads free text and answers in the
+// help buffer without a trace in the session's stream.
+describe('the context commands (#80)', () => {
+  it('clear drops the session, correct counts, side-question answers in the help buffer', async () => {
+    const deps = resolveCockpitDeps()
+    const registry = createCockpitRegistry(deps)
+    const events: string[] = []
+    deps.agent.on((event) => events.push(event.type))
+    const turn = new Promise<void>((resolve) => {
+      const off = deps.agent.on((event) => {
+        if (event.type === 'turn-end') {
+          off()
+          resolve()
+        }
+      })
+    })
+    await deps.agent.send('one')
+    await turn
+    expect(deps.agent.sessionId).toBe('mock-session')
+
+    await registry.run('correct', { source: 'test' })
+    await registry.run('correct', { source: 'test' })
+    expect(events.at(-1)).toBe('nudge')
+
+    const shown = vi.fn()
+    deps.help.on(shown)
+    await registry.run('side-question', { source: 'test' })
+    const read = deps.prompter.pending
+    expect(read).toMatchObject({ prompt: 'Side question:', freeText: true, candidates: [] })
+    if (read === null) throw new Error('No read')
+    const seen = events.length
+    await deps.prompter.answer({ id: read.id, choice: null, text: ' what is two ' })
+    expect(shown.mock.calls.map((call) => (call[0] as { text: string }).text)).toEqual([
+      'Side question: what is two\n\nAsking...',
+      'Side question: what is two\n\nYou said: what is two\n\nThis answer is not in the session history.',
+    ])
+    expect(events).toHaveLength(seen)
+    expect(deps.buffers.current?.kind).toBe('help')
+
+    await registry.run('clear', { source: 'test' })
+    await vi.waitFor(() => expect(events.slice(-2)).toEqual(['stopped', 'notice']))
+    expect(deps.agent.sessionId).toBeNull()
+    expect(registry.get('compact')?.doc).toMatch(/prompt buffer is the instruction/)
+    await deps.agent.stop()
   })
 })

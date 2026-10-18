@@ -3,6 +3,7 @@ import { EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '../../src/shared/agent'
 import {
+  lineWithText,
   transactionFor,
   transcriptExtensions,
   transcriptField,
@@ -117,6 +118,182 @@ describe('the transcript document', () => {
     expect(folds(state)).toEqual(['\nout loud', `\n${long.text}`])
   })
 
+  it('shows a check the agent ran as an evidence block, folded, with its status in the header (#81)', () => {
+    const test: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 't1',
+      name: 'Bash',
+      input: { command: 'npm test -- auth' },
+    }
+    const passed: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 't1',
+      isError: false,
+      text: ' Tests  3 passed (3)\n',
+    }
+    const list: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 't2',
+      name: 'Bash',
+      input: { command: 'ls' },
+    }
+    const listed: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 't2',
+      isError: false,
+      text: 'a\nb',
+    }
+    const build: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 't3',
+      name: 'Bash',
+      input: { command: 'cat build.log' },
+    }
+    const failed: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 't3',
+      isError: true,
+      text: 'error TS2322: wrong\nExit code 2',
+    }
+    const state = append(empty(), test, passed, list, listed, build, failed)
+    const text = state.doc.toString()
+    // The command named a check: evidence, headed passed, the output folded.
+    expect(text).toContain('Evidence: npm test -- auth (passed)\n Tests  3 passed (3)')
+    // A listing is a plain result.
+    expect(text).toContain('Result: Bash\na\nb')
+    // The output read like a build: evidence, with the exit code the result named.
+    expect(text).toContain('Evidence: cat build.log (exit 2)\nerror TS2322: wrong\nExit code 2')
+    expect(state.field(transcriptField).blocks.map((block) => block.kind)).toEqual([
+      'tool-use',
+      'evidence',
+      'tool-use',
+      'tool-result',
+      'tool-use',
+      'evidence',
+    ])
+    expect(folds(state)).toEqual(['\n Tests  3 passed (3)', '\nerror TS2322: wrong\nExit code 2'])
+  })
+
+  it('shows the check the verify key ran as evidence with the exit code and the duration (#81)', () => {
+    const evidence: AgentEvent = {
+      type: 'evidence',
+      command: 'npm run gate',
+      source: 'settings',
+      exitCode: 1,
+      signal: null,
+      durationMs: 12_345,
+      output: 'lint failed\n',
+    }
+    const silent: AgentEvent = { ...evidence, exitCode: 0, durationMs: 40, output: '' }
+    const state = append(empty(), evidence, silent)
+    expect(state.doc.toString()).toBe(
+      'Evidence: npm run gate (exit 1, 12.3s)\nlint failed\n\nEvidence: npm run gate (exit 0, 0.0s)\n(no output)',
+    )
+    expect(folds(state)).toEqual(['\nlint failed', '\n(no output)'])
+    const roles: string[] = []
+    state.field(transcriptField).decorations.between(0, state.doc.length, (_from, _to, deco) => {
+      const spec = deco.spec as { class: string; attributes: { 'data-role': string } }
+      roles.push(`${spec.class} ${spec.attributes['data-role']}`)
+    })
+    expect(roles).toEqual([
+      'tr-header evidence',
+      'tr-body evidence',
+      'tr-header evidence',
+      'tr-body evidence',
+    ])
+  })
+
+  it('shows what happened inside a subagent as child blocks, folded, that never take the main reply (#85)', () => {
+    const agent: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 'agent-1',
+      name: 'Agent',
+      input: { prompt: 'how tokens refresh' },
+    }
+    const childUse: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 'read-1',
+      name: 'Read',
+      input: { path: '/mock/notes.txt' },
+      parentToolUseId: 'agent-1',
+    }
+    const childResult: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 'read-1',
+      isError: false,
+      text: 'alpha',
+      parentToolUseId: 'agent-1',
+    }
+    const childText: AgentEvent = {
+      type: 'assistant-text',
+      text: 'Found 2 files.',
+      parentToolUseId: 'agent-1',
+    }
+    const summary: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 'agent-1',
+      isError: false,
+      text: 'Summary.',
+    }
+    const state = append(empty(), user, reply, agent, childUse, childResult, childText, summary, {
+      type: 'assistant-text',
+      text: 'Investigated.',
+    })
+    expect(state.doc.toString()).toContain(
+      'Subagent tool: Read\n{\n  "path": "/mock/notes.txt"\n}\n\nSubagent result: Read\nalpha\n\nSubagent: Claude\nFound 2 files.',
+    )
+    // Every child body is folded; the main thread's blocks are not.
+    expect(folds(state)).toEqual([
+      '\n{\n  "path": "/mock/notes.txt"\n}',
+      '\nalpha',
+      '\nFound 2 files.',
+    ])
+    const blocks = state.field(transcriptField).blocks
+    expect(blocks.map((block) => `${block.kind}${block.child ? ' child' : ''}`)).toEqual([
+      'user',
+      'assistant',
+      'tool-use',
+      'tool-use child',
+      'tool-result child',
+      'assistant child',
+      'tool-result',
+      'assistant',
+    ])
+    // The child lines carry the class the stylesheet indents.
+    const classes: string[] = []
+    state.field(transcriptField).decorations.between(0, state.doc.length, (_f, _t, deco) => {
+      classes.push((deco.spec as { class: string }).class)
+    })
+    expect(classes.filter((name) => name.includes('tr-child'))).toEqual([
+      'tr-header tr-child',
+      'tr-body tr-child',
+      'tr-body tr-child',
+      'tr-body tr-child',
+      'tr-header tr-child',
+      'tr-body tr-child',
+      'tr-header tr-child',
+      'tr-body tr-child',
+    ])
+    // The main reply after the summary is a block of its own, not a line of the child's.
+    expect(state.doc.toString().endsWith('\n\nClaude\nInvestigated.')).toBe(true)
+  })
+
+  it('notes a nudge and shows nothing for the context meter, which the mode line draws (#80)', () => {
+    const state = append(
+      empty(),
+      user,
+      { type: 'context-usage', usedTokens: 2000, windowTokens: 200_000 },
+      { type: 'nudge', text: '2 corrections in a row' },
+      { type: 'permission-mode', mode: 'plan' },
+    )
+    expect(state.doc.toString()).toBe(
+      ['You', 'hello', '', '2 corrections in a row', '', 'Permission mode: plan'].join('\n'),
+    )
+    expect(
+      transactionFor(state, { type: 'context-usage', usedTokens: 1, windowTokens: 2 }),
+    ).toBeNull()
+  })
+
   it('notes the session and a failed turn, and nothing for a good one', () => {
     const started: AgentEvent = {
       type: 'started',
@@ -226,5 +403,33 @@ describe('the transcript document', () => {
       ].join('\n'),
     )
     expect(transactionFor(state, done)).toBeNull()
+  })
+})
+
+describe('the line a search match points at (#69)', () => {
+  const state = append(
+    empty(),
+    user,
+    { type: 'notice', text: 'Session started: claude-mock-1, default mode, in /work' },
+    reply,
+    turnEnd,
+    { type: 'user-text', text: 'hello' },
+    { type: 'assistant-text', text: 'You said: hello' },
+    { type: 'assistant-text', text: 'and the tomatoes need sun' },
+  )
+
+  it('is the last line with that text, the resumed history being the newest part', () => {
+    expect(state.doc.lines).toBe(14)
+    expect(lineWithText(state.doc, 'You said: hello')?.number).toBe(13)
+    expect(lineWithText(state.doc, 'hello')?.number).toBe(10)
+  })
+
+  it('finds a note without the dash the Org file gave it, then any line containing the text', () => {
+    expect(
+      lineWithText(state.doc, '- Session started: claude-mock-1, default mode, in /work')?.text,
+    ).toBe('Session started: claude-mock-1, default mode, in /work')
+    expect(lineWithText(state.doc, 'tomatoes')?.text).toBe('and the tomatoes need sun')
+    expect(lineWithText(state.doc, 'nowhere')).toBeNull()
+    expect(lineWithText(state.doc, '')).toBeNull()
   })
 })

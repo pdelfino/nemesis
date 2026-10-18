@@ -78,6 +78,41 @@ describe('the prompter', () => {
     expect(instance.pending).toBeNull()
   })
 
+  it('tells a read it was cancelled: by C-g, or by the read that replaced it', async () => {
+    const instance = prompter()
+    const cancelled = vi.fn()
+    const consume = vi.fn()
+    const first = instance.read({ source: 'letters', prompt: '?', onCancel: cancelled }, consume)
+    await instance.answer({ id: first.id, choice: null })
+    expect(cancelled).toHaveBeenCalledTimes(1)
+    expect(consume).not.toHaveBeenCalled()
+
+    const second = instance.read({ source: 'letters', prompt: '?', onCancel: cancelled }, consume)
+    instance.read({ source: 'letters', prompt: 'M-x' }, () => undefined)
+    expect(cancelled).toHaveBeenCalledTimes(2)
+    // The stale answer is ignored, and does not cancel anyone twice.
+    await instance.answer({ id: second.id, choice: 'search-buffer' })
+    expect(consume).not.toHaveBeenCalled()
+    expect(cancelled).toHaveBeenCalledTimes(2)
+  })
+
+  it('takes the text typed on a free-text read, and only there (#69)', async () => {
+    const instance = prompter()
+    instance.addSource({ name: 'nothing', candidates: () => [] })
+    const consume = vi.fn()
+    const free = instance.read({ source: 'nothing', prompt: 'Search:', freeText: true }, consume)
+    expect(free).toMatchObject({ freeText: true, candidates: [] })
+    expect(await instance.answer({ id: free.id, choice: null, text: 'tomato' })).toEqual({})
+    expect(consume).toHaveBeenCalledWith('tomato')
+
+    const fixed = instance.read({ source: 'letters', prompt: 'M-x' }, consume)
+    expect(fixed).not.toHaveProperty('freeText')
+    await expect(instance.answer({ id: fixed.id, choice: null, text: 'x' })).rejects.toThrow(
+      /takes a candidate/,
+    )
+    expect(consume).toHaveBeenCalledTimes(1)
+  })
+
   it('knows its sources by name, once each', () => {
     const instance = prompter()
     expect(() => instance.read({ source: 'ghosts', prompt: '?' }, () => undefined)).toThrow(
@@ -114,5 +149,14 @@ describe('the prompter', () => {
     expect(() => parsePaletteAnswer({ choice: 'x' })).toThrow(/usable id/)
     expect(() => parsePaletteAnswer({ id: 'p1', choice: 3 })).toThrow(/usable choice/)
     expect(() => parsePaletteAnswer({ id: 'p1', choice: 'x'.repeat(201) })).toThrow(/usable choice/)
+    // The text of a free-text read (#69): a string, bounded like a query.
+    expect(parsePaletteAnswer({ id: 'p1', text: 'tomato' })).toEqual({
+      id: 'p1',
+      choice: null,
+      text: 'tomato',
+    })
+    expect(() => parsePaletteAnswer({ id: 'p1', text: 3 })).toThrow(/usable text/)
+    expect(() => parsePaletteAnswer({ id: 'p1', text: '' })).toThrow(/usable text/)
+    expect(() => parsePaletteAnswer({ id: 'p1', text: 'x'.repeat(201) })).toThrow(/usable text/)
   })
 })

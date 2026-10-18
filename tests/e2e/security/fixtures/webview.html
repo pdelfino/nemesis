@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>webview</title>
+  </head>
+  <body>
+    <h1>Webview</h1>
+    <p>
+      A page that attaches a <code>&lt;webview&gt;</code>, in markup and by script, with
+      <code>allowpopups</code> and <code>nodeintegration</code> asked for (SECURITY.org, T1: no
+      webview tag, no allowpopups).
+    </p>
+    <webview id="static" src="/node-probe.html" allowpopups nodeintegration></webview>
+    <p id="result">pending</p>
+    <script>
+      var view = document.createElement('webview')
+      view.id = 'dynamic'
+      view.setAttribute('src', '/node-probe.html')
+      view.setAttribute('allowpopups', '')
+      view.setAttribute('nodeintegration', '')
+      document.body.appendChild(view)
+      var tags = document.querySelectorAll('webview')
+      var attached = 0
+      for (var i = 0; i < tags.length; i += 1) {
+        // A real <webview> is an HTMLElement with a getWebContentsId method; a dead
+        // tag is an unknown element with neither.
+        if (typeof tags[i].getWebContentsId === 'function') attached += 1
+      }
+      document.getElementById('result').textContent =
+        tags.length + ' tags, ' + attached + ' attached'
+      globalThis.__webview = { tags: tags.length, attached: attached }
+    </script>
+  </body>
+</html>

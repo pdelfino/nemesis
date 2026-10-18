@@ -14,10 +14,13 @@ import {
   StateField,
   type ChangeDesc,
   type Extension,
+  type Line,
+  type Text,
   type TransactionSpec,
 } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import type { AgentEvent, AgentQuestion } from '../shared/agent'
+import { checkEvidenceHeader, looksLikeEvidence, toolEvidenceHeader } from '../shared/evidence'
 
 /**
  * The transcript as a document (#62): the pure half of the transcript buffer.
@@ -26,7 +29,12 @@ import type { AgentEvent, AgentQuestion } from '../shared/agent'
  * decorations and fold ranges over that text, never markup inside it. So
  * search, copy, kill-ring-save and the point behave as they do in any text
  * buffer, and copying a region yields the words on the screen and nothing
- * else. Markdown is highlighted, not rendered.
+ * else. Markdown is highlighted, not rendered. What happened inside a
+ * subagent (#85) is a child block: marked as such, folded on arrival, so an
+ * investigation delegated there leaves the main view clean. Evidence (#81),
+ * the check the verify key ran or a tool result that reads like a test or
+ * build run, is a block of its own: the exit status in the header, the
+ * output folded under it, so a reviewer reads the verdict first.
  *
  * Nothing here touches a window: the unit tests build an EditorState from
  * transcriptExtensions() and run transactionFor() over it. The view, the
@@ -34,11 +42,13 @@ import type { AgentEvent, AgentQuestion } from '../shared/agent'
  */
 
 export type BlockKind =
-  'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'request' | 'note'
+  'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'request' | 'note' | 'evidence'
 
 /** One block: a header line, then zero or more body lines. Positions are in the document. */
 export interface TranscriptBlock {
   readonly kind: BlockKind
+  /** The block happened inside a subagent (#85): shown indented and folded. */
+  readonly child: boolean
   /** Start of the header line. */
   readonly from: number
   /** End of the header line. The body, when there is one, starts on the next line. */
@@ -52,6 +62,8 @@ export interface TranscriptState {
   readonly decorations: DecorationSet
   /** Tool names by tool-use id, so a result says which tool answered. */
   readonly toolNames: ReadonlyMap<string, string>
+  /** The command of a shell tool call by tool-use id, so its result can be read as evidence (#81). */
+  readonly toolCommands: ReadonlyMap<string, string>
   /** The last block is an assistant block still taking text. */
   readonly open: boolean
 }
@@ -60,7 +72,7 @@ export interface TranscriptState {
 const FOLD_LINES = 6
 
 const HEADERS: Readonly<
-  Record<Exclude<BlockKind, 'tool-use' | 'tool-result' | 'request' | 'note'>, string>
+  Record<Exclude<BlockKind, 'tool-use' | 'tool-result' | 'request' | 'note' | 'evidence'>, string>
 > = {
   user: 'You',
   assistant: 'Claude',
@@ -77,13 +89,18 @@ const blockAdded = StateEffect.define<TranscriptBlock>({
 /** The open assistant block took more text and now ends at `to`. */
 const blockExtended = StateEffect.define<number>({ map: (to, mapping) => mapping.mapPos(to) })
 /** A tool was called; its result will be paired by id. */
-const toolNamed = StateEffect.define<{ readonly id: string; readonly name: string }>()
+const toolNamed = StateEffect.define<{
+  readonly id: string
+  readonly name: string
+  readonly command: string | null
+}>()
 /** The turn ended, so the next assistant text starts a block of its own. */
 const blockClosed = StateEffect.define<null>()
 
 function mapBlock(block: TranscriptBlock, mapping: ChangeDesc): TranscriptBlock {
   return {
     kind: block.kind,
+    child: block.child,
     from: mapping.mapPos(block.from, 1),
     headerTo: mapping.mapPos(block.headerTo, -1),
     to: mapping.mapPos(block.to, -1),
@@ -91,9 +108,15 @@ function mapBlock(block: TranscriptBlock, mapping: ChangeDesc): TranscriptBlock 
 }
 
 export const transcriptField = StateField.define<TranscriptState>({
-  create: () => ({ blocks: [], decorations: Decoration.none, toolNames: new Map(), open: false }),
+  create: () => ({
+    blocks: [],
+    decorations: Decoration.none,
+    toolNames: new Map(),
+    toolCommands: new Map(),
+    open: false,
+  }),
   update(value, tr) {
-    let { blocks, decorations, toolNames, open } = value
+    let { blocks, decorations, toolNames, toolCommands, open } = value
     if (tr.docChanged) {
       blocks = blocks.map((block) => mapBlock(block, tr.changes))
       decorations = decorations.map(tr.changes)
@@ -106,7 +129,8 @@ export const transcriptField = StateField.define<TranscriptState>({
           add: lineDecorations(tr.state, block, block.from),
           sort: true,
         })
-        open = block.kind === 'assistant'
+        // A subagent's reply never takes the main thread's next text.
+        open = block.kind === 'assistant' && !block.child
       } else if (effect.is(blockExtended)) {
         const last = blocks[blocks.length - 1]
         if (last === undefined) continue
@@ -119,11 +143,14 @@ export const transcriptField = StateField.define<TranscriptState>({
         })
       } else if (effect.is(toolNamed)) {
         toolNames = new Map(toolNames).set(effect.value.id, effect.value.name)
+        if (effect.value.command !== null) {
+          toolCommands = new Map(toolCommands).set(effect.value.id, effect.value.command)
+        }
       } else if (effect.is(blockClosed)) {
         open = false
       }
     }
-    return { blocks, decorations, toolNames, open }
+    return { blocks, decorations, toolNames, toolCommands, open }
   },
   provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
 })
@@ -135,8 +162,11 @@ function lineDecorations(state: EditorState, block: TranscriptBlock, fromPos: nu
   for (let number = state.doc.lineAt(fromPos).number; number <= last; number += 1) {
     const line = state.doc.line(number)
     const role = line.from === block.from ? 'tr-header' : 'tr-body'
+    const className = block.child ? `${role} tr-child` : role
     ranges.push(
-      Decoration.line({ class: role, attributes: { 'data-role': block.kind } }).range(line.from),
+      Decoration.line({ class: className, attributes: { 'data-role': block.kind } }).range(
+        line.from,
+      ),
     )
   }
   return ranges
@@ -148,6 +178,15 @@ function lineDecorations(state: EditorState, block: TranscriptBlock, fromPos: nu
  */
 export function transactionFor(state: EditorState, event: AgentEvent): TransactionSpec | null {
   const transcript = state.field(transcriptField)
+  if (
+    (event.type === 'assistant-text' ||
+      event.type === 'assistant-thinking' ||
+      event.type === 'tool-use' ||
+      event.type === 'tool-result') &&
+    event.parentToolUseId !== undefined
+  ) {
+    return childTransaction(state, event)
+  }
   switch (event.type) {
     case 'user-text':
       return appendBlock(state, 'user', HEADERS.user, event.text)
@@ -160,13 +199,28 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
     case 'tool-use':
       return appendBlock(state, 'tool-use', `Tool: ${event.name}`, formatInput(event.input), {
         fold: 'long',
-        effects: [toolNamed.of({ id: event.toolUseId, name: event.name })],
+        effects: [
+          toolNamed.of({ id: event.toolUseId, name: event.name, command: commandOf(event.input) }),
+        ],
       })
     case 'tool-result': {
       const name = transcript.toolNames.get(event.toolUseId) ?? 'tool'
-      const header = `Result: ${name}${event.isError ? ' (error)' : ''}`
+      const command = transcript.toolCommands.get(event.toolUseId) ?? null
       const body = event.text.length === 0 ? '(no output)' : event.text
+      // A check the agent ran is evidence: headed by its status, folded (#81).
+      if (looksLikeEvidence(name, command, event.text)) {
+        const header = toolEvidenceHeader(command, event.text, event.isError)
+        return appendBlock(state, 'evidence', header, body.trimEnd(), { fold: true })
+      }
+      const header = `Result: ${name}${event.isError ? ' (error)' : ''}`
       return appendBlock(state, 'tool-result', header, body, { fold: 'long' })
+    }
+    case 'evidence': {
+      // The check the verify key ran (#81): exit code and duration in the header.
+      const body = event.output.trimEnd().length === 0 ? '(no output)' : event.output.trimEnd()
+      return appendBlock(state, 'evidence', checkEvidenceHeader(event.command, event), body, {
+        fold: true,
+      })
     }
     case 'started':
       return appendBlock(
@@ -203,6 +257,49 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
       return event.outcome === 'answered'
         ? null
         : appendBlock(state, 'note', describeOutcome(event.toolName, event.outcome), '')
+    case 'notice':
+    case 'nudge':
+      return appendBlock(state, 'note', event.text, '')
+    case 'permission-mode':
+      return appendBlock(state, 'note', `Permission mode: ${event.mode}`, '')
+    case 'context-usage':
+      // The mode line shows the meter; the document has nothing to add.
+      return null
+  }
+}
+
+/**
+ * What happened inside a subagent (#85): one block per event, named for what
+ * it is, folded on arrival. The main view keeps the header line only.
+ */
+function childTransaction(
+  state: EditorState,
+  event: Extract<AgentEvent, { parentToolUseId?: string | undefined }>,
+): TransactionSpec {
+  const transcript = state.field(transcriptField)
+  const options = { fold: true, child: true } as const
+  switch (event.type) {
+    case 'assistant-text':
+      return appendBlock(state, 'assistant', 'Subagent: Claude', event.text, options)
+    case 'assistant-thinking':
+      return appendBlock(state, 'thinking', 'Subagent thinking', event.text, options)
+    case 'tool-use':
+      return appendBlock(
+        state,
+        'tool-use',
+        `Subagent tool: ${event.name}`,
+        formatInput(event.input),
+        {
+          ...options,
+          effects: [toolNamed.of({ id: event.toolUseId, name: event.name, command: null })],
+        },
+      )
+    case 'tool-result': {
+      const name = transcript.toolNames.get(event.toolUseId) ?? 'tool'
+      const header = `Subagent result: ${name}${event.isError ? ' (error)' : ''}`
+      const body = event.text.length === 0 ? '(no output)' : event.text
+      return appendBlock(state, 'tool-result', header, body, options)
+    }
   }
 }
 
@@ -239,6 +336,8 @@ function formatQuestions(questions: readonly AgentQuestion[]): string {
 interface AppendOptions {
   /** `true` folds the body at once; `'long'` folds it past FOLD_LINES lines. */
   readonly fold?: boolean | 'long'
+  /** The block happened inside a subagent (#85). */
+  readonly child?: boolean
   readonly effects?: readonly StateEffect<unknown>[]
 }
 
@@ -254,6 +353,7 @@ function appendBlock(
   const from = state.doc.length + separator.length
   const block: TranscriptBlock = {
     kind,
+    child: options.child === true,
     from,
     headerTo: from + header.length,
     to: from + text.length,
@@ -287,6 +387,12 @@ function follow(state: EditorState, spec: TransactionSpec): TransactionSpec {
   return { ...stamped, selection: { anchor: end }, scrollIntoView: true }
 }
 
+/** The command a shell tool call carries, as data for the evidence header; null for any other call. */
+function commandOf(input: Record<string, unknown>): string | null {
+  const command = input['command']
+  return typeof command === 'string' ? command : null
+}
+
 /** Tool arguments as data on the page, one JSON document, never run or interpreted. */
 function formatInput(input: Record<string, unknown>): string {
   try {
@@ -294,6 +400,26 @@ function formatInput(input: Record<string, unknown>): string {
   } catch {
     return '(arguments could not be shown)'
   }
+}
+
+/**
+ * The line a search match points at (#69): the last line with that text,
+ * since a resumed history is the newest part of the document; failing that,
+ * a note's text without the list dash the Org file gave it, then any line
+ * containing the text. Null when nothing in the document has it.
+ */
+export function lineWithText(doc: Text, text: string): Line | null {
+  if (text.length === 0) return null
+  const note = text.startsWith('- ') ? text.slice(2) : null
+  let containing: Line | null = null
+  let asNote: Line | null = null
+  for (let number = doc.lines; number >= 1; number -= 1) {
+    const line = doc.line(number)
+    if (line.text === text) return line
+    if (asNote === null && note !== null && line.text === note) asNote = line
+    if (containing === null && line.text.includes(text)) containing = line
+  }
+  return asNote ?? containing
 }
 
 /** A header line folds its block; the fold gutter, TAB and search all ask here. */

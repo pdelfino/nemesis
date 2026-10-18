@@ -12,10 +12,16 @@ the same ground:
 - =launchNemesis()= builds on a throwaway =userData= directory, launches the
   built app in =out/= with =NODE_ENV=test= so the main process resolves the
   deterministic Agent SDK mock in =src/main/agent/mock.ts=, hands back the
-  cockpit window, and deletes the profile on =close()=.
+  cockpit window, and deletes the profile on =close()=. It passes Chromium
+  =--use-fake-device-for-media-stream= so a camera or microphone request
+  reaches the app's permission handler instead of stalling in the real
+  audio capture stack on macOS (#49); the switch grants nothing.
 - =openPageBuffer(url)= loads a URL in its own hardened, preload-free
   =WebContents=, the way a page buffer will hold one, and reports Chromium's
-  refusal in =loadError= when the load never commits.
+  refusal in =loadError= when the load never commits. =openPageBuffer(url,
+  { withPreload: true })= attaches the cockpit's preload to that hostile page
+  instead, which is how =ipc-sender-validated.spec.ts= reaches a privileged
+  channel from a web origin; no page buffer in the app ever gets it.
 - =fixtureServer()= serves =fixtures/= on a random loopback port over plain HTTP
   and on another over HTTPS, with a self-signed certificate issued at test time
   by =_certificate.ts= (=node:crypto= signs but does not issue, so that file
@@ -30,9 +36,12 @@ the same ground:
 |---------------------+-----------------------------------------------------------------|
 | =node-probe.html=   | =process=, =require=, the module loader, the preload bridge     |
 | =window-open.html=  | =window.open=, window features, =target=_blank=                 |
-| =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB) |
+| =navigation.html=   | =location= set to =file:=, a =javascript:= URL and a top-level =data:= URL |
+| =webview.html=      | a =webview= tag in markup and by script, =allowpopups= asked for |
+| =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB); a =mailto:= and a custom-scheme link |
 | =injection.html=    | prompt-injection text, visible, hidden and in a comment         |
 | =permissions.html=  | one button per device or data permission, outcome per =li=      |
+| =pwned.js=          | a remote script the internal page's CSP must refuse to fetch    |
 
 The fixtures are hostile on purpose and harmless in fact: no fixture reaches the
 network, and nothing outside this directory is served.

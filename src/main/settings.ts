@@ -20,14 +20,30 @@ export interface Settings {
   readonly model: string | null
   /** The keyscheme the keymaps are built from. `cockpit` is the only one so far. */
   readonly keyscheme: string
+  /**
+   * The appearance: `system` follows the OS, `light` and `dark` pin it. The
+   * main process hands the value to `nativeTheme.themeSource`, so the renderer
+   * sees it as `prefers-color-scheme` and never reads the settings (#33).
+   */
+  readonly theme: Theme
+  /**
+   * The check the `verify` key runs when no attached issue names one (#81),
+   * as typed in a terminal: `npm test`, `make check`. `null` leaves it to
+   * the default, `npm run gate`.
+   */
+  readonly verify: string | null
 }
+
+export type Theme = 'system' | 'light' | 'dark'
 
 export const SETTINGS_FILE = 'settings.json'
 
 /** The keyschemes the cockpit knows. A name outside this list is a typo, not a choice. */
 const KEYSCHEMES: readonly string[] = ['cockpit']
 
-const KNOWN_KEYS: readonly string[] = ['sessionsDir', 'model', 'keyscheme']
+const THEMES: readonly Theme[] = ['system', 'light', 'dark']
+
+const KNOWN_KEYS: readonly string[] = ['sessionsDir', 'model', 'keyscheme', 'theme', 'verify']
 
 export class SettingsError extends Error {
   override readonly name = 'SettingsError'
@@ -39,6 +55,8 @@ export function defaultSettings(documentsDir: string): Settings {
     sessionsDir: join(documentsDir, 'nemesis', 'sessions'),
     model: null,
     keyscheme: 'cockpit',
+    theme: 'system',
+    verify: null,
   }
 }
 
@@ -76,7 +94,17 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError(`Setting "keyscheme" is not one of ${KEYSCHEMES.join(', ')}`)
   }
 
-  return { sessionsDir: expanded, model, keyscheme }
+  const theme = value['theme'] ?? defaults.theme
+  if (typeof theme !== 'string' || !isTheme(theme)) {
+    throw new SettingsError(`Setting "theme" is not one of ${THEMES.join(', ')}`)
+  }
+
+  const verify = value['verify'] ?? defaults.verify
+  if (verify !== null && (typeof verify !== 'string' || verify.trim().length === 0)) {
+    throw new SettingsError('Setting "verify" is not a command or null')
+  }
+
+  return { sessionsDir: expanded, model, keyscheme, theme, verify }
 }
 
 /**
@@ -109,8 +137,14 @@ export function serializeSettings(settings: Settings): string {
     sessionsDir: contractHome(settings.sessionsDir),
     model: settings.model,
     keyscheme: settings.keyscheme,
+    theme: settings.theme,
+    verify: settings.verify,
   }
   return `${JSON.stringify(body, null, 2)}\n`
+}
+
+function isTheme(value: string): value is Theme {
+  return (THEMES as readonly string[]).includes(value)
 }
 
 function expandHome(path: string): string {

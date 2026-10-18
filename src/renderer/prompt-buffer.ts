@@ -6,6 +6,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { PromptQueueState } from '../shared/agent'
 import type { BufferType, KeyOutcome } from '../shared/keys'
+import { followAppearance } from './theme'
 
 /**
  * The prompt buffer (#61): the front door of the cockpit, a CodeMirror 6
@@ -14,9 +15,12 @@ import type { BufferType, KeyOutcome } from '../shared/keys'
  *
  * The cockpit's own chords never reach the editor: src/renderer/keys.ts takes
  * them in the capture phase and the main process dispatches them. This module
- * acts on two of the commands that come back, `send-prompt` and
- * `keyboard-quit`, and binds `M-p`/`M-n` inside the editor, because walking
- * the history is editing, not a cockpit command.
+ * acts on three of the commands that come back, `send-prompt`, `compact`
+ * (the text is the instruction of a `/compact`, #80) and `keyboard-quit`,
+ * and binds `M-p`/`M-n` inside the editor, because walking the history is
+ * editing, not a cockpit command. Text a command adds to the prompt, the
+ * criterion of `attach-check` or the path of a screenshot (#81), arrives
+ * from the main process and is appended after what is typed.
  *
  * The draft, the history and the queue live in the main process, per session.
  * This buffer parks the draft as it changes and rebuilds itself from the main
@@ -114,7 +118,7 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
         markdown(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         EditorView.lineWrapping,
-        EditorView.theme({}, { dark: matchMedia('(prefers-color-scheme: dark)').matches }),
+        followAppearance(),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return
           if (draftTimer !== null) clearTimeout(draftTimer)
@@ -125,6 +129,13 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
   })
   // A reload must find the latest draft, not the one parked 200ms ago.
   window.addEventListener('pagehide', parkDraft)
+
+  // What a command adds goes after the text typed, on a paragraph of its own (#81).
+  window.nemesis.onPromptInsert((insert) => {
+    appendText(insert.text)
+    parkDraft()
+    say('Added to the prompt.')
+  })
 
   // The current buffer carries the point (#60): focus follows it.
   window.nemesis.onBuffersChanged((list) => {
@@ -138,6 +149,19 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: text },
       selection: { anchor: text.length },
+      scrollIntoView: true,
+    })
+  }
+
+  function appendText(text: string): void {
+    const end = view.state.doc.length
+    const typed = view.state.doc.toString()
+    const separator =
+      typed.length === 0 || typed.endsWith('\n\n') ? '' : typed.endsWith('\n') ? '\n' : '\n\n'
+    const insert = `${separator}${text}`
+    view.dispatch({
+      changes: { from: end, insert },
+      selection: { anchor: end + insert.length },
       scrollIntoView: true,
     })
   }
@@ -164,12 +188,23 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
     )
   }
 
-  async function send(): Promise<void> {
-    const text = view.state.doc.toString()
-    if (text.trim().length === 0) {
+  /**
+   * Sends the text, or with `command` the text as that command's argument:
+   * `/compact` takes the text typed as its instruction, and goes alone when
+   * nothing is typed (#80).
+   */
+  async function send(command = ''): Promise<void> {
+    const typed = view.state.doc.toString()
+    if (command.length === 0 && typed.trim().length === 0) {
       say('Nothing to send.')
       return
     }
+    const text =
+      command.length === 0
+        ? typed
+        : typed.trim().length === 0
+          ? command
+          : `${command} ${typed.trim()}`
     say('Sending.')
     try {
       const receipt = await window.nemesis.sendPrompt(text)
@@ -200,6 +235,7 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
     view,
     onCommand(outcome, bufferType) {
       if (outcome.command === 'send-prompt') void send()
+      else if (outcome.command === 'compact') void send('/compact')
       // C-g clears the prompt only when the point is in it; elsewhere it is
       // the plain cancel of #59.
       else if (outcome.command === 'keyboard-quit' && bufferType === 'prompt') clear()

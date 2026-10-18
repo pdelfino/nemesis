@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron as electron, type ElectronApplication } from '@playwright/test'
@@ -9,6 +9,8 @@ export interface LaunchedApp {
   readonly userData: string
   /** Where this launch writes its session folders: inside the profile (#64). */
   readonly sessionsDir: string
+  /** Where this launch's downloads path points: inside the profile too (#51). */
+  readonly downloadsDir: string
 }
 
 /**
@@ -18,19 +20,45 @@ export interface LaunchedApp {
  *
  * The profile carries a settings file that points the sessions folder inside
  * itself, so no spec leaves a transcript in ~/Documents and the folder goes
- * with the profile when a caller deletes it.
+ * with the profile when a caller deletes it. The downloads path is inside the
+ * profile for the same reason: a download a spec says yes to lands in the
+ * quarantine folder under it, never in ~/Downloads (#51).
+ *
+ * A spec that needs a setting (the appearance pin of #33, for one) passes it
+ * in `settings`; the keys are merged over the profile's own, so a spec can
+ * even point the sessions folder elsewhere.
  */
-export async function launchApp(prefix = 'nemesis-e2e-'): Promise<LaunchedApp> {
+export async function launchApp(
+  prefix = 'nemesis-e2e-',
+  chromiumSwitches: readonly string[] = [],
+  settings: Readonly<Record<string, unknown>> = {},
+): Promise<LaunchedApp> {
   const userData = mkdtempSync(join(tmpdir(), prefix))
   const sessionsDir = join(userData, 'sessions')
-  writeFileSync(join(userData, 'settings.json'), `${JSON.stringify({ sessionsDir })}\n`)
+  const downloadsDir = join(userData, 'downloads')
+  mkdirSync(downloadsDir)
+  writeFileSync(
+    join(userData, 'settings.json'),
+    `${JSON.stringify({ sessionsDir, ...settings })}\n`,
+  )
   const app = await electron.launch({
-    // NEMESIS_USER_DATA is what the main process reads; the Chromium switch
-    // keeps caches and partitions inside the same throwaway tree.
-    args: ['.', `--user-data-dir=${userData}`],
-    env: { ...process.env, NODE_ENV: 'test', NEMESIS_USER_DATA: userData },
+    // NEMESIS_USER_DATA and NEMESIS_DOWNLOADS are what the main process
+    // reads; the Chromium switch keeps caches and partitions inside the same
+    // throwaway tree. A caller may add Chromium switches of its own (the
+    // security harness does).
+    args: ['.', `--user-data-dir=${userData}`, ...chromiumSwitches],
+    // Playwright emulates a light prefers-color-scheme unless told not to;
+    // null lets the page follow nativeTheme, which is what the appearance
+    // setting drives (#33).
+    colorScheme: null,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      NEMESIS_USER_DATA: userData,
+      NEMESIS_DOWNLOADS: downloadsDir,
+    },
   })
-  return { app, userData, sessionsDir }
+  return { app, userData, sessionsDir, downloadsDir }
 }
 
 /** The product smoke specs want the app and nothing else. */

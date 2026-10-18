@@ -155,6 +155,19 @@ describe('the prompt queue', () => {
     })
   })
 
+  it('hands text a command adds to the prompt to the window, leaving the parked draft alone (#81)', () => {
+    const queue = new PromptQueue(new FakeSession())
+    queue.saveDraft('typed so far')
+    const inserts: string[] = []
+    const off = queue.onInsert((insert) => inserts.push(insert.text))
+    queue.insert('Example cases: a is b.')
+    expect(inserts).toEqual(['Example cases: a is b.'])
+    expect(queue.draft).toBe('typed so far')
+    off()
+    queue.insert('unheard')
+    expect(inserts).toHaveLength(1)
+  })
+
   it('drives the mock Agent SDK, answering queued prompts in order', async () => {
     const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver: mockDriver() })
     const replies: string[] = []

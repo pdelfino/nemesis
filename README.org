@@ -107,6 +107,7 @@ Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue
 | [[https://www.electronjs.org/docs/latest/tutorial/security][Electron security checklist]]                   | Every item is a non-negotiable in SECURITY.org                               |
 | [[https://github.com/browsermcp/mcp][browsermcp/mcp]]                                             | MCP tool-surface reference for M3 and M4; match then exceed                  |
 | [[https://github.com/minbrowser/min][minbrowser/min]]                                            | Proof that a daily-use browser on Electron is realistic                      |
+| [[file:docs/comparison.org][docs/comparison.org]]                                           | One table: Nemesis next to the cockpits, orchestrators and browsers it borrows from |
 
 * License
 

@@ -1,50 +1,67 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentEvent, PromptQueueState, PromptReceipt, PromptState } from '../shared/agent'
 import {
   AGENT_EVENT_CHANNEL,
   PROMPT_DRAFT_CHANNEL,
+  PROMPT_INSERT_CHANNEL,
   PROMPT_QUEUE_CHANNEL,
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
+  TRANSCRIPT_GOTO_CHANNEL,
 } from '../shared/agent'
 import type { NemesisApi } from '../shared/api'
-import type { BufferInfo, BufferList, BufferSpec } from '../shared/buffers'
+import type { BufferSpec } from '../shared/buffers'
 import { BUFFER_CREATE_CHANNEL, BUFFERS_CHANGED_CHANNEL, BUFFERS_CHANNEL } from '../shared/buffers'
-import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from '../shared/keys'
+import { DIFF_SHOWN_CHANNEL } from '../shared/diff'
+import type {
+  InvokeAnswer,
+  InvokeArgs,
+  InvokeChannel,
+  PushChannel,
+  PushPayload,
+} from '../shared/ipc'
 import { BINDINGS_CHANNEL, DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../shared/keys'
-import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from '../shared/palette'
 import { HELP_SHOWN_CHANNEL, PALETTE_ANSWER_CHANNEL, PALETTE_OPEN_CHANNEL } from '../shared/palette'
+import { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL } from '../shared/plan'
+import { SPEC_SHOWN_CHANNEL } from '../shared/spec'
 
-// The only bridge between internal pages and the main process (SECURITY.org, T1).
-// Typed functions only, never a raw ipcRenderer. Completed by #53.
+// The only bridge between internal pages and the main process (SECURITY.org,
+// T1; #53). Typed functions only, never a raw ipcRenderer: every call goes
+// through the channel table in src/shared/ipc.ts, the same table the main
+// process registers its validated handlers through, so the two sides cannot
+// disagree on a payload or an answer without failing to compile.
+function invoke<C extends InvokeChannel>(
+  channel: C,
+  ...args: InvokeArgs<C>
+): Promise<InvokeAnswer<C>> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<InvokeAnswer<C>>
+}
+
+// The IpcRendererEvent never crosses the bridge: the page sees the payload only.
+function on<C extends PushChannel>(channel: C, listener: (payload: PushPayload<C>) => void): void {
+  ipcRenderer.on(channel, (_event, payload: PushPayload<C>) => listener(payload))
+}
+
 const base = {
   name: 'nemesis',
   version: '0.0.1',
-  sendKey: (press: KeyPress): Promise<KeyOutcome> => ipcRenderer.invoke(KEY_CHANNEL, press),
-  bindings: (): Promise<KeyBindings> => ipcRenderer.invoke(BINDINGS_CHANNEL),
-  buffers: (): Promise<BufferList> => ipcRenderer.invoke(BUFFERS_CHANNEL),
-  // The IpcRendererEvent never crosses the bridge: the page sees the payload only.
-  onBuffersChanged: (listener: (list: BufferList) => void): void => {
-    ipcRenderer.on(BUFFERS_CHANGED_CHANNEL, (_event, list: BufferList) => listener(list))
-  },
-  sendPrompt: (text: string): Promise<PromptReceipt> =>
-    ipcRenderer.invoke(PROMPT_SEND_CHANNEL, text),
-  saveDraft: (text: string): Promise<void> => ipcRenderer.invoke(PROMPT_DRAFT_CHANNEL, text),
-  promptState: (): Promise<PromptState> => ipcRenderer.invoke(PROMPT_STATE_CHANNEL),
-  onPromptQueueChanged: (listener: (state: PromptQueueState) => void): void => {
-    ipcRenderer.on(PROMPT_QUEUE_CHANNEL, (_event, state: PromptQueueState) => listener(state))
-  },
-  onAgentEvent: (listener: (event: AgentEvent) => void): void => {
-    ipcRenderer.on(AGENT_EVENT_CHANNEL, (_event, agentEvent: AgentEvent) => listener(agentEvent))
-  },
-  onPaletteOpen: (listener: (request: PaletteRequest) => void): void => {
-    ipcRenderer.on(PALETTE_OPEN_CHANNEL, (_event, request: PaletteRequest) => listener(request))
-  },
-  answerPalette: (answer: PaletteAnswer): Promise<PaletteOutcome> =>
-    ipcRenderer.invoke(PALETTE_ANSWER_CHANNEL, answer),
-  onHelpShown: (listener: (content: HelpContent) => void): void => {
-    ipcRenderer.on(HELP_SHOWN_CHANNEL, (_event, content: HelpContent) => listener(content))
-  },
+  sendKey: (press) => invoke(KEY_CHANNEL, press),
+  bindings: () => invoke(BINDINGS_CHANNEL),
+  buffers: () => invoke(BUFFERS_CHANNEL),
+  onBuffersChanged: (listener) => on(BUFFERS_CHANGED_CHANNEL, listener),
+  sendPrompt: (text) => invoke(PROMPT_SEND_CHANNEL, text),
+  saveDraft: (text) => invoke(PROMPT_DRAFT_CHANNEL, text),
+  promptState: () => invoke(PROMPT_STATE_CHANNEL),
+  onPromptQueueChanged: (listener) => on(PROMPT_QUEUE_CHANNEL, listener),
+  onAgentEvent: (listener) => on(AGENT_EVENT_CHANNEL, listener),
+  onPaletteOpen: (listener) => on(PALETTE_OPEN_CHANNEL, listener),
+  answerPalette: (answer) => invoke(PALETTE_ANSWER_CHANNEL, answer),
+  onHelpShown: (listener) => on(HELP_SHOWN_CHANNEL, listener),
+  onTranscriptGoto: (listener) => on(TRANSCRIPT_GOTO_CHANNEL, listener),
+  onDiffShown: (listener) => on(DIFF_SHOWN_CHANNEL, listener),
+  onPlanShown: (listener) => on(PLAN_SHOWN_CHANNEL, listener),
+  answerPlan: (answer) => invoke(PLAN_ANSWER_CHANNEL, answer),
+  onSpecShown: (listener) => on(SPEC_SHOWN_CHANNEL, listener),
+  onPromptInsert: (listener) => on(PROMPT_INSERT_CHANNEL, listener),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and
@@ -55,10 +72,8 @@ const api: NemesisApi = Object.freeze(
   process.env['NODE_ENV'] === 'test'
     ? {
         ...base,
-        dispatchLog: (): Promise<readonly DispatchRecord[]> =>
-          ipcRenderer.invoke(DISPATCH_LOG_CHANNEL),
-        createBuffer: (spec: BufferSpec): Promise<BufferInfo> =>
-          ipcRenderer.invoke(BUFFER_CREATE_CHANNEL, spec),
+        dispatchLog: () => invoke(DISPATCH_LOG_CHANNEL),
+        createBuffer: (spec: BufferSpec) => invoke(BUFFER_CREATE_CHANNEL, spec),
       }
     : base,
 )

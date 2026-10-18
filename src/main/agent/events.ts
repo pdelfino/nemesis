@@ -30,20 +30,30 @@ export interface AgentUserTextEvent {
   readonly text: string
 }
 
+/**
+ * Set on an event that happened inside a subagent (#85): the id of the tool
+ * call, on the main thread, that started it. The transcript shows these as
+ * collapsed child blocks, so an investigation delegated to subagents leaves
+ * the main view clean. Absent on everything the main thread did itself.
+ */
+export interface AgentChildEvent {
+  readonly parentToolUseId?: string | undefined
+}
+
 /** One finished text block from the assistant. */
-export interface AgentTextEvent {
+export interface AgentTextEvent extends AgentChildEvent {
   readonly type: 'assistant-text'
   readonly text: string
 }
 
 /** One finished thinking block. The transcript shows it folded (#62). */
-export interface AgentThinkingEvent {
+export interface AgentThinkingEvent extends AgentChildEvent {
   readonly type: 'assistant-thinking'
   readonly text: string
 }
 
 /** The assistant asked for a tool. The arguments are data, never instructions. */
-export interface AgentToolUseEvent {
+export interface AgentToolUseEvent extends AgentChildEvent {
   readonly type: 'tool-use'
   readonly toolUseId: string
   readonly name: string
@@ -51,7 +61,7 @@ export interface AgentToolUseEvent {
 }
 
 /** What a tool returned, paired with its call by `toolUseId`. */
-export interface AgentToolResultEvent {
+export interface AgentToolResultEvent extends AgentChildEvent {
   readonly type: 'tool-result'
   readonly toolUseId: string
   readonly isError: boolean
@@ -135,6 +145,73 @@ export interface AgentPermissionAnsweredEvent {
   readonly message?: string | undefined
 }
 
+/**
+ * A one-line notice from the cockpit itself, not from the agent: a site
+ * permission refused by the policy in src/main/security/permissions.ts (#49).
+ * The transcript shows it as a note, so the user knows why a page "does not
+ * work", and the session folder keeps it with the rest.
+ */
+export interface AgentNoticeEvent {
+  readonly type: 'notice'
+  readonly text: string
+}
+
+/**
+ * How full the context window is (#80): the tokens the last request to the
+ * model carried, against the window the SDK reports for that model. The
+ * mode line draws the meter from this; the recorder keeps it, so a resumed
+ * session shows where it left off.
+ */
+export interface AgentContextUsageEvent {
+  readonly type: 'context-usage'
+  readonly usedTokens: number
+  readonly windowTokens: number
+}
+
+/**
+ * A suggestion from the cockpit, not from the agent (#80): the guide's
+ * advice at the moment it applies, two corrections in a row for one. The
+ * mode line shows it until the next prompt; the transcript notes it.
+ */
+export interface AgentNudgeEvent {
+  readonly type: 'nudge'
+  readonly text: string
+}
+
+/**
+ * The permission mode changed (#82): plan mode toggled on or off, or a plan
+ * approved and the session back in the mode plan mode replaced. The mode
+ * line shows the mode at all times from this and from `started`; the
+ * transcript notes it.
+ */
+export interface AgentPermissionModeEvent {
+  readonly type: 'permission-mode'
+  readonly mode: AgentPermissionMode
+}
+
+/** Where the `verify` key took its command from (#81), in the order it looks. */
+export type VerifySource = 'issue' | 'settings' | 'default'
+
+/**
+ * Evidence (#81): what the check the `verify` key ran came to, the output
+ * verbatim with the exit code and the time it took. Emitted by the cockpit,
+ * not by the agent: the check ran with the user's permissions, outside the
+ * agent's tool path, and the agent sees nothing of it unless the user sends
+ * it. The transcript shows it folded with the status in the header; the Org
+ * file keeps the output as an example block.
+ */
+export interface AgentEvidenceEvent {
+  readonly type: 'evidence'
+  readonly command: string
+  readonly source: VerifySource
+  /** Null when the process was killed by a signal or never started. */
+  readonly exitCode: number | null
+  readonly signal: string | null
+  readonly durationMs: number
+  /** stdout and stderr as they arrived, the tail when there was too much. */
+  readonly output: string
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -148,6 +225,11 @@ export type AgentEvent =
   | AgentPermissionRequestEvent
   | AgentQuestionAnsweredEvent
   | AgentPermissionAnsweredEvent
+  | AgentNoticeEvent
+  | AgentContextUsageEvent
+  | AgentNudgeEvent
+  | AgentPermissionModeEvent
+  | AgentEvidenceEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

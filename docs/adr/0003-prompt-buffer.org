@@ -1,0 +1,273 @@
+#+TITLE: ADR 0003: the prompt buffer and the palette as the text-driven surface
+#+OPTIONS: toc:nil
+
+- Status: accepted
+- Date: 2026-OCTOBER-17
+- Threat or Pillar: README.org pillar 2, text-driven UX (pillar 1,
+  keyboard-driven, sets the keys; pillar 4, safe by construction, sets which
+  process holds what)
+- Issue: #61 and #65 (recorded by #21)
+
+* Context
+
+The prompt buffer is the front door of the cockpit (README.org, pillar 2): the
+place where a prompt is typed and sent, and, in Nyxt's tradition, the place
+where every command that needs an argument reads it. #61 shipped the editor
+and #65 shipped the palette, on main at 0373d48, without a record of why the
+pieces sit where they do. M2 then added sources to the palette (the sessions
+of #67, the transcript matches of #69) and a free-text read, and M4 will add
+URLs and history, so the shape a source must have, and which process owns
+what, had to be written down before more of them are added against an
+unwritten rule.
+
+** Nyxt's prompt buffer is the model
+
+In Nyxt, =source/prompt-buffer.lisp= defines the prompt buffer as a buffer
+class that is also a =prompter:prompter=, and the =prompt= function opens one
+and blocks on a channel until the user answers (=wait-on-prompt-buffer=);
+=prompt1= returns the first result. The mechanism underneath is the
+=prompter= library, a submodule of the Nyxt tree under =_build/prompter= that
+was not checked out in the local clone when this ADR was written, so this
+record describes it from the symbols =prompt-buffer.lisp= uses, in words, and
+leaves the comparison to the study #13.
+
+The ideas that matter here, each a concept of that library:
+
+- A *source* (=prompter:source=) is a named provider of suggestions. A
+  prompt is opened over one or more sources, and the buffer renders them in
+  turn with the count per source.
+- A *suggestion* wraps a value and its *attributes*
+  (=prompter:object-attributes=, =prompter:active-attributes=): the columns
+  the buffer shows, chosen per source, so one object can be listed as a
+  title, a URL and a date.
+- The *input* is matched against the suggestions as the user types, and a
+  *current suggestion* is highlighted (=current-suggestion-value=).
+- *Actions on return* (=prompter:run-action-on-return=) decide what happens
+  with the choice; a source may offer several, and the default runs on =RET=.
+- *Marks* (=prompter:marks=, =prompter:toggle-mark=) select several
+  suggestions at once, so an action can run on a set.
+- A *history* (=prompter:history=) remembers past inputs per prompt.
+- The *return value* of =prompt= is the list of chosen values, so a command
+  is written as ordinary code that calls =prompt= and uses what comes back.
+
+** Two processes, one surface
+
+Electron splits the application in two. The main process holds the agent
+session, the registry and everything that must survive a window (SECURITY.org:
+the renderer has no Node, the preload surface is minimal, the main process
+decides). The renderer holds the editor, because a CodeMirror 6 view can only
+live in a document. Nyxt has the same split between its Lisp core and the
+WebKit view, and resolves it by rendering the prompt buffer as HTML from Lisp
+on every keystroke; Nemesis cannot afford a main-process round trip per
+character on the typing path, so the text has to live in the renderer and the
+decision of what to do with it has to live in main. Where the line between the
+two falls is the decision below.
+
+** A reload must lose nothing
+
+A window reload, a crashed renderer, a failed send: none of them may lose a
+prompt being typed or the prompts waiting to go. #61 asked for this
+explicitly. The renderer is the volatile half, so the state that must survive
+cannot be its.
+
+** Everything is text
+
+Pillar 2 says every surface is reachable as text and every buffer is copyable
+as text. The palette is where most of the cockpit's state is listed (the
+commands and their keys, the buffers, the sessions, the diffs), and the help
+buffer is where its questions are answered, so both have to honour the pillar
+from the first version or the pillar is a slogan.
+
+* Decision
+
+** One editor surface, two modes
+
+The prompt section of the window is one surface with two modes. In prompt
+mode, =src/renderer/prompt-buffer.ts= is a CodeMirror 6 editor with the
+Replit Emacs keymap, line wrapping and Markdown highlighting, multi-line by
+default; =C-c C-c= sends, =M-p= and =M-n= walk the history inside the editor
+(walking history is editing, not a cockpit command, so it is an editor key),
+and =C-g= clears when the point is in the prompt. In command mode,
+=src/renderer/palette.ts= takes the same section: the prompt gives way to a
+one-line query with the same Emacs keys (a newline is =RET=, never text), the
+candidates ranked under it, and the doc line of the highlighted one. =RET=
+answers, =C-g= and =ESC= cancel, =C-n=, =C-p=, the arrows and =TAB= move the
+highlight, and the point returns to where it was when the palette closes.
+There is no second input widget anywhere: a yes or no before a download, a
+session to resume, a search query and a command name are all read through
+the palette.
+
+** The main process owns the state, the renderer owns the text
+
+The queue of prompts waiting for the agent, the history of prompts sent and
+the draft being typed live in =src/main/agent/prompt-queue.ts=, per session.
+The editor is a view of that state: it rebuilds itself from =promptState()=
+(=src/shared/api.ts=) at load, parks the draft through =saveDraft= when
+typing pauses and on =pagehide=, and clears itself only after =sendPrompt=
+has returned, so a failed send leaves the text where it was typed. Text
+crosses the bridge in exactly two directions and three cases: a prompt sent,
+a draft parked, and, since #81, text a command composes for the prompt,
+pushed from main and appended after what is typed. A keystroke never
+crosses. The channels are the validated ones of =src/main/ipc.ts=
+(SECURITY.org T1), wired in =src/main/agent/session-bridge.ts=, and the
+payload is checked for shape only (=parsePromptText=, =parseDraft=), never
+logged.
+
+The queue sends one prompt at a time and advances when a turn ends, so the
+window shows what waits and in what order; a prompt whose send fails stays at
+the head of the queue. A send while a permission question is pending answers
+the question instead, which is how the prompt buffer doubles as the answer
+line of #63.
+
+** The palette is a prompter in main with pluggable sources
+
+=Prompter= in =src/main/commands/prompter.ts= is how a command in the main
+process asks the user for one thing. A command calls =read(spec, consume)=
+with the name of a source and a prompt string; the prompter lists the
+source's candidates, pushes a =PaletteRequest= to the window through
+=src/main/commands/palette-bridge.ts=, and keeps the consumer until the
+answer comes back. One read is in flight at a time: a newer read drops the
+one before it, and the dropped read is told it was cancelled. A command that
+reads returns at once; what happens with the choice is the consumer, and what
+the consumer returns (a =PaletteOutcome=, possibly naming a command that ran)
+goes back to the window, so a command the palette ran is acted on there like
+a command a key ran.
+
+A source is a plain object: a =name= and a =candidates()= function that
+returns the list as of now. A candidate is an =id= (what the window answers
+with: a command name, a buffer id, a session id), a =label= (what is matched
+and shown), a =doc= (the line shown while it is highlighted) and an optional
+=detail= (a short note beside the label, the keys that run a command). Every
+field is a string. The cockpit's sources are listed in =cockpitSources= in
+=src/main/commands/keyscheme.ts= and registered once by name; the yes or no
+sources of the security policies are in =src/main/commands/confirm.ts=, with
+the no first so that it is the candidate a stray =RET= picks. Sources are
+Nyxt's sources with one column: a candidate has a label and a doc, not a set
+of attributes, and a read has one action, the consumer, not a list.
+
+** The renderer ranks; the main process decides
+
+The candidates go to the window once, when the read starts; the window ranks
+them as the query grows with =rankCandidates= in =src/shared/palette.ts=, a
+pure function (subsequence match, case folded, word starts and prefixes score
+higher, an empty query keeps the source's own order) that the unit tests run
+without a window. The renderer decides nothing about what a choice means. It
+answers with a =PaletteAnswer= over the validated channel: =RET= with the
+=id= of the highlighted candidate, =C-g= with =null=. The prompter refuses an
+id that is not among the candidates it sent, ignores an answer to a read that
+is no longer current, and calls the cancel hook on =null=, so a confirmation
+(#51) gets its no as reliably as its yes.
+
+** A read may take free text
+
+A read opened with =freeText= (#69) takes the query itself when =RET= finds
+no candidate highlighted: the answer carries a =text= field instead of an id,
+and the prompter refuses text on a read that did not ask for it. A source may
+list nothing, in which case the doc line says what =RET= does. This is how a
+search query, a side question, an issue number and the one line the guideline
+commands read (#85) come in through the same surface.
+
+** The copy-as-text contract
+
+Every candidate list and every help answer is plain text. The palette renders
+=label=, =detail= and =doc= with =textContent=, never as markup, and the help
+buffer (=src/main/help.ts=, the text built by =src/main/commands/describe.ts=)
+is a read-only CodeMirror document the user can search and copy from, which
+the main process never keeps beyond the push and never logs. A source that
+wants to show something shows it as a string; nothing a source returns is
+interpreted by the window. The same rule puts a page's words in the prompt
+line and the app's words in the candidates (=confirm.ts=): the thing being
+asked about is shown, but it cannot become an option.
+
+* Alternatives considered
+
+** An HTML overlay per command
+
+Each command that needs an argument draws its own panel: a buffer list with
+its own keys, a session picker with columns, a confirm dialog with two
+buttons. It is the shape most Electron applications have, and each panel can
+be tailored. It lost because it multiplies the surfaces a keyboard user has
+to learn (every panel its own keys, its own focus rules, its own way out),
+because every panel is a new place where the text-driven pillar can be
+quietly dropped, and because it is not Nyxt: the point of the prompt buffer
+is that one fuzzy read serves every command, so that a user who knows =M-x=
+knows =C-x b=, =C-x s= and the download question. With one surface, a new
+command costs a source and a consumer, not a view.
+
+** A separate window for the palette
+
+A floating window of its own, as Spotlight or a launcher app has, opened by
+main on each read and closed on the answer. It keeps the prompt editor
+untouched and could later float over a web page. It lost because a second
+=BrowserWindow= is a second security surface (its own preload, its own
+navigation policy, its own partition to pin), because focus hand-off between
+two windows is where keyboard-driven applications go wrong on macOS, and
+because the user model is Emacs's minibuffer, which is part of the frame.
+The prompt section already has the editor keys and the focus rules; taking it
+over for a read is one class on a container.
+
+** The renderer owns the state
+
+Keep the queue, the history and the draft in the renderer, where the editor
+is, and send only a prompt to main. No round trip to park a draft and nothing
+to rebuild at load. It lost because the renderer is the volatile half: a
+reload or a crashed renderer would lose the queue and the draft, which #61
+forbids, and because the queue has to know when a turn ends to advance, and
+the turn is main's. It would also put a second copy of session state on the
+far side of the bridge from the session, and the one process that will later
+host page content would be the one holding what the user typed. The draft is
+mirrored across the bridge instead, text only, on a pause in typing.
+
+** The main process ranks
+
+Send the query to main on each keystroke and get the ranked list back, as
+Nyxt does. It keeps the renderer thinner still. It lost on the typing path: a
+main-process round trip per character, with the list re-sent each time, for a
+list that already crossed once. The ranking is a pure function in
+=src/shared/palette.ts= so that it can move to main later without changing
+the contract: the candidates and the answer are the interface, where the
+ranking runs is not.
+
+* Consequences
+
+- A new read is a source and a consumer. #67 added the =sessions= source
+  (=src/main/sessions.ts=: the folders on disk, newest first, titled by their
+  first prompt, with the date as =detail=) and a consumer that resumes
+  through the session manager. #69 added two reads in a row, the query as
+  free text over a source that lists nothing, then the =matches= source
+  (=src/main/transcript-search.ts=) whose consumer resumes the session and
+  moves the transcript's point to the line. Neither touched the prompter or
+  the palette; that is the test of the shape. M4's URL and history sources
+  are the same two things over a page history store, and a URL read is a
+  free-text read with candidates, which the contract already allows.
+- A free-text read widens the contract: the answer is now text the user
+  typed, not an id the main process issued, so every consumer of a free-text
+  read treats the text as input to validate (a number, a path, a query), the
+  way the bridge treats a payload. The text goes to the agent or to disk only
+  through the consumer; the prompter itself keeps no copy.
+- Candidates cross the bridge once per read, so a source whose list is large
+  (months of sessions, a page history) pays at open time, and the window
+  shows =MAX_SHOWN= of the ranked list. A source that cannot list up front
+  will need a read that refreshes its candidates as the query changes, which
+  the request shape does not have; M4 decides whether history gets that or a
+  cap.
+- One column per candidate. Nyxt's attributes (a title, a URL and a date as
+  separate columns, per source) and marks (several candidates in one answer)
+  are not here. A source wanting columns folds them into =label= and
+  =detail=; a command wanting several answers reads several times. The study
+  #13 lists which of these gaps is worth an issue.
+- One read at a time, and a newer read cancels the older one. A command that
+  needs two answers reads the second from inside the first's consumer, as
+  the search and the rewind do; there is no queue of reads and no nesting.
+- The renderer rebuilds the prompt from main at load and parks the draft
+  after a pause, so a reload within that pause can lose the last keystrokes;
+  =pagehide= closes most of the window, not all of it. The history is capped
+  at one hundred sent prompts and is per session, not global as Nyxt's
+  prompt history is.
+- The contract is pinned by =tests/unit/palette.test.ts= (the prompter, the
+  ranking, the free-text rule, the answer validator),
+  =tests/unit/prompt-queue.test.ts= (send, queue, history, draft, the
+  payload validators) and the end-to-end specs =tests/e2e/prompt.spec.ts=,
+  =tests/e2e/palette.spec.ts= and =tests/e2e/search.spec.ts=. A change to
+  the candidate or answer shape is a change to =src/shared/palette.ts=,
+  visible in one diff on both sides of the bridge.

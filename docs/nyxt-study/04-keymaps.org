@@ -1,0 +1,296 @@
+#+TITLE: Nyxt study 04: nkeymaps, what the Nemesis keymaps have and what they lack
+#+OPTIONS: toc:nil
+
+- Issue: #15 (feeds ADR 0002, =docs/adr/0002-keymaps.org=, and the modes ADR #22)
+- Nyxt read at: =~/projects/nyxt=, the nkeymaps library under
+  =_build/nkeymaps/= (=keymap.lisp=, =keyscheme-map.lisp=, =keyschemes.lisp=,
+  =modifiers.lisp=, =translators.lisp=, =conditions.lisp=, with
+  =tests/tests.lisp= and =tests/keyscheme-tests.lisp= as the worked
+  examples) and the Nyxt files that drive it: =source/input.lisp=,
+  =source/keyscheme.lisp=, =source/mode.lisp=, =source/mode/keyscheme.lisp=,
+  =source/mode/emacs.lisp=, =source/mode/vi.lisp=,
+  =source/mode/passthrough.lisp=, =source/mode/document.lisp=,
+  =source/manual.lisp=
+- Nemesis read at: main after #59, #61 and #65
+  (=src/main/commands/keymap.ts=, =src/main/commands/dispatcher.ts=,
+  =src/main/commands/keyscheme.ts=, =src/main/commands/describe.ts=,
+  =src/shared/keys.ts=, =src/renderer/keys.ts=)
+
+A note on the library. nkeymaps is a git submodule of the Nyxt tree, and
+ADR 0002 was written while it was not checked out; this study initialised the
+submodule at the commit Nyxt pins (=04b303c=), so every function below is
+cited from the library's own files. Its =README.org= lists what it leaves to
+the caller on purpose: which physical key is meta or control, dead keys, what
+to do when nothing is bound, self-insert, and global against local keymaps.
+Those are exactly the parts Nemesis wrote in the dispatcher and the renderer,
+so the comparison is between the library plus Nyxt's =source/input.lisp= on
+one side and =keymap.ts= plus =dispatcher.ts= on the other.
+
+* How nkeymaps works
+
+** The key and the keymap
+
+A =key= in =keymap.lisp= is a structure of four fields: a hardware =code=,
+a string =value=, an ordered set of =modifiers=, and a =status= (pressed or
+released). =key== compares codes first when a code is set and falls back to
+the value, so a binding made by keycode matches before one made by
+character; modifiers are an ordered set (=fset:compare= on =modifier=) so
+control-meta and meta-control are one key. Values are case sensitive: the
+library adds its own =fset:compare= method on =key= because the default
+comparison folds case.
+
+A =keymap= (class =keymap=, same file) has a =name=, an =entries= map from
+key to bound value, a =bound-type= that =define-key= asserts every value
+against (Nyxt narrows it to =nyxt-keymap-value= in =source/keyscheme.lisp=,
+so a typo like a quoted symbol in place of a command fails at definition), a
+list of =parents= ordered by priority, and the set of =modifiers= it accepts.
+A bound value is a command, or another keymap: a prefix such as =C-x= is an
+entry whose value is a nested anonymous keymap, created on demand by
+=bind-key= when a longer sequence is defined. Binding a key to nil removes
+the entry and prunes a prefix keymap that became empty (test =undefine=).
+=define-key= takes any number of keyspec and value pairs, and a keyspec may
+also be a list of =make-key= arguments or =(:remap OTHER-VALUE)=, which
+binds the new value on whatever key =OTHER-VALUE= already has (test =remap=).
+=compose= merges several keymaps into a fresh one, earlier arguments winning
+and parents unioned in order; =copy-keymap= copies one.
+
+** Lookup through parents
+
+=lookup-key= takes a keyspecs string or a key list and a keymap or a list of
+keymaps. =lookup-key*= flattens the search space with =keymap-tree->list=:
+the given keymaps first, in order, then all of their direct parents layer by
+layer, breadth first, with a =cycle= warning when a keymap recurs. The first
+keymap in that order that answers wins, so a child shadows its parents and an
+earlier keymap in the list shadows a later one (tests
+=define-key-lookup-key-parents=, =prioritize-scheme-over-parent=). Inside one
+keymap, =lookup-keys-in-keymap= follows the sequence key by key: a hit that is
+a keymap with keys left to read recurses through =lookup-key*= again, so a
+prefix keymap's own parents also count; a hit that is a command with keys left
+to read answers nil for that keymap, and the search moves on to the next, so a
+short binding in one keymap does not block a longer sequence in another (test
+=do-not-shadow-prefix-keymap=). The function returns three values: the hit,
+the keymap it came from, and the keys as actually matched after translation.
+
+Nyxt does the per-press work around it in =source/input.lisp=.
+=current-keymaps= asks each enabled mode of the buffer for its =keymap=,
+in mode order, and lets a =current-keymaps-hook= rewrite the list.
+=dispatch-input-event= pushes the key on the buffer's =key-stack=, looks the
+whole stack up, and acts on the kind of hit: a keymap means prefix, keep the
+stack and swallow the key; a command means run it on a thread and clear the
+stack; nil means clear the stack and return nil so the key goes to the web
+view. There is no abort key for a half-typed sequence in the library; Nyxt
+clears the stack the moment a sequence is unbound.
+
+** The parser
+
+A keyspec is one key, written =MODIFIERS-value= or =MODIFIERS-#code=
+(=keyspec->key= in =keymap.lisp=). The parser splits at the last hyphen that
+is not the final character, so =control--= is control plus hyphen; the
+modifiers before it are hyphen separated and each must be known by long or
+short name (=modspec->modifier= against =*modifier-list*=, error
+=bad-modifier=); a repeated modifier warns =duplicate-modifiers=; an empty
+spec, an empty modifier or an empty value is a typed error in
+=conditions.lisp=. A value starting with =#= is a keycode (=C-#10=). The
+value is otherwise opaque: there is no table of named keys, the string is
+whatever the input layer reports, which is why Nyxt binds =escape=,
+=hyphen=, =keypadleft= and =C-button1= as plain values
+(=source/mode/document.lisp=, =source/buffer.lisp=). A keyspecs string is
+keyspecs separated by whitespace (=keyspecs->keys=), so =C-x C-f= is two keys.
+The five modifiers live in =modifiers.lisp=: control =C=, meta =M=, shift
+=s=, super =S=, hyper =H=, and =define-modifier= registers more. A compiler
+macro on =define-key= and on =define-keyscheme-map= type checks every literal
+keyspec at compile time, so a malformed binding in a mode fails the build
+(test =define-key-type-catching=). =key->keyspec= and =keys->keyspecs= print
+back, with =*print-shortcut*= choosing =C-= over =control-=.
+
+** Conflicts and shadowing
+
+Within one keymap the rule is last definition wins. =bind-key= warns
+=override-existing-binding= when a single key already has a value and then
+replaces it, and it silently replaces a command with a fresh prefix keymap
+when a longer sequence is bound under it. Across keymaps nothing is checked
+at definition time; precedence is decided at lookup by the order described
+above, and the only tool for seeing a shadow is =binding-keys=, which drops
+any keyspec that no longer resolves to the value it was asked about. Nyxt's
+manual (=source/manual.lisp=) spells out the three user-level moves: bind the
+=nothing= command to swallow a key, bind nil to unbind it so it reaches the
+page, bind another command to replace it.
+
+** Modifier translation
+
+=*translator*= in =keymap.lisp= is a function from a key list to a list of
+alternative key lists. =lookup-key= tries the exact keys through every
+keymap and parent first and only then the alternatives, so a translation
+never outranks a real binding in a lower-priority keymap (test
+=translator-priority=). The default, set in =translators.lisp=, is
+=normalize-shift-modifier-state=: a key whose value is on the shifted layer
+of a US keyboard (=+shift-layer-alist+=, =!= for =1=, =A= for =a=) becomes
+the unshifted value plus the shift modifier. =keyspec->key= applies the same
+=unshift= when a binding is defined, so =shift-1=, =!= and =shift-!= all find
+one binding (test =translator=), and the third value of =lookup-key= carries
+the translated keys, which =dispatch-input-event= logs as "translated from".
+Which physical key is meta or control is not translated here at all; the
+=modifiers= slot of a keymap or keyscheme only filters which modifiers it
+accepts (=legal-modifiers-p=, raised on bind and on lookup).
+=pretty-binding-keys= rewrites =C-= and =M-= as Ctrl+ and Option+ for the
+cua print style, for display only.
+
+** One command, several keys
+
+Several keyspecs may name one command; =source/mode/document.lisp= binds
+=C-+= and =C-== to =zoom-page= and =C-M-c= and =C-C= to =open-inspector=.
+The reverse index is =binding-keys= in =keymap.lisp=: every keyspec bound to
+a value across the keymaps given and their parents, sorted alphabetically
+inside each keymap, ordered by keymap priority, with duplicates and shadowed
+keyspecs removed, plus a second value saying which keymap each came from.
+Nyxt's =binding-keys= in =source/input.lisp= takes the first, or the word
+unbound, for the button titles of the prompt buffer
+(=source/prompt-buffer.lisp=); the prompt's Bindings column in
+=source/command-commands.lisp= joins them all with commas, and
+=source/describe.lisp= lists them with their keymap names under
+describe-command. =keymap->map= and
+=keymap-with-parents->map= flatten a keymap to keyspec and value pairs for a
+full listing.
+
+** Keyschemes: emacs, vi and cua
+
+A =keyscheme= (=keyscheme-map.lisp=) is a named object with parent schemes.
+=keyschemes.lisp= predefines five: =default= is the parent of =cua=, =emacs=
+and =vi-normal=; =vi-insert= has no parent, so insert mode inherits nothing
+and typing reaches the page. A =keyscheme-map= is a table from scheme to
+keymap. =define-keyscheme-map= builds one keymap per scheme listed, named
+after the mode and the scheme, copies the scheme's modifiers and bound type
+onto it, and then sets each keymap's parents to the keymaps of the scheme's
+parent schemes inside the same table: the emacs keymap of =document-mode=
+inherits that mode's default keymap, never a global one (test =inheritance=).
+=get-keymap= returns the keymap for a scheme or walks the scheme's parents
+when the mode defined none for it (test =get-keymap=). The =:import= option
+copies an existing table so a user adds a binding to a mode without retyping
+it; the manual's recipe for user config is exactly that.
+
+Switching is a buffer slot plus a mode. Every mode holds a =keyscheme-map=
+and its =keymap= method in =source/mode.lisp= asks =get-keymap= for the
+buffer's current =keyscheme=, which =source/buffer.lisp= defaults to cua.
+=keyscheme-mode= in =source/mode/keyscheme.lisp= sets that slot on enable,
+remembers the previous value, restores it on disable and disables any other
+keyscheme mode so exactly one is on; =emacs-mode= in =source/mode/emacs.lisp=
+is that mode with the emacs scheme and nothing else. =vi-normal-mode= and
+=vi-insert-mode= in =source/mode/vi.lisp= are two such modes that swap each
+other on =i= and =escape= and flip the buffer's =forward-input-events-p=, the
+flag =dispatch-input-event= reads to send bound keys on to the page;
+=passthrough-mode= in =source/mode/passthrough.lisp= sets the same flag and
+keeps only =C-M-z= for itself. Because every mode's active keymap is derived
+from the one slot, changing the scheme changes the whole program at once,
+which the library's README gives as the reason schemes are orthogonal to
+keymaps instead of being more keymaps.
+
+* nkeymaps feature against Nemesis today
+
+| nkeymaps feature                                                              | Nemesis today                                                                                                                                                       | Gap                                                                                                |
+|-------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------------|
+| Keymap as a map from key to command or nested prefix keymap                   | Same shape: a trie over strokes in =Keymap= (=src/main/commands/keymap.ts=), prefix nodes anonymous                                                                 | None                                                                                               |
+| Keyspec notation =control-a=, =C-x C-f=, parsed and type checked at compile   | Emacs notation, =parseChord= and =parseStroke= in =keymap.ts=, parsed when the map is built; errors name the keymap and both chords                                | None in kind; Nemesis checks at startup, nkeymaps at compile                                       |
+| Modifiers as a set, order irrelevant                                          | =normalizeChord= reprints, so =C-M-x= and =M-C-x= compare equal                                                                                                    | None                                                                                               |
+| Shift spelled as a modifier (=s-a=) and normalised from =A= at parse time     | The character carries the shift (=A=, never =S-a=); =S-= only on named keys (=src/shared/keys.ts=, =parseStroke=)                                                  | Spelling differs by decision (ADR 0002); no translation needed because the parser rejects the other |
+| Keycode bindings (=C-#10=), code matched before value                         | =code= is a fallback only when Option rewrote the character (=strokeFromKeyPress=)                                                                                 | No binding by physical key                                                                         |
+| Any value string is a key (=keypadleft=, =hyphen=, =button1=)                 | Fixed table =NAMED_KEYS= in =src/shared/keys.ts=: =RET=, =SPC=, =TAB=, =ESC=, =DEL=, arrows, =<f1>= to =<f12>=, home, end, page keys                              | No keypad, media or mouse keys; a missing name is a parse error                                    |
+| Bound type checked at definition                                              | Command names are strings; =assertBindingsAreRegistered= (=src/main/commands/dispatcher.ts=) walks every map at startup                                            | None                                                                                               |
+| Parents, any number, breadth first, cycle warning                             | Two fixed layers, buffer-type map then global, in =KeyResolver.layersFor= (=keymap.ts=)                                                                             | No parents, no per-buffer list of maps, no hook on the list; the seam for #22                      |
+| =current-keymaps= built per press from the enabled modes                      | =layersFor= built when a sequence starts, from the buffer type reported by the renderer                                                                            | Same timing; the list is static per type until modes exist                                         |
+| Prefix in a child wins over a command in a parent                             | Same: a prefix in a higher layer returns =pending= before a lower layer's command is consulted (=KeyResolver.resolve=)                                              | None                                                                                               |
+| A command with keys left over does not block a longer sequence elsewhere      | Same: a buffer map that binds =C-c C-c= still lets the global =C-c C-l= through (test "still completes a global sequence the buffer map only begins")               | None                                                                                               |
+| Last definition wins inside a keymap, with an =override-existing-binding= warning | Build error for a duplicate chord, for a chord under a command, for a chord over a prefix (=Keymap.bind=)                                                       | Stricter on purpose; a user map in M3 cannot override a cockpit chord in the same layer            |
+| Bind nil to unbind, =nothing= to swallow                                      | Nothing; a layer can only shadow                                                                                                                                    | A user keymap cannot remove a cockpit binding or let a key fall through to the editor              |
+| =:remap= one command's keys to another                                        | Nothing                                                                                                                                                             | A user must know and retype every chord of the command they replace                                |
+| =compose= and =:import= to extend a keymap without retyping it                | Nothing; a map is built from one spec                                                                                                                               | The M3 user keymap has no way to say "the cockpit map plus these"                                  |
+| =binding-keys=: every key of a command, shadowed ones dropped, keymap named   | =bindingsOf= and =bindingNote= in =src/main/commands/describe.ts= list every layer's chord with its buffer type                                                     | A global chord shadowed in a buffer type is still listed for it; no preferred spelling for display |
+| =keymap->map= and =keymap-with-parents->map= flatten for a full listing       | =Keymap.entries()= exists and says it feeds describe-bindings, but no command uses it                                                                               | No =describe-bindings= (=C-h b=)                                                                   |
+| =*translator*=: shifted layer fallback, exact match over translation          | Nothing                                                                                                                                                             | None today: the shift case is closed by the spelling rule; =C-i= against =TAB= stays undecided     |
+| Per keymap and per scheme accepted modifiers; =define-modifier= for hyper     | Four modifiers fixed in =KeyStroke=                                                                                                                                 | No hyper; not missed on a Mac keyboard                                                             |
+| Keyschemes with parents; one keymap per scheme per mode; =get-keymap= fallback | One scheme: =GLOBAL_KEYMAP= and =BUFFER_KEYMAPS= in =src/main/commands/keyscheme.ts=; the module name is the only trace of the idea                                | No scheme object, no fallback; a second scheme would be a second set of tables                     |
+| Switching the scheme through =keyscheme-mode=, one on at a time               | Nothing                                                                                                                                                             | Deliberate: Emacs everywhere (CLAUDE.md); the seam waits for #22                                   |
+| =vi-insert= with no parent and =forward-input-events-p= to let keys through   | The renderer keeps every unbound key for the editor by reading the published shape (=startsCockpitChord=); modal buffers hand every key over (=MODAL_BUFFER_TYPES=) | No passthrough: no way to send a bound chord to the page under it                                  |
+| =pretty-binding-keys= prints Ctrl+ and Option+ in the cua style              | Emacs notation everywhere                                                                                                                                           | Deliberate                                                                                         |
+| Key =status= pressed or released                                              | Key down only                                                                                                                                                       | Deliberate                                                                                         |
+| No abort key; Nyxt clears the stack on an unbound sequence                    | =C-g= abandons a half-typed sequence and then runs =keyboard-quit= (=ABORT_CHORD=)                                                                                 | None; Nemesis has more                                                                             |
+| Lookup returns the matching keymap and the translated key                     | =Resolution= carries the chord and the command; which layer answered is known to =describe-key= only through the buffer type                                       | Small; the mode line will want the layer name once modes exist                                     |
+| Forwarding an unbound key is the caller's job (README non-goal)               | Decided before the press in the renderer from the published =KeymapShape=, because Electron cannot forward after the fact (ADR 0002)                               | None; the two solve the same problem on opposite sides of the bridge                               |
+
+* What to file next
+
+Ordered by how soon the gap is hit. Milestones as they stand today: M1
+Cockpit MVP, M2 Sessions, diffs, search, M3 Extension door, M4 Browser
+buffers. The modes ADR (#22) and the user config issue (#71) are both M3, so
+most of the keymap gaps land there.
+
+** Worth an issue
+
+1. =describe-bindings= on =C-h b=: the flattened listing nkeymaps gets from
+   =keymap-with-parents->map=. M1. =Keymap.entries()= already exists and the
+   help buffer already renders describe-command; one command in
+   =keyscheme.ts= and one chord.
+2. Shadow-aware binding notes. M1. =bindingsOf= should drop a global chord
+   for a buffer type whose map rebinds it, the way =binding-keys= drops
+   anything that no longer resolves, so the palette never shows =C-c C-c=
+   for =send-prompt= inside a plan buffer. One function in =describe.ts=
+   and a case in =tests/unit/describe.test.ts=.
+3. The layer list as the modes seam. M3, feeds #22. Replace the two fixed
+   layers in =KeyResolver.layersFor= with a list computed per buffer from
+   its enabled modes, in mode order, as =current-keymaps= does; keep the
+   published shape per buffer rather than per type. Parents are not needed
+   for this: a list is enough until two modes want to share a map.
+4. User keymap operations for =init.ts=. M3, part of #71. Three moves from
+   the Nyxt manual: unbind (nil), swallow (=nothing=), replace; plus
+   =:remap= so a user retargets a command without knowing its chords, and an
+   =:import= or =compose= form so a user map is "the cockpit map plus
+   these". This also decides whether =Keymap.bind= keeps throwing on a
+   duplicate inside a user map or warns as =override-existing-binding=
+   does; recommended: throw for cockpit maps, warn into the config error
+   buffer for user maps.
+5. Keyscheme object with parent fallback. M3, after 3, only if #22 wants
+   per-mode tables keyed by scheme. =define-keyscheme-map= and =get-keymap=
+   are the shape: one table per mode, one keymap per scheme, missing scheme
+   falls back to its parent. Without a second scheme this is scaffolding, so
+   file it when #22 names one.
+6. Passthrough for web buffers. M4. A mode that sends every chord to the page
+   except its own exit chord, as =passthrough-mode= and =vi-insert= do with
+   =forward-input-events-p=; in Nemesis this is a renderer-side rule in
+   =startsCockpitChord= that ignores the published shape while the mode is
+   on, plus the exit chord. Needed the first time a page under the cockpit
+   is a terminal or an editor.
+7. Named keys beyond the table. M4. Keypad, media and other DOM names arrive
+   with web pages and system shortcuts; =NAMED_KEYS= is one table in
+   =src/shared/keys.ts=, extended case by case, not opened to arbitrary
+   strings.
+
+** Deliberately not wanted
+
+- vi and cua keyschemes. CLAUDE.md pins the Emacs keymap for every text
+  surface and README pillar 1 is Emacs-shaped; the seam (item 3) is kept,
+  the schemes are not.
+- Shift translation through =*translator*=. The spelling rule (=A=, never
+  =S-a=) makes the shifted and unshifted spellings one chord already, and
+  =parseStroke= rejects the ambiguous one with the fix in the message.
+- =C-i= as =TAB= and =C-m= as =RET=. The DOM tells them apart, CodeMirror's
+  Emacs keymap relies on that, and translating would take =C-i= from the
+  editor; stays undecided, as ADR 0002 says, until a binding needs it.
+- Binding by keycode. Emacs notation names characters; the =code= fallback
+  for Option already covers the one layout problem seen, and a keycode
+  cannot be described to a user in =describe-key=.
+- Mouse buttons as keys (=C-button1=). Keyboard-driven is pillar 1; a click
+  binding returns, if at all, with link following in M4.
+- Key release bindings. Nothing in the cockpit acts on key up.
+- Hyper and custom modifiers. Mac keyboards have none without remapping,
+  and =KeyStroke= is shared with the renderer, so a fifth modifier is a
+  change on both sides for no user.
+- OS-style printing (Ctrl+, Option+, Command+). The cockpit speaks Emacs
+  notation in the help buffer, the palette and the mode line; one notation
+  is the point.
+- Named prefix keymaps as first-class objects. Chord strings express
+  prefixes already, and =describe-key= on a prefix can answer from the trie;
+  a shareable prefix map waits for two modes that need one.
+- Warning instead of error on a duplicate chord inside a cockpit map. A
+  typo in =keyscheme.ts= should fail the gate, not log; the warning path is
+  for user maps only (item 4).
+- A sequence timeout (the =jk= escape noted as a TODO in =keymap.lisp=).
+  A vi idiom with no Emacs counterpart.

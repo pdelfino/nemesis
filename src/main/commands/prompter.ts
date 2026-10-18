@@ -33,6 +33,17 @@ export interface ReadSpec {
   readonly source: string
   /** The words before the query: `M-x`, `Describe command:`. */
   readonly prompt: string
+  /**
+   * Called when the read ends without a choice: `C-g`, or a newer read
+   * taking its place. A confirmation (#51) needs the no as much as the yes.
+   */
+  readonly onCancel?: (() => void) | undefined
+  /**
+   * The text typed is an answer too (#69): `RET` hands it to the consumer
+   * when it matches no candidate. A search reads its query this way, over a
+   * source that lists nothing.
+   */
+  readonly freeText?: true | undefined
 }
 
 /** What to do with the choice. Not called on a cancel. */
@@ -45,6 +56,7 @@ export type PaletteListener = (request: PaletteRequest) => void
 interface PendingRead {
   readonly request: PaletteRequest
   readonly consume: PaletteConsumer
+  readonly cancel: (() => void) | undefined
 }
 
 export class Prompter {
@@ -83,8 +95,11 @@ export class Prompter {
       source: source.name,
       prompt: spec.prompt,
       candidates: source.candidates(),
+      ...(spec.freeText === true ? { freeText: true as const } : {}),
     }
-    this.current = { request, consume }
+    const dropped = this.current
+    this.current = { request, consume, cancel: spec.onCancel }
+    dropped?.cancel?.()
     for (const listener of [...this.listeners]) listener(request)
     return request
   }
@@ -92,13 +107,23 @@ export class Prompter {
   /**
    * The window answered. A null choice cancels; an answer to a read that is
    * no longer current is ignored, since the window may still answer a read
-   * that a newer one replaced. A choice that is not a candidate is refused.
+   * that a newer one replaced. A choice that is not a candidate is refused,
+   * and so is text on a read that did not ask for it.
    */
   async answer(answer: PaletteAnswer): Promise<PaletteOutcome> {
     const read = this.current
     if (read === null || read.request.id !== answer.id) return {}
     this.current = null
-    if (answer.choice === null) return {}
+    if (answer.text !== undefined) {
+      if (read.request.freeText !== true) {
+        throw new CommandError('This read takes a candidate, not text')
+      }
+      return (await read.consume(answer.text)) ?? {}
+    }
+    if (answer.choice === null) {
+      read.cancel?.()
+      return {}
+    }
     if (!read.request.candidates.some((candidate) => candidate.id === answer.choice)) {
       throw new CommandError(`"${answer.choice}" is not among the candidates`)
     }
@@ -120,5 +145,10 @@ export function parsePaletteAnswer(payload: unknown): PaletteAnswer {
   if (choice !== null && (typeof choice !== 'string' || choice.length > MAX_QUERY_LENGTH)) {
     throw new TypeError('Palette answer has no usable choice')
   }
-  return { id, choice: choice as string | null }
+  const text = value['text']
+  if (text === undefined) return { id, choice: choice as string | null }
+  if (typeof text !== 'string' || text.length === 0 || text.length > MAX_QUERY_LENGTH) {
+    throw new TypeError('Palette answer has no usable text')
+  }
+  return { id, choice: choice as string | null, text }
 }

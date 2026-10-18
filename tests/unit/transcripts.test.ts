@@ -66,6 +66,25 @@ describe('the Org rendering', () => {
     )
   })
 
+  it('notes a nudge and writes nothing for the context meter, which the log keeps (#80)', () => {
+    const text = render([
+      { type: 'nudge', text: '2 corrections in a row' },
+      { type: 'context-usage', usedTokens: 1, windowTokens: 2 },
+      { type: 'permission-mode', mode: 'plan' },
+    ])
+    expect(text).toBe(
+      [
+        '#+title: Nemesis session mock-session',
+        '#+date: [2026-10-17 Sat 12:30]',
+        '',
+        '- 2 corrections in a row',
+        '',
+        '- Permission mode: plan',
+        '',
+      ].join('\n'),
+    )
+  })
+
   it('joins consecutive assistant text into one Claude block until the turn ends', () => {
     const text = render([
       { type: 'user-text', text: 'go' },
@@ -94,6 +113,62 @@ describe('the Org rendering', () => {
     expect(text).toContain(
       '\n** Result: Bash (error)\n#+begin_example\n(no output)\n#+end_example\n',
     )
+  })
+
+  it("heads a check as evidence, the verify key's with its exit code and duration (#81)", () => {
+    const text = render([
+      { type: 'tool-use', toolUseId: 't1', name: 'Bash', input: { command: 'npm test' } },
+      { type: 'tool-result', toolUseId: 't1', isError: true, text: 'FAIL auth\nExit code 1' },
+      {
+        type: 'evidence',
+        command: 'npm run gate',
+        source: 'issue',
+        exitCode: 0,
+        signal: null,
+        durationMs: 61_500,
+        output: 'all green\n',
+      },
+    ])
+    expect(text).toContain(
+      '\n** Evidence: npm test (exit 1)\n#+begin_example\nFAIL auth\nExit code 1\n#+end_example\n',
+    )
+    expect(text).toContain(
+      '\n** Evidence: npm run gate (exit 0, 61.5s)\n#+begin_example\nall green\n#+end_example\n',
+    )
+  })
+
+  it('renders what happened inside a subagent under headings that say so (#85)', () => {
+    const text = render([
+      { type: 'user-text', text: 'Use subagents to investigate x' },
+      { type: 'assistant-text', text: 'Looking.' },
+      { type: 'tool-use', toolUseId: 'a1', name: 'Agent', input: { prompt: 'x' } },
+      {
+        type: 'tool-use',
+        toolUseId: 'r1',
+        name: 'Read',
+        input: { path: '/x' },
+        parentToolUseId: 'a1',
+      },
+      {
+        type: 'tool-result',
+        toolUseId: 'r1',
+        isError: false,
+        text: 'alpha',
+        parentToolUseId: 'a1',
+      },
+      { type: 'assistant-text', text: 'Found it.', parentToolUseId: 'a1' },
+      { type: 'tool-result', toolUseId: 'a1', isError: false, text: 'Summary.' },
+      { type: 'assistant-text', text: 'Investigated.' },
+    ])
+    expect(text).toContain('\n** Tool: Agent\n')
+    expect(text).toContain(
+      '\n** Subagent tool: Read\n#+begin_src json\n{\n  "path": "/x"\n}\n#+end_src\n',
+    )
+    expect(text).toContain('\n** Subagent result: Read\n#+begin_example\nalpha\n#+end_example\n')
+    expect(text).toContain('\n** Subagent: Claude\nFound it.\n')
+    expect(text).toContain('\n** Result: Agent\n#+begin_example\nSummary.\n#+end_example\n')
+    // The main thread's reply after the subagent opens a Claude block of its own.
+    expect(text).toContain('\n** Claude\nInvestigated.\n')
   })
 
   it('renders thinking, questions and the permission notes the window showed', () => {

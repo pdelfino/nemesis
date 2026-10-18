@@ -1,4 +1,4 @@
-import { foldGutter, toggleFold } from '@codemirror/language'
+import { foldedRanges, foldGutter, toggleFold, unfoldEffect } from '@codemirror/language'
 import {
   closeSearchPanel,
   findNext,
@@ -7,11 +7,12 @@ import {
   setSearchQuery,
   type SearchQuery,
 } from '@codemirror/search'
-import { EditorSelection, EditorState, Prec } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
+import { EditorSelection, EditorState, Prec, type StateEffect } from '@codemirror/state'
+import { EditorView, highlightActiveLine, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { BufferType, KeyOutcome } from '../shared/keys'
-import { transactionFor, transcriptExtensions } from './transcript-doc'
+import { followAppearance } from './theme'
+import { lineWithText, transactionFor, transcriptExtensions } from './transcript-doc'
 
 /**
  * The transcript buffer (#62): the session as one read-only CodeMirror
@@ -26,7 +27,9 @@ import { transactionFor, transcriptExtensions } from './transcript-doc'
  * Emacs movement included, is the editor's own. `C-s` is incremental: the
  * point moves to the first match from where the search started as the query
  * grows, and `C-s` again steps to the next one. Nothing here is persisted:
- * that is #64.
+ * that is #64. A search match opened from the palette (#69) arrives as a
+ * line to go to: the point moves there, unfolding what hides it, and the
+ * active line shows which one it is.
  */
 
 export interface TranscriptBuffer {
@@ -58,8 +61,9 @@ export function installTranscriptBuffer(): TranscriptBuffer {
         emacs(),
         transcriptExtensions(),
         foldGutter(),
+        highlightActiveLine(),
         EditorView.lineWrapping,
-        EditorView.theme({}, { dark: matchMedia('(prefers-color-scheme: dark)').matches }),
+        followAppearance(),
         EditorView.updateListener.of((update) => {
           for (const tr of update.transactions) {
             for (const effect of tr.effects) {
@@ -82,6 +86,17 @@ export function installTranscriptBuffer(): TranscriptBuffer {
     const current = list.buffers.find((buffer) => buffer.id === list.currentId)
     if (current?.elementId === 'transcript') view.focus()
     else if (view.hasFocus) view.contentDOM.blur()
+  })
+
+  // A search match (#69): the point goes to the line, out of any fold.
+  window.nemesis.onTranscriptGoto((target) => {
+    const line = lineWithText(view.state.doc, target.text)
+    if (line === null) return
+    const effects: StateEffect<unknown>[] = []
+    foldedRanges(view.state).between(line.from, line.to, (from, to) => {
+      effects.push(unfoldEffect.of({ from, to }))
+    })
+    view.dispatch({ selection: EditorSelection.cursor(line.from), effects, scrollIntoView: true })
   })
 
   /** Incremental search: the first match from the origin, wrapping around. */

@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent, AgentQuestion } from './agent/events'
+import { checkEvidenceHeader, looksLikeEvidence, toolEvidenceHeader } from '../shared/evidence'
 
 /**
  * Transcripts on disk (#64). Every session is a folder under the sessions dir,
@@ -11,7 +12,10 @@ import type { AgentEvent, AgentQuestion } from './agent/events'
  *                 happens and fsynced when a turn ends
  *   session.org   a rendering of the same events a person reads in Emacs: one
  *                 heading per turn, You and Claude under it, tool calls as
- *                 source blocks, tool output as example blocks
+ *                 source blocks, tool output as example blocks, what
+ *                 happened inside a subagent under headings that say so (#85),
+ *                 and evidence, the verify key's check or a tool result that
+ *                 reads like a test or build run, headed by its status (#81)
  *
  * The events arrive before the session id does (the user's text is in the
  * stream before the SDK answers with its init frame), so they wait in memory
@@ -117,6 +121,8 @@ function describeOutcome(
 export class OrgTranscript {
   private readonly now: () => Date
   private readonly toolNames = new Map<string, string>()
+  /** The command of a shell tool call, so its result can be read as evidence (#81). */
+  private readonly toolCommands = new Map<string, string>()
   /** Claude is mid-reply: the next text extends the block instead of opening one. */
   private open = false
 
@@ -130,6 +136,17 @@ export class OrgTranscript {
   }
 
   append(event: AgentEvent): string {
+    if (
+      (event.type === 'assistant-text' ||
+        event.type === 'assistant-thinking' ||
+        event.type === 'tool-use' ||
+        event.type === 'tool-result') &&
+      event.parentToolUseId !== undefined
+    ) {
+      // A subagent's frames never continue Claude's reply on the main thread.
+      this.open = false
+      return this.appendChild(event)
+    }
     if (event.type === 'assistant-text' && this.open) return `${escapeOrg(event.text)}\n`
     this.open = false
     switch (event.type) {
@@ -144,23 +161,37 @@ export class OrgTranscript {
         return block('** Claude', escapeOrg(event.text))
       case 'assistant-thinking':
         return block('** Thinking', escapeOrg(event.text))
-      case 'tool-use':
+      case 'tool-use': {
         this.toolNames.set(event.toolUseId, event.name)
+        const command = event.input['command']
+        if (typeof command === 'string') this.toolCommands.set(event.toolUseId, command)
         return block(
           `** Tool: ${event.name}`,
           '#+begin_src json',
           escapeOrg(formatInput(event.input)),
           '#+end_src',
         )
+      }
       case 'tool-result': {
         const name = this.toolNames.get(event.toolUseId) ?? 'tool'
+        const command = this.toolCommands.get(event.toolUseId) ?? null
+        const heading = looksLikeEvidence(name, command, event.text)
+          ? toolEvidenceHeader(command, event.text, event.isError)
+          : `Result: ${name}${event.isError ? ' (error)' : ''}`
         return block(
-          `** Result: ${name}${event.isError ? ' (error)' : ''}`,
+          `** ${heading}`,
           '#+begin_example',
           escapeOrg(event.text.length === 0 ? '(no output)' : event.text),
           '#+end_example',
         )
       }
+      case 'evidence':
+        return block(
+          `** ${checkEvidenceHeader(event.command, event)}`,
+          '#+begin_example',
+          escapeOrg(event.output.trimEnd().length === 0 ? '(no output)' : event.output.trimEnd()),
+          '#+end_example',
+        )
       case 'started':
         return note(
           `Session started: ${event.model}, ${event.permissionMode} mode, in ${event.cwd}`,
@@ -184,6 +215,51 @@ export class OrgTranscript {
         return event.outcome === 'answered'
           ? ''
           : note(describeOutcome(event.toolName, event.outcome))
+      case 'notice':
+        return note(event.text)
+      case 'nudge':
+        return note(event.text)
+      case 'permission-mode':
+        return note(`Permission mode: ${event.mode}`)
+      case 'context-usage':
+        // The log keeps the numbers; a person reading the Org file does not need them.
+        return ''
+    }
+  }
+
+  private appendChild(
+    event: Extract<AgentEvent, { parentToolUseId?: string | undefined }>,
+  ): string {
+    return appendChildOf(this.toolNames, event)
+  }
+}
+
+/** What happened inside a subagent (#85): the same blocks, under headings that say so. */
+function appendChildOf(
+  toolNames: Map<string, string>,
+  event: Extract<AgentEvent, { parentToolUseId?: string | undefined }>,
+): string {
+  switch (event.type) {
+    case 'assistant-text':
+      return block('** Subagent: Claude', escapeOrg(event.text))
+    case 'assistant-thinking':
+      return block('** Subagent thinking', escapeOrg(event.text))
+    case 'tool-use':
+      toolNames.set(event.toolUseId, event.name)
+      return block(
+        `** Subagent tool: ${event.name}`,
+        '#+begin_src json',
+        escapeOrg(formatInput(event.input)),
+        '#+end_src',
+      )
+    case 'tool-result': {
+      const name = toolNames.get(event.toolUseId) ?? 'tool'
+      return block(
+        `** Subagent result: ${name}${event.isError ? ' (error)' : ''}`,
+        '#+begin_example',
+        escapeOrg(event.text.length === 0 ? '(no output)' : event.text),
+        '#+end_example',
+      )
     }
   }
 }

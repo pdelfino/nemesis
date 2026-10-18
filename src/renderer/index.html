@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      Interim policy as a meta tag; #50 serves internal pages from nemesis://
-      with the same policy as a response header. ws://localhost:* exists only
-      for the Vite dev server's hot reload.
+      The policy the built page gets as a response header on nemesis://app
+      (src/main/security/internal-scheme.ts, #50), repeated here for the Vite
+      dev server, which serves this file over http://localhost without it.
+      ws://localhost:* exists only for that server's hot reload.
     -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -21,15 +22,43 @@
       <span id="app-version"></span>
       <!-- The buffer list, current buffer in brackets (#60). -->
       <span id="buffer-list" aria-label="buffer list"></span>
+      <!-- The permission mode (#82): default until the session says otherwise; C-c C-p toggles plan. -->
+      <span
+        id="permission-mode"
+        aria-label="permission mode"
+        title="Permission mode. C-c C-p toggles plan mode."
+        >default</span
+      >
+      <!-- The context meter (#80): fill of the window as a fraction and a bar. -->
+      <span id="context-meter" aria-label="context" data-level="none"></span>
+      <!-- The cockpit's nudge (#80): shown until the next prompt. -->
+      <span id="modeline-hint" aria-label="hint"></span>
     </header>
     <main>
       <section id="transcript" aria-label="transcript" data-buffer-type="transcript">
         <!-- A read-only CodeMirror document of the session (#62). -->
         <div id="transcript-editor"></div>
       </section>
+      <!-- A plan buffer (#82): the agent's plan as editable text, shown while one awaits an answer. -->
+      <section id="plan" aria-label="plan" data-buffer-type="plan" hidden>
+        <div id="plan-editor"></div>
+        <p id="plan-keys" class="placeholder"></p>
+      </section>
+      <!-- A spec buffer (#85): the spec the agent wrote, read-only, shown while one is open. -->
+      <section id="spec" aria-label="spec" data-buffer-type="spec" hidden>
+        <p id="spec-file"></p>
+        <div id="spec-editor"></div>
+        <p id="spec-keys" class="placeholder"></p>
+      </section>
       <!-- The help buffer (#65): a read-only document, shown while a help buffer exists. -->
       <section id="help" aria-label="help" data-buffer-type="help" hidden>
         <div id="help-editor"></div>
+      </section>
+      <!-- A diff buffer (#68): one Edit or Write of the session, shown while one is open. -->
+      <section id="diff" aria-label="diff" data-buffer-type="diff" hidden>
+        <p id="diff-file"></p>
+        <div id="diff-editor"></div>
+        <p id="diff-keys" class="placeholder"></p>
       </section>
       <!--
         A pending permission request or question (#63). Shown while a request

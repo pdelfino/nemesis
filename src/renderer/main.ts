@@ -1,11 +1,15 @@
 import { APP_NAME } from '../shared/api'
 import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
+import { installDiffBuffer } from './diff-buffer'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
+import { installModeline } from './modeline'
 import { installPalette } from './palette'
+import { installPlanBuffer } from './plan-buffer'
 import { installPromptBuffer } from './prompt-buffer'
 import { installRequestBuffer } from './request-buffer'
+import { installSpecBuffer } from './spec-buffer'
 import { installTranscriptBuffer } from './transcript-buffer'
 
 document.title = APP_NAME
@@ -14,6 +18,8 @@ if (version) version.textContent = `v${window.nemesis.version}`
 
 const keys = installKeyCapture()
 void installBufferList()
+// The context meter and the nudge follow the session from the first event (#80).
+installModeline()
 
 // The transcript listens from the first moment, so no event of the session is
 // missed while the prompt buffer loads its state (#62).
@@ -23,6 +29,12 @@ const transcript = installTranscriptBuffer()
 installRequestBuffer()
 // And the help buffer: describe-command answers there (#65).
 const help = installHelpBuffer()
+// And the diff buffer: list-diffs opens an Edit or a Write there (#68).
+const diff = installDiffBuffer()
+// And the plan buffer: a plan the agent asks to leave plan mode with opens there (#82).
+const plan = installPlanBuffer()
+// And the spec buffer: the spec an interview ends with opens there (#85).
+const spec = installSpecBuffer()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 
@@ -36,6 +48,9 @@ void installPromptBuffer().then((prompt) => {
     prompt.onCommand(outcome, bufferType)
     transcript.onCommand(outcome, bufferType)
     help.onCommand(outcome, bufferType)
+    diff.onCommand(outcome, bufferType)
+    plan.onCommand(outcome, bufferType)
+    spec.onCommand(outcome, bufferType)
   }
   keys.onCommand = act
   palette.onRan = act

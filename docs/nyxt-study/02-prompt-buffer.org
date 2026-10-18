@@ -1,0 +1,237 @@
+#+TITLE: Nyxt study 02: the prompt buffer, what Nemesis has and what it lacks
+#+OPTIONS: toc:nil
+
+- Issue: #13 (feeds ADR 0003, =docs/adr/0003-prompt-buffer.org=)
+- Nyxt read at: =~/projects/nyxt=, =source/prompt-buffer.lisp= and
+  =source/mode/prompt-buffer.lisp=, with the sources in =source/buffer.lisp=
+  and =source/command-commands.lisp= as worked examples
+- Nemesis read at: main after #65, #67, #69 and #81
+  (=src/main/commands/prompter.ts=, =src/renderer/palette.ts=,
+  =src/shared/palette.ts=, =src/main/commands/keyscheme.ts=)
+
+A note on citations. Nyxt's prompt buffer is a thin HTML view over the
+=prompter= library, a git submodule under =_build/prompter= that is not
+checked out in the local clone. Every =prompter:= symbol below is therefore
+cited through the Nyxt file that calls it, never through the library's own
+files, and the behaviour described is what the calling code relies on. The
+one place the library's matching is exercised directly is the benchmark in
+=tests/benchmarks/prompter.lisp=, which scores random inputs against every
+command docstring with =prompter::score-suggestion-string=.
+
+* How Nyxt's prompt buffer works
+
+** The buffer and the call that opens it
+
+In =source/prompt-buffer.lisp=, =prompt-buffer= is a class that is at once a
+buffer (network, input, modable) and a =prompter:prompter=. Each prompt
+creates a fresh instance, which is what lets prompts nest: the =history=
+command of the mode opens a second prompt on top of the first. The =prompt=
+function builds the instance on the renderer thread, pushes it on the
+window's =active-prompt-buffers=, and then =wait-on-prompt-buffer= blocks
+on two channels: the =result-channel= delivers the chosen values and the
+=interrupt-channel= signals =prompt-buffer-canceled=. =prompt1= returns the
+first value. A command is therefore ordinary sequential code: it calls
+=prompt=, gets a list back, and continues. =hide-prompt-buffer= pops the
+instance and shows the next active one, so the stack unwinds in order.
+
+Two small behaviours live here too. =prompt= strips a trailing colon from the
+prompt text and warns, because the view adds its own separator. The
+=invisible-input-p= slot turns the input into a password field and hides the
+suggestion list, for the password manager.
+
+** Sources, suggestions and attributes
+
+A prompt is opened over one or more sources. A source
+(=prompter:source=) has a name, a =constructor= that produces the initial
+objects, an optional =filter-preprocessor= and =filter-postprocessor= around
+the match, and the flags described below. =source/buffer.lisp= shows the
+shape: =buffer-source= lists the current buffer first and the rest after,
+uses =prompter:filter-exact-matches= as its preprocessor so exact hits
+float, enables marks, and names three actions on return. =source/command-commands.lisp=
+has =command-source=, whose constructor sorts the commands by last use
+(=sort-by-time=). Back in =source/buffer.lisp=, =url-or-query-source= is the
+odd one: its preprocessor turns the raw input itself into a suggestion, its
+postprocessor sleeps a moment and then asks the search engine for
+completions, and =prompter:filter= is nil, so the input is the data and
+nothing is matched.
+
+Every object a source lists is wrapped in a =prompter:suggestion= holding
+the =value= and its =attributes=. The attributes come from a generic
+function, =prompter:object-attributes=, specialised on the object and the
+source: a buffer answers with Title, URL, Keywords and ID, each with a
+relative width; a command answers through =command-attributes= with Name,
+Bindings and Docstring. A source chooses which columns to show with
+=active-attributes-keys=, and =render-attributes= in
+=source/prompt-buffer.lisp= draws them as a table with a header row when
+there is more than one column, using =attribute-widths= to split the space.
+Matching runs over the attributes, not just a title, which is why the
+benchmark scores against docstrings. The first attribute is the
+default, and =attributes-default= is what =insert-current-suggestion= and
+=copy-selection= in =source/mode/prompt-buffer.lisp= use as the text of a
+suggestion.
+
+The view redraws from Lisp. =update-prompt-input= reads the HTML input,
+sets =prompter:input=, and loops on =prompter:next-ready-p= until every
+source has finished its filter, calling =prompt-render-suggestions= each
+time a source updates; a source still computing shows "(In progress...)"
+beside its name (=prompter:ready-p=). =prompt-render-suggestions= draws the
+sources from the current one onward, each with its name and a count, and
+=render-prompt= writes the count of marks and suggestions into the prompt
+line. The suggestion window is eight rows centred on the current one.
+
+** The current suggestion, actions on return, actions on the current suggestion
+
+One suggestion is current (=prompter:%current-suggestion=, exposed as
+=current-suggestion-value= in =source/prompt-buffer.lisp=). The mode's
+movement commands in =source/mode/prompt-buffer.lisp= wrap the library's
+=next-suggestion=, =previous-suggestion=, =first-suggestion=,
+=last-suggestion=, =next-source= and =previous-source=; =next-page= measures
+in the DOM how many rows are in view and steps by that many.
+
+Two kinds of action exist. =actions-on-return= is a list per source; the
+first is the default, run by =run-action-on-return= on =RET=, and
+=set-action-on-return= (=M-RET=) opens a nested prompt over
+=action-on-return-source= to pick another and runs it. The action receives
+the marks, or the current suggestion when nothing is marked, as a list. For
+=buffer-source= the list is switch, delete and reload. The second kind,
+=actions-on-current-suggestion=, runs as the highlight moves, without closing
+the prompt: =buffer-source= switches the window to the highlighted buffer as
+a preview, and its =destructor= switches back when the prompt is cancelled
+rather than returned (=prompter:returned-p=). =C-j= runs it on demand,
+=C-c C-j= changes which one runs, and =C-c C-f= toggles the preview on and
+off per source.
+
+** Marks and multi-selection
+
+A source with =enable-marks-p= allows several suggestions to be chosen.
+=toggle-mark-forwards= (=C-SPC=, =C-RET=) marks the current one and moves
+down, =toggle-mark-backwards= marks and moves up, =mark-all=, =unmark-all=
+and =toggle-mark-all= act on the visible suggestions of the current source,
+and the table draws a checkbox column and a =marked= row class. The return
+action gets the marks as its argument, so =delete-buffer= in
+=source/buffer.lisp= deletes a set in one prompt. =return-marks-only= in the
+mode shows the other convention: for the attribute picker, return the marks
+and nothing else, even if a row is highlighted.
+
+** The mode and its keys
+
+=prompt-buffer-mode= in =source/mode/prompt-buffer.lisp= is the only mode a
+prompt buffer has by default (its =default-modes= method also removes
+document and base mode). The keyscheme map has a default layer and emacs,
+vi and cua layers. In the emacs layer: =C-n= and =C-p= move, =M-<= and =M->=
+jump to the ends, =M-,= and =M-.= to the ends of the current source, =C-v=
+and =M-v= page, =M-n= and =M-p= change source, =C-g= quits, =C-a=, =C-e=,
+=C-f=, =C-b=, =M-f=, =M-b=, =C-d=, =M-d= and =M-backspace= edit the input
+through =input-edit= mode, =C-y=, =M-w= and =C-w= paste, copy and cut,
+=C-x o= toggles focus to the buffer behind the prompt, =C-M-n= and =C-M-p=
+scroll that buffer, =C-h b= lists the prompt buffer's own commands in a
+nested prompt (=run-prompt-buffer-command=) and =C-h m= describes its
+bindings. The default layer adds =TAB= to insert the current suggestion's
+text into the input, =M-h= to pick a past input from the prompt's history,
+=C-]= to choose which attribute columns to show (=toggle-attributes-display=,
+itself a marks prompt), =M-up= and =M-down= to resize, and =escape= to quit.
+=source/mode/hint-prompt-buffer.lisp= subclasses the mode for link hints and
+adds =C-l= to scroll the page to the highlighted hint; it is the pattern for
+a prompt that needs one extra key.
+
+** History and return values
+
+The prompt buffer overrides =prompter:history= with the browser's
+=prompt-buffer-generic-history= (=source/browser.lisp=), one ring of inputs
+shared by every prompt unless a prompt names its own. The =history= command
+reads from it through =prompt-buffer-history-source= and sets the input to
+the chosen entry (=set-prompt-buffer-input=). The return value of =prompt=
+is the list of values the action produced, so an action can transform what
+was chosen before the caller sees it; =prompt1= takes the first.
+
+* Nyxt feature against Nemesis today
+
+| Nyxt feature                                                    | Nemesis today                                                                                                                                | Gap                                                                                      |
+|-----------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------|
+| One fuzzy prompt serves every command that needs an argument    | Same: =Prompter.read= in =src/main/commands/prompter.ts=, sources listed in =cockpitSources= in =src/main/commands/keyscheme.ts=              | None                                                                                     |
+| =prompt= blocks and returns a list; commands are sequential code | A read takes a consumer callback and returns at once; a second answer is read from inside the first consumer (ADR 0003)                     | Shape only; recorded as a decision, not a gap                                            |
+| Several sources in one prompt, with per-source counts           | One source per read (=ReadSpec.source=)                                                                                                       | No way to list buffers and sessions, or history and a typed URL, in one read            |
+| Source constructor plus filter pre and post processors          | =candidates()= lists once at open; =rankCandidates= in =src/shared/palette.ts= ranks in the renderer                                        | No exact-match boost, no per-source matching rule, no async refresh as the query changes |
+| A source still computing shows "(In progress...)"               | Nothing: the list is complete when the read opens                                                                                             | Needed only once a source is async                                                       |
+| Suggestion attributes as named columns with widths              | =label=, optional =detail=, =doc= line for the highlighted one (=PaletteCandidate=)                                                           | No columns, no header, no column toggle                                                  |
+| Matching over every attribute, docstrings included               | =fuzzyScore= matches =label= only                                                                                                             | A command cannot be found by a word of its doc                                           |
+| Current suggestion, =C-n= and =C-p=, arrows                     | Same in =src/renderer/palette.ts=, plus =TAB= and =S-TAB= move                                                                               | None                                                                                     |
+| =M-<=, =M->=, =C-v=, =M-v=, ends of source                      | Nothing; the highlight wraps around                                                                                                           | With 40 shown of a longer list, no jump and no page                                      |
+| Count "[marks/suggestions]" in the prompt line                  | Nothing; =MAX_SHOWN= (40) cuts the list silently                                                                                              | No sign that more candidates exist than are listed                                       |
+| Several actions on return, =M-RET= to pick one                  | One consumer per read                                                                                                                         | Switch or kill a buffer, resume or delete a session, need separate commands              |
+| Actions on the current suggestion (preview), =C-j=, destructor on cancel | Nothing; a choice acts only on =RET=                                                                                                 | No preview of a buffer or diff while the highlight moves                                 |
+| Marks: =C-SPC=, =M-a=, =M-u=, =M-m=, checkbox column            | Nothing; the answer is one id or one text                                                                                                     | Delete several buffers or attach several diffs is several reads                          |
+| Free text as a suggestion (=url-or-query-source=)               | =freeText= reads (#69): =RET= with no highlight answers the query; eight such reads in =keyscheme.ts=                                        | Close; the typed text is not shown as a row, so a URL read with candidates will need one |
+| Nested prompts (history, pick an action, prompt buffer commands) | One read at a time; a newer read cancels the older (=Prompter.read=)                                                                        | Deliberate (ADR 0003)                                                                    |
+| =TAB= inserts the current suggestion's text into the input      | =TAB= moves the highlight                                                                                                                     | Keymap difference, Pedro's call                                                          |
+| =M-h= input history per prompt, one ring shared by default      | Nothing in the palette; =M-p= and =M-n= walk prompt history in the prompt buffer editor only                                                 | A repeated search query or issue number is retyped                                       |
+| =C-h b= and =C-h m= describe the prompt buffer's own keys       | Palette keys live in a CodeMirror keymap in =palette.ts=, outside the keymap tables, so =describe-key= does not know them                     | ADR 0002 says keymaps are data; the palette's are not                                    |
+| =C-x o= focus the buffer behind, =C-M-n= scroll it              | Nothing                                                                                                                                       | Matters once a web page sits behind a hint prompt (M4)                                   |
+| =M-up= and =M-down= resize                                      | Fixed height from CSS                                                                                                                         | Not missed on the keyboard                                                               |
+| Mouse: click returns, ctrl-click marks, checkbox toggles        | Nothing                                                                                                                                       | Deliberate: keyboard-driven                                                              |
+| =invisible-input-p= for passwords                               | Nothing                                                                                                                                       | Deliberate: no secrets pass through the cockpit                                          |
+| =C-g= and =escape= quit; cancel is a condition the caller sees  | =C-g= (through =keyboard-quit=) and =ESC= answer null; =onCancel= tells the caller (=confirm.ts= relies on it)                              | None                                                                                     |
+| Copy as text: =M-w= copies the marks' default attribute         | Candidates are rendered with =textContent=, copyable from the DOM; no copy key                                                                | Small; pillar 2 is honoured, the key is not there                                        |
+
+* What to file next
+
+Ordered by how soon a keyboard user hits the gap. Milestones as they stand
+today: M1 Cockpit MVP, M2 Sessions, diffs, search, M4 Browser buffers.
+
+** Worth an issue
+
+1. Palette navigation: =M-<= and =M->= to the ends, =C-v= and =M-v= by a
+   page, and a "shown of total" count in the prompt line. M1. The buffers
+   and commands lists already pass 40 and the cut is silent; one file
+   (=palette.ts=) plus a line of CSS.
+2. Palette keys as a keymap layer, so =C-h k= and =C-h x= describe them
+   and ADR 0002 holds for the palette too. M1. Today they are a CodeMirror
+   keymap in =palette.ts=; the layer would be data in =keyscheme.ts= with
+   the renderer still owning the editing keys.
+3. Actions on the current suggestion: a source may name a preview that runs
+   as the highlight moves and is undone on cancel. M2. The first users are
+   =choose-buffer= (show the buffer) and the diffs source (show the diff);
+   the destructor pattern of =buffer-source= is the model.
+4. Several actions on return, with =M-RET= to pick one. M2. Sessions
+   (resume, delete, open folder) and buffers (switch, kill) each need two
+   or three commands today for one list; this is one source with a list of
+   consumers.
+5. Marks. M2. Delete several buffers, attach several diffs or several
+   sessions to a prompt in one read; the answer becomes a list and the
+   consumer type widens. File after 4, since the action receives the marks.
+6. Matching over the doc as well as the label, with an exact-match boost.
+   M2. =describe-command= cannot be reached by a word of a docstring, which
+   is how a user who forgot the name looks; =fuzzyScore= gains a second
+   field and the tests in =tests/unit/palette.test.ts= a case.
+7. Input history for free-text reads, =M-h= or =M-p= inside the palette.
+   M2. Search queries and side questions are retyped; one ring in main next
+   to the prompt history of =prompt-queue.ts=, per read source.
+8. Several sources in one read, and a source that refreshes as the query
+   changes. M4. A URL read lists history, bookmarks and the typed text
+   together, and history is too large to ship once; ADR 0003 already names
+   this as M4's decision. Includes the "in progress" marker.
+9. Focus and scroll the buffer behind the palette. M4. Only meaningful when
+   a web page is behind a hint prompt, as in
+   =source/mode/hint-prompt-buffer.lisp=.
+
+** Deliberately not wanted
+
+- Attribute columns with a header and =C-]= to toggle them. =label= and
+  =detail= carry what the lists need; columns return with the URL and
+  history sources of M4, if at all, so no issue now.
+- =TAB= inserting the current suggestion into the input. #65 chose =TAB= as
+  move, the keymap is Pedro's call, and =RET= already takes the highlight.
+- Nested prompts. One read at a time is ADR 0003's decision; the reads that
+  need two answers chain them in the consumer, and =set-action-on-return=
+  can be a second read when 4 lands.
+- Blocking =prompt= that returns a list. The consumer shape is ADR 0003 and
+  Electron's main loop cannot block; a promise-returning wrapper is a
+  refactor the plan does not ask for.
+- Mouse actions on suggestions. Keyboard-driven is pillar 1; a click target
+  is also a surface a page could aim at once web buffers exist.
+- Password-style invisible input. The SDK authenticates through the
+  =claude= CLI login and the cockpit carries no secrets (CLAUDE.md).
+- Resizing the prompt with =M-up= and =M-down=. The section has one height
+  and the list is paged; a resize key is reach without a need.
+- A copy key for the highlighted candidate. Every list is plain text in the
+  DOM already; a dedicated key waits until someone misses it.

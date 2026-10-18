@@ -27,13 +27,26 @@ export interface PaletteRequest {
   /** The words before the query: `M-x`, `Describe command:`. */
   readonly prompt: string
   readonly candidates: readonly PaletteCandidate[]
+  /**
+   * The read takes the text typed as well (#69): `RET` answers with the
+   * query when it matches no candidate, so a source may list nothing and
+   * the doc line says what `RET` does.
+   */
+  readonly freeText?: true
 }
 
-/** The window's answer: the candidate picked, or null when the read was cancelled. */
+/**
+ * The window's answer: the candidate picked, the text typed on a free-text
+ * read, or neither when the read was cancelled.
+ */
 export interface PaletteAnswer {
   readonly id: string
   readonly choice: string | null
+  readonly text?: string
 }
+
+/** The doc line of a free-text read while no candidate is highlighted. */
+export const FREE_TEXT_DOC = 'RET answers with the text typed.'
 
 /**
  * What the main process did with the answer. `command` names a command the

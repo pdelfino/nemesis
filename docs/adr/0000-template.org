@@ -1,0 +1,33 @@
+#+TITLE: ADR NNNN: <decision in a few words>
+#+OPTIONS: toc:nil
+
+- Status: proposed
+- Date: 2026-MONTH-DD
+- Threat or Pillar: SECURITY.org T<n> <name>, or the pillar of README.org this serves, or none
+- Issue: #<number>
+
+* Context
+
+What is true today and why a decision is needed now. Name the forces: the
+constraint from CLAUDE.md or SECURITY.org, the issue that forced the choice,
+what already exists in the tree. Facts only; the opinion goes in the next
+section.
+
+* Decision
+
+What was chosen, in the present tense, as rules a later reader can check the
+code against. One subsection per rule when there is more than one.
+
+* Alternatives considered
+
+One subsection per option that was on the table, each ending with why it lost.
+A later issue that wants to reopen the choice starts here.
+
+** <option>
+
+What it is, what it would have cost, why it lost.
+
+* Consequences
+
+What becomes easier, what becomes harder, what is now out of reach, and what
+follow-up work the decision creates. The costs are listed, not hidden.

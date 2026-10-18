@@ -30,6 +30,7 @@ type FixtureListener = HttpServer | HttpsServer
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
   '.bin': 'application/octet-stream',
 }
 
@@ -148,14 +149,25 @@ export interface PageBuffer {
   close(): Promise<void>
 }
 
+export interface PageBufferOptions {
+  readonly withPreload?: boolean
+}
+
 export interface Nemesis {
   readonly app: ElectronApplication
   /** The cockpit window, the one internal page with the preload bridge. */
   readonly window: Page
   /** The throwaway profile, deleted by `close`. */
   readonly userData: string
-  /** Opens a URL in a hardened, preload-free WebContents, as a page buffer. */
-  openPageBuffer(url: string): Promise<PageBuffer>
+  /** The downloads path of this launch, inside the profile; the quarantine folder is under it (#51). */
+  readonly downloadsDir: string
+  /**
+   * Opens a URL in a hardened, preload-free WebContents, as a page buffer.
+   * `withPreload` attaches the cockpit's preload to the hostile page instead,
+   * which no page buffer ever gets: it is how the IPC spec reaches a
+   * privileged channel from a web origin (#53).
+   */
+  openPageBuffer(url: string, options?: PageBufferOptions): Promise<PageBuffer>
   close(): Promise<void>
 }
 
@@ -165,23 +177,40 @@ export interface Nemesis {
  * and never reaches the network or an account.
  */
 export async function launchNemesis(): Promise<Nemesis> {
-  const { app, userData } = await launchApp('nemesis-security-')
+  // Fake camera and microphone devices (#49): with the real ones, a
+  // microphone request from a page buffer sat in Chromium's audio capture
+  // on macOS and never reached the app's permission handler, whatever the
+  // system's own permission said. The fake devices skip that stack, so the
+  // request reaches the handler, which is the control under test. The
+  // switch grants nothing: that would be `--use-fake-ui-for-media-stream`,
+  // which no spec may pass.
+  const { app, userData, downloadsDir } = await launchApp('nemesis-security-', [
+    '--use-fake-device-for-media-stream',
+  ])
   const window = await app.firstWindow()
   await window.waitForLoadState('domcontentloaded')
 
   const buffers: PageBuffer[] = []
 
-  const openPageBuffer = async (url: string): Promise<PageBuffer> => {
+  const openPageBuffer = async (
+    url: string,
+    options: PageBufferOptions = {},
+  ): Promise<PageBuffer> => {
     const opened = app.waitForEvent('window')
     const created = await app.evaluate(
-      async ({ BrowserWindow }, options) => {
+      async ({ app: main, BrowserWindow }, options) => {
+        // A web page gets the hardened defaults and no preload: the bridge
+        // belongs to internal pages only (SECURITY.org, T1). The one spec
+        // that asks for the preload gets the built one, from the app path
+        // the main process already knows.
+        const preload = options.withPreload
+          ? { preload: `${main.getAppPath()}/out/preload/index.js` }
+          : {}
         const view = new BrowserWindow({
           show: false,
           width: 1000,
           height: 700,
-          // A web page gets the hardened defaults and no preload: the bridge
-          // belongs to internal pages only (SECURITY.org, T1).
-          webPreferences: { ...options.webPreferences },
+          webPreferences: { ...options.webPreferences, ...preload },
         })
         try {
           await view.loadURL(options.url)
@@ -190,7 +219,11 @@ export async function launchNemesis(): Promise<Nemesis> {
           return { id: view.id, loadError: error instanceof Error ? error.message : String(error) }
         }
       },
-      { url, webPreferences: { ...HARDENED_WEB_PREFERENCES } },
+      {
+        url,
+        webPreferences: { ...HARDENED_WEB_PREFERENCES },
+        withPreload: options.withPreload === true,
+      },
     )
 
     const page = await opened
@@ -211,6 +244,7 @@ export async function launchNemesis(): Promise<Nemesis> {
     app,
     window,
     userData,
+    downloadsDir,
     openPageBuffer,
     close: async () => {
       for (const buffer of buffers.reverse()) {
