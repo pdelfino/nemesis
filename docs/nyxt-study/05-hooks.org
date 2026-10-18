@@ -1,0 +1,392 @@
+#+TITLE: Nyxt study 05: hooks, and the cockpit hook points a user config would want
+#+OPTIONS: toc:nil
+
+- Issue: #16 (feeds ADR 0005, #23; related #71 user config, #72 eval)
+- Nyxt read at: =~/projects/nyxt= at =fb49be5=, files =source/browser.lisp=,
+  =source/buffer.lisp=, =source/window.lisp=, =source/mode.lisp=,
+  =source/foreign-interface.lisp=, =source/configuration.lisp=,
+  =source/input.lisp=, =source/start.lisp=, =source/prompt-buffer.lisp=,
+  =source/user-classes.lisp=, =source/command.lisp=, =source/manual.lisp=,
+  =source/mode/blocker.lisp=, =source/mode/force-https.lisp=,
+  =source/mode/download.lisp=
+- Nemesis read at: main after #95 (=src/main/agent/session.ts=,
+  =src/main/buffers.ts=, =src/main/commands/registry.ts=,
+  =src/main/commands/dispatcher.ts=), plus =SECURITY.org=
+
+A note on the sources the issue named. The hook library is =nhooks=, and the
+checkout has the directory =_build/nhooks/= but it is empty: no Lisp file of
+the library is on disk. This study therefore does not read the library. What
+it says about =nhooks= comes from three places that are on disk: the
+declarations of the hook types and slots (=define-hook-type=, the
+=hook-*= classes), the places that run and mutate hooks, and the prose of
+=source/manual.lisp=. Where a claim would need the library's source (the exact
+default combination, how a handler's name is derived, what =run-hook= does
+when a handler signals), it is marked as not verified here instead of guessed.
+If it matters for ADR 0005, vendor-read =nhooks= first.
+
+* How Nyxt hooks work
+
+** The hook is an object in a slot
+
+A hook is an instance of a class made by =hooks:define-hook-type=, held in a
+slot of the object it belongs to. =browser.lisp= declares three types
+(=prompt-buffer=, =resource=, =browser=) and =buffer.lisp=, =window.lisp= and
+=mode.lisp= declare the rest (=keymaps-buffer=, =url->url=, =buffer=, =window=,
+=window-buffer=, =mode=). A type fixes the handler signature as a Lisp function
+type: =hook-resource= is =(function (request-data) (or request-data null))=,
+=hook-window-buffer= takes a window and a buffer. The slot default is
+=(make-instance 'hook-buffer)= and the slot is typed with the same class, so a
+hook that holds the wrong kind of handler is a type error at the slot.
+
+Two scopes appear. Global hooks live on the browser (=after-init-hook=,
+=after-startup-hook=, =before-exit-hook=, =window-make-hook=,
+=buffer-make-hook=, =buffer-before-make-hook=, =buffer-after-make-hook=,
+=prompt-buffer-make-hook=, =prompt-buffer-ready-hook=). Per-object hooks live
+on the window, the buffer or the mode (=window-set-buffer-hook=,
+=window-delete-hook=, =buffer-delete-hook=, =buffer-load-hook=,
+=buffer-loaded-hook=, =request-resource-hook=, =current-keymaps-hook=,
+a mode's =enable-hook= and =disable-hook=, a buffer's =enable-mode-hook= and
+=disable-mode-hook=). The per-object ones are why a hook can differ per buffer:
+the blocker mode adds its handler to /that buffer's/ =request-resource-hook=.
+
+** The hook points, and where they run
+
+The slot is declared in one file and the run site is usually in another, so
+this is the map worth having:
+
+| Hook                              | Declared in         | Runs in                                          | Handler gets          |
+|-----------------------------------+---------------------+--------------------------------------------------+-----------------------|
+| =after-init-hook=                 | =browser.lisp=      | =finalize-startup=, before =startup=             | browser               |
+| =after-startup-hook=              | =browser.lisp=      | =finalize-startup=, after the first URLs open    | browser               |
+| =before-exit-hook=                | =browser.lisp=      | =quit= in =start.lisp=, before the browser is unready | nothing          |
+| =window-make-hook=                | =browser.lisp=      | =window-make= in =window.lisp=                   | window                |
+| =window-set-buffer-hook=          | =window.lisp=       | =:around= of =ffi-window-set-buffer=             | window, buffer        |
+| =window-delete-hook=              | =window.lisp=       | =:around= of =ffi-window-delete=                 | window                |
+| =buffer-before-make-hook=         | =browser.lisp=      | =customize-instance :after= on =buffer=         | buffer                |
+| =buffer-make-hook=                | =browser.lisp=      | =customize-instance :after= on =modable-buffer=, before modes | buffer   |
+| =buffer-after-make-hook=          | =browser.lisp=      | same method, after modes are enabled             | buffer                |
+| =buffer-delete-hook=              | =buffer.lisp=       | =ffi-buffer-delete=                              | buffer                |
+| =buffer-load-hook=                | =buffer.lisp=       | =ffi-buffer-load=, before the load               | URL, returns URL      |
+| =buffer-loaded-hook=              | =buffer.lisp=       | =on-signal-load-finished=, in a new thread       | buffer                |
+| =request-resource-hook=           | =buffer.lisp=       | the renderer's request path                      | request-data or nil   |
+| =current-keymaps-hook=            | =buffer.lisp=       | =current-keymaps= in =input.lisp=                | keymaps, buffer       |
+| =prompt-buffer-make-hook=         | =browser.lisp=      | prompt buffer creation in =prompt-buffer.lisp=   | prompt buffer         |
+| =prompt-buffer-ready-hook=        | =browser.lisp=      | when the prompt buffer is available              | prompt buffer         |
+| =enable-hook=, =disable-hook=     | =mode.lisp=         | =enable :after=, =disable :after=                | mode                  |
+| =enable-mode-hook=, =disable-mode-hook= | =buffer.lisp= | same methods, after the mode's own hook          | mode                  |
+| =before-download-hook=, =after-download-hook= | =mode/download.lisp= | =download.lisp= download steps          | download              |
+
+Three details in the table are deliberate and worth copying or avoiding:
+
+- *Ordering inside creation is documented in the slot text.* =buffer-make-hook=
+  runs "before mode initialization so that the default mode list can still be
+  altered from the hooks"; =buffer-after-make-hook= runs "as the very last
+  step of buffer initialization, when everything else is ready". The same
+  event has an early and a late hook because a handler wants either the
+  mutable moment or the finished object, and the two are not the same moment.
+  =buffer-before-make-hook= comes earlier still, before the web view exists,
+  and says so ("not possible to run arbitrary parenscript from this hook").
+- *"Before" hooks sit in =:around= methods, "after" hooks in =:after=
+  methods.* =window-delete-hook= runs before the window is removed from the
+  table; =enable-hook= runs after =enabled-p= is set. The qualifier decides
+  whether a handler sees the old or the new state, and the docstring is where
+  that is written down.
+- *One hook is fire-and-forget on another thread.* =buffer-loaded-hook= runs
+  inside =run-thread=, so its handlers do not block the load-finished
+  signal and cannot veto anything. The prompt-buffer and window hooks run
+  inline.
+
+** Handler ordering
+
+New handlers are added to the hook, and the order they run in is the order
+the hook's combination walks them. What the sources let us verify:
+
+- =combine-composed-hook-until-nil= (=browser.lisp=) walks
+  =(hooks:handlers hook)= from the front, and its docstring says "from oldest
+  to youngest". The =request-resource-hook= slot text says "Newest hook is
+  run first". The two statements disagree on their face. =hooks:add-hook=
+  takes an =:append= argument (=configuration.lisp= passes =:append t= when
+  =define-configuration= adds a handler), which suggests the library prepends
+  by default and the list order is newest first; that reading would make the
+  docstring on the combinator stale. This cannot be settled without the
+  library source, so it is the first thing to read before ADR 0005 fixes an
+  order. The Nemesis lesson is independent of the answer: state one order,
+  once, and test it.
+- Configuration handlers are appended (=:append t=), so a user's
+  =define-configuration= handler runs after the ones a mode installs at
+  enable time. A mode that adds its handler in =enable= (blocker, force-https)
+  adds it at the default position at that moment, so its place relative to the
+  user's handlers depends on when the mode was enabled relative to when the
+  config ran.
+
+** Combination: what happens with several handlers
+
+Every hook has a =combination= slot, a function of the hook (plus the
+hook's arguments) that decides how the handlers are run and what the hook
+returns. Three combinations are visible in this checkout:
+
+1. *Run all, ignore results.* The default for the plain types
+   (=hook-buffer=, =hook-window=, =hook-mode=, =hook-browser=). Every
+   handler is called with the same arguments; the return value is not used.
+   This is inferred from the types (their handler functions are typed as
+   returning nothing in particular) and from the manual text, not verified in
+   the library.
+2. *Composed.* =hooks:combine-composed-hook= (a library function, used on
+   =buffer-load-hook= and =current-keymaps-hook=) feeds each handler the
+   result of the previous one: the URL goes in, a possibly different URL
+   comes out; the list of keymaps goes in, a reordered or extended list comes
+   out. The hook is a pipeline, and its type says so
+   (=hook-url->url= is =(function (quri:uri) quri:uri)=).
+3. *Composed until nil.* =combine-composed-hook-until-nil= is Nyxt's own
+   (=browser.lisp=): compose as above, but when a handler returns nil, stop
+   and return nil. With no handlers it returns its argument. It is the veto:
+   =request-resource-hook= handlers either pass a (possibly rewritten)
+   =request-data= on, or return nil and the request is cancelled. The manual
+   example (=old-reddit-handler=) shows the corollary: a handler that means
+   to pass must remember to return the data, and the manual calls this out
+   ("it's important to make sure we return request-data here").
+
+"Run all, until success" in the sense of "first handler that answers wins"
+does not appear in this checkout. The only short-circuit is the nil veto.
+
+** Error handling: what a failing handler does to the others
+
+Nyxt has no uniform rule, and the cases the sources show are inconsistent:
+
+- =after-init-hook= is wrapped twice in =finalize-startup=:
+  =ignore-errors= around =handler-bind= that logs ="In after-init-hook: ~a"=.
+  An error is logged and swallowed, and, because the condition aborts the
+  =run-hook= call, the handlers after the failing one do not run. A TODO on
+  that line asks whether it should run outside the main loop.
+- =buffer-load-hook= in =ffi-buffer-load= has the same
+  =ignore-errors= plus logging wrapper, and the surrounding =when-let= means
+  that when the hook fails the result is nil and /the load does not
+  happen/. A broken handler silently turns navigation off for that buffer
+  until it is removed.
+- =before-exit-hook= is run bare in =quit=, and the comment says why the
+  order matters: the browser is marked unready /after/ the hook "so that on
+  hook error the browser is still ready" and quit can be retried. A failing
+  exit handler blocks exit; that is a choice, not an accident.
+- The remaining run sites (=window-make-hook=, =buffer-make-hook=,
+  =enable-hook=, =buffer-delete-hook=, =request-resource-hook=) have no
+  local wrapper. Whether a handler error is isolated per handler inside
+  =run-hook= is not verifiable here. What is verifiable is that a handler
+  error in =buffer-make-hook= propagates through =customize-instance=, so it
+  can abort the creation of the buffer that triggered it.
+
+The consistent part is that error policy is chosen at the run site, not by the
+hook type. For Nemesis the equivalent decision belongs in the one place that
+fires hooks, so a user config cannot take down buffer creation by accident.
+
+** Removal and naming
+
+A handler is a =hooks:handler= object with an =fn= and a =name= (the
+=define-configuration= expansion in =configuration.lisp= builds one with
+=:name (quote ,handler-name)=, and =url-dispatching-handler= takes a symbol
+as its first argument for the same reason). Three forms are accepted by
+=hooks:add-hook=: a bare function symbol such as ='old-reddit-handler=, a
+=handler= instance, and, through =reduce=, a list of symbols folded into a
+hook (=buffer.lisp= and the manual both show this). =hooks:remove-hook= takes
+the hook and the handler or its name, and =blocker.lisp= and
+=force-https.lisp= use it in their =disable= methods with the same symbol
+their =enable= added. The manual also lists =hooks:on= (shorthand for
+add-hook) and =hooks:once-on= (a one-shot).
+
+Naming earns its keep in three places:
+
+1. *Removal.* A symbol-named handler can be removed without holding the
+   object, which is how modes undo themselves.
+2. *Introspection.* =get-hooks= in =command-commands.lisp= walks the
+   window, current buffer and browser, lists their hooks as a prompter
+   source (=hook-source=), and a second source lists a chosen hook's handlers
+   by =(str:downcase (hooks:name handler))=. A user can open M-x and see which
+   handlers are installed on which hook. An anonymous lambda would show as
+   nothing useful.
+3. *Logs.* The combinator logs ="Handler (~a ~a): ~a"= with the handler, its
+   input and its output.
+
+Idempotence of =add-hook= (does adding the same name twice add two entries)
+is a library question, not answered here.
+
+** A hook is not advice
+
+Nyxt has both, and the code keeps them apart.
+
+- *A hook* is a named, typed slot on an object. The extension point is
+  declared: someone chose that "buffer created" is worth a hook, gave it a
+  signature and documented its moment. Handlers are values that can be added,
+  listed, removed and replaced at runtime, and the hook's combination says
+  what their results mean.
+- *Advice* is CLOS method qualification. =command.lisp= says each command is
+  a generic function and "can be specialize[d] with =:before=, =:after= and
+  =:around= qualifiers, effectively acting as hooks. These specializations are
+  reserved to the user." There is no declaration, no signature beyond the
+  command's own, no name to remove it by (removal means redefining or
+  =remove-method=), and no listing in the palette. It reaches /every/
+  function, which is its power and its risk: =define-configuration= falls
+  back to a generated =:around= method on the slot reader when the slot is
+  not found (=configuration.lisp=, "generating the wrapper method"), and
+  =user-classes.lisp= reserves the standard =customize-instance= method for
+  user configuration for the same reason.
+
+Nyxt itself also uses =:around= and =:after= as the /implementation/ of its
+own hook points (the table above), so advice is the mechanism and hooks are
+the contract. The split matters for Nemesis: a hook is a promise the
+project keeps across versions; advice is a licence to break things the user
+keeps for themself.
+
+** What users put on hooks in the wild
+
+The manual (=source/manual.lisp=, hooks section, around lines 320 to 404)
+is the closest thing to evidence of use in this checkout, and the docstrings
+carry examples. There is no telemetry of real configs here. What the
+documented examples reach for:
+
+1. *=request-resource-hook=*: rewrite or block URLs (the =old-reddit-handler=
+   example in the manual, =url-dispatching-handler= with doi, magnet and
+   file:// examples, =auto-proxy-handler= in the =reduce= example). This is
+   the hook with the most prose in the checkout, and the one two built-in
+   modes (blocker, force-https) are made of.
+2. *=after-init-hook=*: "the entry-point hook to configure everything in
+   Nyxt", with the =define-configuration= example in its slot text. Also what
+   =restart-with-message= (=start.lisp=) uses to schedule the startup error
+   report after a crash.
+3. *=before-download-hook= and =after-download-hook=*: echo the file name,
+   open the file with =xdg-open=. Documented with working examples.
+4. *=buffer-make-hook= and =buffer-after-make-hook=*: the manual lists the
+   buffer hooks but gives no example; the docstring says they are the place
+   to alter default modes or run on a finished buffer.
+5. *=window-*-hook=, =prompt-buffer-ready-hook=, =buffer-load-hook=,
+   =buffer-loaded-hook=*: listed by the manual with one line each, no example.
+
+The pattern: users hook /events with a payload they can act on and a return
+that means something/ (a URL, a download), not lifecycle announcements.
+
+* How Nemesis does it today
+
+*No cockpit hook exists.* A search of =src/= finds no hook registry. The
+nearest things are not hooks:
+
+- =BufferRegistry.subscribe= (=src/main/buffers.ts=) is a set of listeners
+  called with a frozen list snapshot on every change. It is a notification
+  channel for the renderer, not an extension point: the listener sees the
+  whole list after the fact, with no event type, no ordering promise and no
+  way to veto.
+- =KeyDispatcher= (=src/main/commands/dispatcher.ts=) keeps a bounded list
+  of dispatch records for =describe-key= and tests. It records what ran; no
+  handler runs around it.
+- =CommandRegistry.register= (=src/main/commands/registry.ts=) refuses a
+  duplicate name and freezes the command object. There is no
+  before/after wrapper around =Command.run=.
+
+*The SDK hooks, as the issue asked.* The Agent SDK has hooks of its own
+(=PreToolUse=, =PostToolUse= and others, passed in the session options). The
+session manager does not use them yet: =sdkOptions= in
+=src/main/agent/session.ts= sets =canUseTool=, the permission callback, and
+no =hooks= option; a search for =PreToolUse= in =src/= finds nothing.
+=SECURITY.org= (the page-content paragraph) /plans/ one: "A =PreToolUse= hook
+denies side-effect tools while the current buffer is a page from a domain not
+on the user's allowlist." So the SDK has two separate layers. =canUseTool=
+asks the user and is built; =PreToolUse= denies by policy and is specified.
+Neither is a user extension point and neither should be exposed as one: the
+SDK hook sits in the security path (=src/main/agent/=, reviewed interactively
+by Pedro), and a user config handler there would be a way to weaken it. The
+cockpit hooks below must live in a separate registry with no route to a tool
+permission decision.
+
+* Design pressure for ADR 0005
+
+1. *Declared, typed points, not advice.* A fixed list of hook names, each
+   with an event type in =src/shared/=. No generic "wrap any function".
+2. *One order, written down, tested.* Hooks run in registration order;
+   =prepend= is explicit if wanted. Settle Nyxt's oldest/newest ambiguity by
+   not having it.
+3. *Two kinds, not a combination slot.* Observers run all handlers, results
+   ignored (=hook-buffer= and friends). Interceptors compose and may return a
+   veto (=request-resource-hook=). Nothing else; no user-supplied combinator.
+4. *Error policy at the single fire point.* A failing observer is caught,
+   logged to the session log (never page content or prompts, per CLAUDE.md)
+   and does not stop the others. A failing interceptor is treated as "no
+   change", not as a veto, so a broken config cannot silently block an
+   action the way a broken =buffer-load-hook= does in Nyxt.
+5. *Named handlers, with a remove and a list.* A name is required to
+   register, =remove= takes the name, and a =list-hooks= command shows them
+   in the palette, as =get-hooks= does.
+6. *Early and late variants only where the moment differs.* Keep the
+   =buffer-before-make= / =buffer-after-make= split only if there is a
+   moment a handler can change that the late one cannot.
+7. *No hook reaches the agent's permission path.* See above; a test should
+   pin that no cockpit hook can run inside =canUseTool= or the SDK =hooks=
+   option.
+
+* Inventory
+
+** The first six cockpit hook points a config would want
+
+Each is an event the cockpit already has a seam for, in the order a config is
+likely to need them. Names are proposals for ADR 0005, not decisions.
+
+1. *=after-init=* (observer, no veto). Runs once after the registries are
+   built and before the first window. Where a config registers commands and
+   keys (#71). Nyxt analogue: =after-init-hook=.
+2. *=buffer-created=* (observer, payload =BufferInfo=). Fired from
+   =BufferRegistry.create= after the buffer is added. A config would use it to
+   name or arrange buffers. Nyxt analogues: =buffer-make-hook= and
+   =buffer-after-make-hook=; start with the late one.
+3. *=buffer-deleted=* and *=buffer-switched=* (observers). Fired from the
+   registry's delete and set-current paths. Needed by anything that tracks
+   focus, such as a per-buffer status. Nyxt analogues: =buffer-delete-hook=,
+   =window-set-buffer-hook=. Listed as one item because a config nearly
+   always wants both and the registry already has both seams.
+4. *=before-command= and =after-command=* (interceptor before, observer
+   after, payload command name and =CommandContext=). Fired in the dispatcher
+   around =Command.run=. The before variant may veto, which is how a config
+   disables a command or confirms a dangerous one. Nyxt has no direct
+   analogue (it uses advice on the command's generic function, which is
+   exactly what ADR 0005 should not copy); this is the one hook point where
+   the TypeScript design is better off than Nyxt.
+5. *=session-turn-start= and =session-turn-end=* (observers, payload session
+   id and turn summary, never the prompt text). Fired by the session
+   manager from events it already emits. A config would use it to notify when a
+   long agent turn finishes or to log cost. Strictly read-only. Nyxt analogue:
+   none; the closest is =after-download-hook= (a long operation that finishes).
+6. *=before-exit=* (observer). Fired once from the quit path. Lets a config
+   flush its own state. Failure must not block exit, the opposite of Nyxt's
+   =before-exit-hook= choice, because a cockpit has live agent sessions that
+   a bad handler must not be able to strand.
+
+Page-driven hooks (a =request-resource=-style interceptor, =buffer-loaded=)
+wait for M4 page buffers (#73) and their own review.
+
+** Needed now (before ADR 0005 is written)
+
+- Read the =nhooks= source (the checkout directory is empty) to settle
+  handler order, the default combination and per-handler error isolation.
+- A hook registry in =src/main/= with the observer/interceptor split, ordered
+  registration, named removal and a fire point that catches. Depends on ADR
+  0005.
+- A =list-hooks= command, on the =describe-command= pattern.
+
+** Later
+
+- Wiring the six points above, each as its own small issue.
+- A one-shot variant (=once-on=) if a config wants it.
+- Hooks scoped to a buffer type rather than global, once page buffers exist.
+
+** Not wanted
+
+- Advice on commands or any function (=:before=, =:after=, =:around= for the
+  user). It is unlisted, unremovable by name, and can reach the permission
+  path. Hooks are the contract, advice is not offered.
+- A user-supplied combination function per hook. Two kinds are enough, and a
+  free combinator makes order and error rules impossible to state.
+- Hooks that run inside the SDK permission callback or the SDK =hooks=
+  option, or that can change a tool decision. The security paths stay closed
+  to config.
+- Handlers on another thread (=buffer-loaded-hook= in =run-thread=). Electron
+  main is one event loop; an async handler is awaited or fire-and-forget by
+  an explicit choice at the fire point.
+- Silent swallowing of handler errors (=ignore-errors= on =after-init-hook=).
+  Errors are logged to the session log with the handler name.
+- Hooks that carry page content or prompt text as payload. CLAUDE.md: never
+  log them, and a hook payload is logged on error.
