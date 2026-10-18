@@ -8,6 +8,7 @@ import { installKeyBridge } from './commands/key-bridge'
 import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
+import { applyNavigationPolicy } from './security/navigation-policy'
 import { internalPagePreferences } from './security/web-preferences'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { SessionRecorder } from './transcripts'
@@ -23,8 +24,12 @@ if (userData) app.setPath('userData', userData)
 const iconPath = app.isPackaged ? undefined : join(__dirname, '../../resources/icon-512.png')
 
 app.on('web-contents-created', (_event, contents) => {
-  // Interim guard until #48 lands: no page may attach a <webview>.
-  contents.on('will-attach-webview', (event) => event.preventDefault())
+  // T1 and T3 (#48): every WebContents gets the page policy the moment it
+  // exists, whoever created it, so no creation site can forget it. The one
+  // internal page corrects its kind in createWindow below. The buffer manager
+  // supplies openPage once a page buffer exists (M4, #73); until then a window
+  // a page asks for is denied with nothing in its place.
+  applyNavigationPolicy(contents, 'page')
   // T1 (#47): read the preferences back off every WebContents the app creates,
   // the cockpit window included. The walk waits for the first load because
   // getLastWebPreferences() answers for the page that committed.
@@ -54,9 +59,9 @@ function createWindow(): BrowserWindow {
   })
   win.once('ready-to-show', () => win.show())
 
-  // Interim guards until #48 lands: no new windows, no navigation away from the internal page.
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  // The cockpit is an internal page: it may navigate on the internal scheme
+  // only, and it opens no windows (#48).
+  applyNavigationPolicy(win.webContents, 'internal')
 
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devServer) {

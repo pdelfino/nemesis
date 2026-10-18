@@ -33,6 +33,8 @@ the same ground:
 |---------------------+-----------------------------------------------------------------|
 | =node-probe.html=   | =process=, =require=, the module loader, the preload bridge     |
 | =window-open.html=  | =window.open=, window features, =target=_blank=                 |
+| =navigation.html=   | =location= set to =file:=, a =javascript:= URL and a top-level =data:= URL |
+| =webview.html=      | a =webview= tag in markup and by script, =allowpopups= asked for |
 | =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB) |
 | =injection.html=    | prompt-injection text, visible, hidden and in a comment         |
 | =permissions.html=  | one button per device or data permission, outcome per =li=      |

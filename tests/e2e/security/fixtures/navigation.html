@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>navigation</title>
+  </head>
+  <body>
+    <h1>Navigation</h1>
+    <p>
+      Three places a page must not take the app (SECURITY.org, T1 and T3: navigation is controlled).
+      Each button sets <code>location</code>; the spec asserts nothing commits.
+    </p>
+    <button id="go-file" type="button">file:///etc/hosts</button>
+    <button id="go-javascript" type="button">javascript: URL</button>
+    <button id="go-data" type="button">top-level data: URL</button>
+    <p id="canary">NEMESIS-NAVIGATION-CANARY</p>
+    <p id="result">pending</p>
+    <script>
+      function go(label, url) {
+        document.getElementById('result').textContent = label
+        globalThis.__navigation = { label: label, url: url }
+        location = url
+      }
+      document.getElementById('go-file').addEventListener('click', function () {
+        go('file', 'file:///etc/hosts')
+      })
+      document.getElementById('go-javascript').addEventListener('click', function () {
+        go('javascript', 'javascript:\'<h1 id="pwned">NEMESIS-NAVIGATION-PWNED</h1>\'')
+      })
+      document.getElementById('go-data').addEventListener('click', function () {
+        go('data', 'data:text/html,<h1 id="pwned">NEMESIS-NAVIGATION-PWNED</h1>')
+      })
+    </script>
+  </body>
+</html>
