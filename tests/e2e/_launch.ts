@@ -97,7 +97,10 @@ function record(app: ElectronApplication): void {
  * it, #98) passes it in `env`, merged over the test runner's own. A spec
  * that needs the app started inside another folder (the environment panel's
  * fixture project, #86) passes it as `cwd`; the app itself is always this
- * repository's build, named by its absolute path.
+ * repository's build, named by its absolute path. A spec that relaunches the
+ * app on a profile an earlier launch wrote (the sessions list after a
+ * restart, #104) passes that launch's `userData` as `profile`; the profile
+ * and its settings file are then taken as they are.
  */
 export async function launchApp(
   prefix = 'nemesis-e2e-',
@@ -105,15 +108,18 @@ export async function launchApp(
   settings: Readonly<Record<string, unknown>> = {},
   env: Readonly<Record<string, string>> = {},
   cwd: string = APP_DIR,
+  profile: string | null = null,
 ): Promise<LaunchedApp> {
-  const userData = mkdtempSync(join(tmpdir(), prefix))
+  const userData = profile ?? mkdtempSync(join(tmpdir(), prefix))
   const sessionsDir = join(userData, 'sessions')
   const downloadsDir = join(userData, 'downloads')
-  mkdirSync(downloadsDir)
-  writeFileSync(
-    join(userData, 'settings.json'),
-    `${JSON.stringify({ sessionsDir, ...settings })}\n`,
-  )
+  if (profile === null) {
+    mkdirSync(downloadsDir)
+    writeFileSync(
+      join(userData, 'settings.json'),
+      `${JSON.stringify({ sessionsDir, ...settings })}\n`,
+    )
+  }
   const app = await electron.launch({
     // NEMESIS_USER_DATA and NEMESIS_DOWNLOADS are what the main process
     // reads; the Chromium switch keeps caches and partitions inside the same

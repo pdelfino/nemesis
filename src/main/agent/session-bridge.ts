@@ -35,7 +35,9 @@ import type { SessionManager } from './session-manager'
  * new-task and on a conversation rewind, and the queue, the recorder and the
  * window follow through the one subscription taken here. A resumed session's
  * recorded history (#67) goes to the window alone: the recorder already has
- * it, in the file it was read from.
+ * it, in the file it was read from. Its prompts seed the queue's history
+ * (#104), so `M-p` in the window walks back into the resumed session; the
+ * prompt buffer reads the state again when the resumed session starts.
  */
 
 /** Anything that emits agent events the window and the recorder should see. */
@@ -61,6 +63,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
   agent.onHistory((history) => {
+    queue.seedHistory(history.flatMap((event) => (event.type === 'user-text' ? [event.text] : [])))
     for (const event of history) broadcast(AGENT_EVENT_CHANNEL, event)
   })
   permissions.on((event) => {

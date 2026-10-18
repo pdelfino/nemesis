@@ -133,6 +133,26 @@ describe('the prompt queue', () => {
     expect(session.sent).toEqual(['first', 'second'])
   })
 
+  it('takes the prompts of a resumed session as the history, in their place (#104)', async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    await queue.submit('before the resume')
+    queue.seedHistory(['one', 'two', 'two', 'three'])
+    expect(queue.history()).toEqual(['one', 'two', 'three'])
+    expect(queue.promptState().history).toEqual(['one', 'two', 'three'])
+    // The newest prompts are the ones kept when the resumed session is long.
+    queue.seedHistory(Array.from({ length: 120 }, (_, i) => `p${i}`))
+    expect(queue.history()).toHaveLength(100)
+    expect(queue.history()[0]).toBe('p20')
+    expect(queue.history().at(-1)).toBe('p119')
+    // A send after the seed goes on the end, as before.
+    session.endTurn()
+    await settle()
+    await queue.submit('after')
+    expect(queue.history().at(-1)).toBe('after')
+    expect(queue.history()).toHaveLength(100)
+  })
+
   it('remembers sent prompts oldest first, without consecutive repeats', async () => {
     const session = new FakeSession()
     const queue = new PromptQueue(session)

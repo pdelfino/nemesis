@@ -71,6 +71,24 @@ describe('reading one log', () => {
     })
   })
 
+  it('titles a named session by its latest name, whatever the first prompt was (#104)', () => {
+    const named =
+      FIRST_LOG +
+      line('2026-10-17T12:31:00.000Z', { type: 'named', name: 'first name' }) +
+      line('2026-10-17T12:32:00.000Z', { type: 'user-text', text: 'more' }) +
+      line('2026-10-17T12:33:00.000Z', { type: 'named', name: '  nemesis   security\nreview ' })
+    expect(summarizeLog('mock-session', named)).toMatchObject({
+      id: 'mock-session',
+      title: 'nemesis security review',
+      startedAt: new Date('2026-10-17T12:30:45.000Z'),
+    })
+    // A name of blanks is not a name: the one before it stands.
+    const blank = named + line('2026-10-17T12:34:00.000Z', { type: 'named', name: ' \t ' })
+    expect(summarizeLog('mock-session', blank)?.title).toBe('nemesis security review')
+    // The excerpt returns when a log carries no name.
+    expect(summarizeLog('mock-session', FIRST_LOG)?.title).toBe('alpha one')
+  })
+
   it('cuts a long first line to fit a palette row', () => {
     const long = 'x'.repeat(100)
     const summary = summarizeLog(
@@ -91,7 +109,9 @@ describe('reading one log', () => {
   it('gives the events back without the timestamps, skipping lines that are not events', () => {
     const torn = `${FIRST_LOG}{"ts":"2026-10-17T12:30:48.000Z","type":"assist`
     const junk = '{"ts":"x","type":"not-an-event"}\n[1,2]\n\n'
-    expect(parseEventLog(junk + torn)).toEqual([
+    const named = line('2026-10-17T12:31:00.000Z', { type: 'named', name: 'review' })
+    expect(parseEventLog(junk + named + torn)).toEqual([
+      { type: 'named', name: 'review' },
       { type: 'user-text', text: '\n  alpha   one\nsecond line' },
       started,
       { type: 'assistant-text', text: 'You said: alpha one' },

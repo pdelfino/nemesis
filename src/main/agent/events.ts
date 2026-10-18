@@ -234,6 +234,17 @@ export interface AgentEvidenceEvent {
   readonly output: string
 }
 
+/**
+ * The user named the session (#104): `name-session` appends this to the
+ * event log like every other event, so the on-disk format gains one event
+ * type and no file is rewritten. Renaming appends another; the latest wins.
+ * The sessions palette, the window title and the mode line read it.
+ */
+export interface AgentNamedEvent {
+  readonly type: 'named'
+  readonly name: string
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -252,6 +263,7 @@ export type AgentEvent =
   | AgentNudgeEvent
   | AgentPermissionModeEvent
   | AgentEvidenceEvent
+  | AgentNamedEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

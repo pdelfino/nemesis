@@ -404,3 +404,33 @@ describe('the rewind command previews and asks (#99)', () => {
     await h.agent.stop()
   })
 })
+
+// Naming a session (#104): a free-text read, one event down the stream, on a
+// chord that was free; a name with nothing printable is refused in the help
+// buffer, since the palette has closed by the time it is known.
+describe('name-session (#104)', () => {
+  it('reads a name as free text and records it as an event; blanks are refused', async () => {
+    const deps = resolveCockpitDeps()
+    const registry = createCockpitRegistry(deps)
+    const events: AgentEvent[] = []
+    deps.agent.on((event) => events.push(event))
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-n')).toBe('name-session')
+
+    await registry.run('name-session', { source: 'test' })
+    const read = deps.prompter.pending
+    expect(read).toMatchObject({ prompt: 'Name session:', freeText: true, candidates: [] })
+    if (read === null) throw new Error('No read')
+    await deps.prompter.answer({ id: read.id, choice: null, text: '  nemesis   security\nreview ' })
+    expect(events).toEqual([{ type: 'named', name: 'nemesis security review' }])
+
+    const shown = vi.fn()
+    deps.help.on(shown)
+    await registry.run('name-session', { source: 'test' })
+    const again = deps.prompter.pending
+    if (again === null) throw new Error('No read')
+    await deps.prompter.answer({ id: again.id, choice: null, text: '\u0007' })
+    expect(events).toHaveLength(1)
+    expect(shown).toHaveBeenCalledTimes(1)
+    expect((shown.mock.calls[0]?.[0] as { text: string }).text).toMatch(/not named/)
+  })
+})

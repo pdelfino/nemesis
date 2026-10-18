@@ -33,6 +33,18 @@ body {
   border-bottom: 1px solid var(--line);
   color: var(--muted);
 }
+/* The session's name (#104): gives way to the rest of the line before it wraps. */
+#session-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 24rem;
+  flex-shrink: 1;
+  min-width: 0;
+}
+#session-name:empty {
+  display: none;
+}
 /* The context meter (#80): muted until the guide's step, then it says so. */
 #permission-mode {
   white-space: nowrap;

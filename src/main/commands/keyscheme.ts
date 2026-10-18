@@ -28,6 +28,7 @@ import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
+import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
@@ -67,7 +68,9 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * buffer and reads one and what to restore, `undo` sends the guide's "undo
  * that" with the last tool calls quoted, and `new-task` drops the session.
  * `resume-session` (#67) reads a past session off the sessions folder and
- * picks it up through the manager. `search-transcripts` (#69) reads a query
+ * picks it up through the manager; `name-session` on `C-c C-n` (#104) reads
+ * a name as free text and the manager records it as an event, so the list,
+ * the window title and the mode line show it. `search-transcripts` (#69) reads a query
  * as free text, lists the matches of every transcript on disk, and opens
  * the session a match belongs to with the transcript's point on that line.
  * The guide's context management (#80): `clear` on `C-c C-l` is a fresh
@@ -423,6 +426,26 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           verifier.forgetApprovals()
           await agent.resume(id, sessions.history(id))
         })
+      },
+    }),
+    defineCommand({
+      name: 'name-session',
+      doc: 'Name the session, for the sessions list, the window title and the mode line; naming it again replaces the name.',
+      run: () => {
+        // The name is one event in the session's log (#104), appended like
+        // every other; the palette refuses an empty line, and a name with
+        // nothing printable is refused here, once the palette has closed.
+        prompter.read(
+          { source: 'session-name', prompt: 'Name session:', freeText: true },
+          (text) => {
+            const name = sessionName(text)
+            if (name === null) {
+              help.show('The session was not named: a name needs a printable character.')
+              return
+            }
+            agent.nameSession(name)
+          },
+        )
       },
     }),
     defineCommand({
@@ -817,7 +840,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
 /**
  * The palette sources of M1 (#65): the commands, with their keys, and the
  * buffers; the rewind reads of #84, the checkpoints and what to restore;
- * the sessions on disk (#67), newest first, titled by their first prompt;
+ * the sessions on disk (#67), newest first, titled by their name (#104) or
+ * else their first prompt, and the name read over nothing, like a query;
  * and the two reads of a search (#69): the query, over nothing, since the
  * text typed is the answer, and the matches of the last search; and the
  * diffs of the session (#68), oldest first; and the one line the three
@@ -886,6 +910,10 @@ export function cockpitSources(
           detail: formatSessionDate(session.startedAt),
           doc: `${session.id} in ${session.cwd}${session.id === agent.sessionId ? ', current' : ''}`,
         })),
+    },
+    {
+      name: 'session-name',
+      candidates: () => [],
     },
     {
       name: 'search-query',
@@ -1006,6 +1034,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-i': 'attach-image',
   'C-c C-u': 'fetch-url',
   'C-c C-e': 'environment',
+  'C-c C-n': 'name-session',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',

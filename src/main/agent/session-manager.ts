@@ -275,6 +275,17 @@ export class SessionManager {
     if (this.mode === 'plan') await this.setPermissionMode(this.beforePlan)
   }
 
+  /**
+   * Names the session (#104): one event down the stream, which the recorder
+   * appends to the session's log and the window reads for the title and
+   * the mode line. Given before the session started, the event waits in the
+   * recorder with everything else and lands when the session is named by
+   * the SDK; a second name later is another event, and the latest wins.
+   */
+  nameSession(name: string): void {
+    this.emit({ type: 'named', name })
+  }
+
   /** The prompt queue sends through here; a fresh session starts on demand. */
   async send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
     await (await this.current()).send(text, images)

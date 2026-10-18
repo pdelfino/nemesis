@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent } from './agent/events'
-import { EVENT_LOG_FILE } from './transcripts'
+import { EVENT_LOG_FILE, sessionName } from './transcripts'
 
 /**
  * The session index (#67): what the sessions folder holds, read back from
@@ -18,7 +18,7 @@ import { EVENT_LOG_FILE } from './transcripts'
 export interface SessionSummary {
   /** The SDK's session id, which names the folder and which a resume takes. */
   readonly id: string
-  /** The first line of the first prompt, cut to fit a palette row. */
+  /** The latest name given to the session (#104), else the first line of the first prompt, cut to fit a palette row. */
   readonly title: string
   /** When the first event of the session was recorded. */
   readonly startedAt: Date
@@ -59,6 +59,7 @@ const KNOWN_TYPES: Readonly<Record<AgentEvent['type'], true>> = {
   nudge: true,
   'permission-mode': true,
   evidence: true,
+  named: true,
 }
 
 interface LogEntry {
@@ -101,19 +102,29 @@ export function parseEventLog(text: string): AgentEvent[] {
   return readLog(text).map((entry) => entry.event)
 }
 
-/** One session's summary from its log, or null when the log never named a session. */
+/**
+ * One session's summary from its log, or null when the log never named a
+ * session. The title is the latest name the log holds (#104), which is why
+ * the whole log is read, else the excerpt of the first prompt.
+ */
 export function summarizeLog(id: string, text: string): SessionSummary | null {
   let startedAt: Date | null = null
   let title: string | null = null
+  let name: string | null = null
   let cwd: string | null = null
   for (const entry of readLog(text)) {
     startedAt ??= entry.at
     if (entry.event.type === 'user-text' && title === null) title = excerpt(entry.event.text)
     if (entry.event.type === 'started' && cwd === null) cwd = entry.event.cwd
-    if (title !== null && cwd !== null) break
+    if (entry.event.type === 'named') name = sessionName(entry.event.name) ?? name
   }
   if (cwd === null) return null
-  return { id, title: title ?? '(no prompt)', startedAt: startedAt ?? new Date(0), cwd }
+  return {
+    id,
+    title: name ?? title ?? '(no prompt)',
+    startedAt: startedAt ?? new Date(0),
+    cwd,
+  }
 }
 
 /** The first non-empty line of the prompt, cut to fit a palette row. */

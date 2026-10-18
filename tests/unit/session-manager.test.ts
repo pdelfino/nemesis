@@ -213,6 +213,17 @@ describe('the session manager', () => {
     await agent.stop()
   })
 
+  it('names the session as one event down the stream, which the recorder appends (#104)', () => {
+    const agent = manager()
+    const events = collect(agent)
+    agent.nameSession('nemesis security review')
+    agent.nameSession('renamed')
+    expect(events).toEqual([
+      { type: 'named', name: 'nemesis security review' },
+      { type: 'named', name: 'renamed' },
+    ])
+  })
+
   it('new-task with no session is a no-op', async () => {
     const agent = manager()
     const events = collect(agent)

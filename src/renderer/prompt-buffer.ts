@@ -57,6 +57,11 @@ class HistoryCursor {
     this.stash = ''
   }
 
+  /** At the live end: no walk is in progress. */
+  get live(): boolean {
+    return this.index === null
+  }
+
   /** The previous entry, or null at the oldest. Stashes the live draft on the first step. */
   previous(live: string): string | null {
     if (this.entries.length === 0) return null
@@ -113,7 +118,13 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
         // other editor binding of Alt-p and Alt-n.
         Prec.highest(
           keymap.of([
-            { key: 'Alt-p', run: () => recall(cursor.previous(view.state.doc.toString())) },
+            {
+              key: 'Alt-p',
+              run: () => {
+                void recallPrevious()
+                return true
+              },
+            },
             { key: 'Alt-n', run: () => recall(cursor.next()) },
           ]),
         ),
@@ -192,6 +203,22 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
     if (text === null) return true
     replaceText(text)
     return true
+  }
+
+  /**
+   * The first step back of a walk reads the history from the main process
+   * again: a resume has made the old session's prompts the history (#104),
+   * and this is the one place the walk starts, so it is never behind.
+   */
+  async function recallPrevious(): Promise<void> {
+    if (cursor.live) {
+      try {
+        cursor.reset((await window.nemesis.promptState()).history)
+      } catch (error) {
+        console.error('Could not read the prompt history:', error)
+      }
+    }
+    recall(cursor.previous(view.state.doc.toString()))
   }
 
   function say(text: string): void {

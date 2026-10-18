@@ -89,6 +89,17 @@ export class PromptQueue {
     return [...this.sent]
   }
 
+  /**
+   * The prompts of a resumed session become the history (#104), oldest
+   * first, so `M-p` walks back across a restart. What was sent in this
+   * window before the resume belonged to the session that was dropped and
+   * goes with it; the same limit and the same repeat rule apply.
+   */
+  seedHistory(prompts: readonly string[]): void {
+    this.sent.splice(0)
+    for (const text of prompts) this.remember(text)
+  }
+
   state(): PromptQueueState {
     return { busy: this.busy, queued: this.queued.map(({ id, text }) => ({ id, text })) }
   }
