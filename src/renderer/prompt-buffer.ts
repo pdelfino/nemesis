@@ -5,7 +5,7 @@ import { EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { PromptQueueState } from '../shared/agent'
-import type { BufferType, KeyOutcome } from '../shared/keys'
+import type { BufferType, KeyOutcome, KeyPress } from '../shared/keys'
 import { followAppearance } from './theme'
 
 /**
@@ -20,7 +20,10 @@ import { followAppearance } from './theme'
  * and binds `M-p`/`M-n` inside the editor, because walking the history is
  * editing, not a cockpit command. Text a command adds to the prompt, the
  * criterion of `attach-check` or the path of a screenshot (#81), arrives
- * from the main process and is appended after what is typed.
+ * from the main process and is appended after what is typed; a file
+ * mention (#83) arrives for the point instead, where the `@` that opened
+ * the list was typed. That `@` is a cockpit key at the start of a word
+ * only: inside a word this module tells the key capture to keep it as text.
  *
  * The draft, the history and the queue live in the main process, per session.
  * This buffer parks the draft as it changes and rebuilds itself from the main
@@ -38,6 +41,8 @@ export interface PromptBuffer {
   readonly view: EditorView
   /** Acts on a command the main process dispatched from a key (#59). */
   onCommand(outcome: KeyOutcome, bufferType: BufferType | null): void
+  /** Whether a bound printable key in the prompt is text here: `@` inside a word is (#83). */
+  keepsAsText(press: KeyPress): boolean
 }
 
 /** Walks sent prompts as `M-p`/`M-n` do in a comint buffer: the draft waits at the live end. */
@@ -130,9 +135,11 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
   // A reload must find the latest draft, not the one parked 200ms ago.
   window.addEventListener('pagehide', parkDraft)
 
-  // What a command adds goes after the text typed, on a paragraph of its own (#81).
+  // What a command adds goes after the text typed, on a paragraph of its own
+  // (#81), or at the point when it completes what is being typed there (#83).
   window.nemesis.onPromptInsert((insert) => {
-    appendText(insert.text)
+    if (insert.at === 'point') insertAtPoint(insert.text)
+    else appendText(insert.text)
     parkDraft()
     say('Added to the prompt.')
   })
@@ -164,6 +171,21 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
       selection: { anchor: end + insert.length },
       scrollIntoView: true,
     })
+  }
+
+  function insertAtPoint(text: string): void {
+    const { from, to } = view.state.selection.main
+    view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: from + text.length },
+      scrollIntoView: true,
+    })
+  }
+
+  /** The point is at the start of a word: at the start of the text or after a blank. */
+  function atWordStart(): boolean {
+    const { head } = view.state.selection.main
+    return head === 0 || /\s/.test(view.state.doc.sliceString(head - 1, head))
   }
 
   function recall(text: string | null): boolean {
@@ -239,6 +261,12 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
       // C-g clears the prompt only when the point is in it; elsewhere it is
       // the plain cancel of #59.
       else if (outcome.command === 'keyboard-quit' && bufferType === 'prompt') clear()
+      // The `@` key opened the file list in the main process and typed nothing
+      // here, so the character lands now; the pick follows it at the point (#83).
+      else if (outcome.command === 'complete-file' && outcome.chord === '@') insertAtPoint('@')
+    },
+    keepsAsText(press) {
+      return press.bufferType === 'prompt' && !atWordStart()
     },
   }
 }

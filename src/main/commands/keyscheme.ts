@@ -12,9 +12,13 @@ import {
   undoPrompt,
   type RewindTarget,
 } from '../agent/session-manager'
+import { wrapUntrusted } from '../agent/boundary'
+import type { ClipboardReader } from '../agent/images'
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
+import { UrlFetcher } from '../fetch-url'
+import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
@@ -35,7 +39,9 @@ import {
   freshSessionPrompt,
   interviewPrompt,
   investigatePrompt,
+  PATTERN_TEMPLATE,
   screenshotPrompt,
+  SYMPTOM_TEMPLATE,
 } from './guide-prompts'
 import { confirm, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
@@ -83,7 +89,15 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * with the user's permissions, and the output lands as an evidence block;
  * `attach-issue` reads the issue number; `attach-check` adds a criterion to
  * the prompt, example cases and the check to run; `screenshot-window` puts
- * a window of the screen in the prompt as an image.
+ * a window of the screen in the prompt as an image. The guide's specific,
+ * rich prompts (#83): `complete-file`, on `@` at the start of a word in
+ * the prompt buffer, reads a file of the working directory off the palette
+ * and puts `@path` at the point; `attach-image` on `C-c C-i` takes the
+ * image on the clipboard for the next prompt, a marker line in its place;
+ * `fetch-url` on `C-c C-u` reads an https URL, the ones in the prompt as
+ * candidates, and puts the page's text in the prompt wrapped as untrusted
+ * content from its origin; `template-symptom` and `template-pattern` drop
+ * the guide's two prompt shapes in to fill.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -99,8 +113,12 @@ export interface CockpitDeps {
   readonly keys: KeyReader
   /** The current agent session, and the way to replace it (#84). */
   readonly agent: SessionManager
-  /** Where a prompt a command composes goes, like one the user typed (#84), or is added to (#81). */
-  readonly prompts: Pick<PromptQueue, 'submit' | 'insert'>
+  /**
+   * Where a prompt a command composes goes, like one the user typed (#84),
+   * or is added to (#81); where an image waits for the send and the draft
+   * whose URLs `fetch-url` offers are read (#83).
+   */
+  readonly prompts: Pick<PromptQueue, 'submit' | 'insert' | 'attachImage' | 'draft'>
   /** The sessions folder, as `resume-session` lists and reads it (#67). */
   readonly sessions: SessionSource
   /** The transcripts on disk, as `search-transcripts` scans them (#69). */
@@ -117,6 +135,12 @@ export interface CockpitDeps {
   readonly issues: IssueAttachment
   /** The windows on the screen, as screenshot-window lists and captures them (#81). */
   readonly screenshots: Screenshots
+  /** The files of the working directory, as `@` lists them (#83). */
+  readonly files: WorkingFiles
+  /** The clipboard, as attach-image reads an image off it (#83). */
+  readonly clipboard: ClipboardReader
+  /** The one fetch fetch-url makes, within its limits (#83). */
+  readonly fetcher: UrlFetcher
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -177,6 +201,11 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         dir: process.cwd(),
         capturer: { list: () => Promise.resolve([]), capture: () => Promise.resolve(null) },
       }),
+    // Without the app there is no clipboard; the files and the fetch need none.
+    files:
+      partial.files ?? new WorkingFiles({ cwd: process.cwd(), list: () => Promise.resolve([]) }),
+    clipboard: partial.clipboard ?? { readImage: () => Promise.resolve(null) },
+    fetcher: partial.fetcher ?? new UrlFetcher(),
   }
 }
 
@@ -206,6 +235,9 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     verifier,
     issues,
     screenshots,
+    files,
+    clipboard,
+    fetcher,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -569,6 +601,93 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'complete-file',
+      doc: 'Mention a file of the working directory in the prompt: @ at the start of a word opens the list, the pick goes in at the point.',
+      run: (context) => {
+        // When the `@` key ran it, the prompt buffer typed the `@` itself and
+        // the pick adds the path after it; from the palette, the whole mention.
+        const typed = context.source === 'key' && context.chord === '@'
+        files
+          .refresh()
+          .then((paths) => {
+            if (paths.length === 0) {
+              help.show('No files to mention: the working directory lists none.')
+              return
+            }
+            prompter.read({ source: 'files', prompt: 'Mention file:' }, (path) => {
+              prompts.insert(`${typed ? '' : '@'}${path} `, 'point')
+              switchToPrompt()
+            })
+          })
+          .catch(report('complete-file'))
+      },
+    }),
+    defineCommand({
+      name: 'attach-image',
+      doc: 'Attach the image on the clipboard to the next prompt as PNG; a marker line stands for it in the text.',
+      run: () => {
+        // The bytes stay in the main process until the send; the help buffer
+        // answers an empty clipboard or an image over the cap, since the key
+        // has been answered by then.
+        clipboard
+          .readImage()
+          .then((image) => {
+            if (image === null) {
+              help.show('No image on the clipboard. Copy one, then C-c C-i again.')
+              return
+            }
+            try {
+              prompts.attachImage(image)
+            } catch (error) {
+              help.show(
+                `Could not attach the image: ${error instanceof Error ? error.message : String(error)}`,
+              )
+              return
+            }
+            switchToPrompt()
+          })
+          .catch(report('attach-image'))
+      },
+    }),
+    defineCommand({
+      name: 'fetch-url',
+      doc: 'Fetch an https URL as text into the prompt, wrapped as untrusted content from its origin; the URLs in the prompt are the candidates.',
+      run: () => {
+        // The text of the page is data from a named origin: it enters the
+        // prompt through the one wrapper and nowhere else (SECURITY.org, T4).
+        prompter.read(
+          { source: 'urls', prompt: 'Fetch URL (https only):', freeText: true },
+          async (url) => {
+            try {
+              const page = await fetcher.fetchText(url)
+              prompts.insert(wrapUntrusted(page.origin, page.text))
+              switchToPrompt()
+            } catch (error) {
+              help.show(
+                `Could not fetch ${url.trim()}: ${error instanceof Error ? error.message : String(error)}`,
+              )
+            }
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'template-symptom',
+      doc: 'Add the symptom template to the prompt: what happens, what should, how to reproduce, where it last worked.',
+      run: () => {
+        prompts.insert(SYMPTOM_TEMPLATE)
+        switchToPrompt()
+      },
+    }),
+    defineCommand({
+      name: 'template-pattern',
+      doc: 'Add the pattern template to the prompt: the file that does it right, what to copy, what differs.',
+      run: () => {
+        prompts.insert(PATTERN_TEMPLATE)
+        switchToPrompt()
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -646,7 +765,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * guideline commands read (#85), over nothing, like a search query; and the
  * reads of the verify practice (#81): an issue number and the example cases
  * over nothing, the check with the one the verify key would run as its
- * candidate, and the windows on the screen as of the last refresh.
+ * candidate, and the windows on the screen as of the last refresh; and the
+ * two reads of #83: the files of the working directory as of the last
+ * refresh, and the https URLs in the prompt draft, the last typed first,
+ * for a free-text read that takes any other.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -657,6 +779,8 @@ export function cockpitSources(
   diffs: DiffBuffers,
   verifier: Verifier,
   screenshots: Screenshots,
+  files: WorkingFiles,
+  prompts: Pick<PromptQueue, 'draft'>,
 ): readonly PaletteSource[] {
   return [
     {
@@ -762,7 +886,32 @@ export function cockpitSources(
           doc: `Window ${window.id}`,
         })),
     },
+    {
+      name: 'files',
+      candidates: () =>
+        files.files.map((path) => ({ id: path, label: path, doc: `@${path} in the prompt` })),
+    },
+    {
+      name: 'urls',
+      candidates: () =>
+        httpsUrlsIn(prompts.draft).map((url) => ({
+          id: url,
+          label: url,
+          doc: 'In the prompt. Type another https URL to fetch it instead.',
+        })),
+    },
   ]
+}
+
+/** The https URLs in a text, the last one first, each once. */
+export function httpsUrlsIn(text: string): readonly string[] {
+  const found = text.match(/https:\/\/[^\s<>"'`)\]]+/g) ?? []
+  const urls: string[] = []
+  for (const raw of found.reverse()) {
+    const url = raw.replace(/[.,;:!?]+$/, '')
+    if (!urls.includes(url)) urls.push(url)
+  }
+  return urls
 }
 
 function isRewindTarget(value: string): value is RewindTarget {
@@ -784,6 +933,8 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-k': 'compact',
   'C-c C-p': 'toggle-plan-mode',
   'C-c C-v': 'verify',
+  'C-c C-i': 'attach-image',
+  'C-c C-u': 'fetch-url',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
@@ -795,6 +946,11 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
 
 /** Per-buffer-type bindings. They are consulted before the global map. */
 export const BUFFER_KEYMAPS: BufferKeymaps = {
+  // In the prompt buffer `@` at the start of a word mentions a file (#83);
+  // the renderer keeps it as text inside a word, so an address stays one.
+  prompt: defineKeymap('prompt', {
+    '@': 'complete-file',
+  }),
   // A permission prompt is modal: an unmodified key is an answer, not text.
   permission: defineKeymap('permission', {
     y: 'answer-yes',
@@ -846,6 +1002,8 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.diffs,
     deps.verifier,
     deps.screenshots,
+    deps.files,
+    deps.prompts,
   )) {
     deps.prompter.addSource(source)
   }

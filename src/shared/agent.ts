@@ -72,10 +72,13 @@ export const TRANSCRIPT_GOTO_CHANNEL = 'nemesis:transcript-goto' as const
  * Text a command adds to the prompt being composed (#81): a verification
  * criterion from `attach-check`, the path of a screenshot. The editor in
  * the window holds the draft, so the text goes there and is appended after
- * what is typed; the main process never rewrites the draft itself.
+ * what is typed; the main process never rewrites the draft itself. A file
+ * mention (#83) goes `at` the point instead, where the `@` was typed.
  */
 export interface PromptInsert {
   readonly text: string
+  /** Where the text goes: after everything typed, or at the point. */
+  readonly at?: 'point'
 }
 
 /** The main process pushes text for the prompt buffer to append. */

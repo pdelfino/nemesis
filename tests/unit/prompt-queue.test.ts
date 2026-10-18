@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, AgentEventListener } from '../../src/main/agent/events'
+import {
+  formatKilobytes,
+  imageMarker,
+  MAX_IMAGE_BYTES,
+  type ClipboardImage,
+} from '../../src/main/agent/images'
 import { mockDriver } from '../../src/main/agent/mock'
 import type { PromptTarget } from '../../src/main/agent/prompt-queue'
 import { parseDraft, parsePromptText, PromptQueue } from '../../src/main/agent/prompt-queue'
-import { createAgentSession } from '../../src/main/agent/session'
+import { createAgentSession, type UserImageBlock } from '../../src/main/agent/session'
 import { MAX_PROMPT_LENGTH } from '../../src/shared/agent'
 
 // The queue is the main-process half of the prompt buffer (#61): one prompt
@@ -13,16 +19,19 @@ import { MAX_PROMPT_LENGTH } from '../../src/shared/agent'
 /** A session whose turns end when the test says so. */
 class FakeSession implements PromptTarget {
   readonly sent: string[] = []
+  /** The image blocks that came with each send, by position in `sent`. */
+  readonly images: (readonly UserImageBlock[])[] = []
   private readonly listeners = new Set<AgentEventListener>()
   failNext: Error | null = null
 
-  send(text: string): Promise<void> {
+  send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
     if (this.failNext !== null) {
       const error = this.failNext
       this.failNext = null
       return Promise.reject(error)
     }
     this.sent.push(text)
+    this.images.push(images)
     return Promise.resolve()
   }
 
@@ -184,6 +193,102 @@ describe('the prompt queue', () => {
       expect(queue.state()).toEqual({ busy: false, queued: [] })
     })
     await agent.stop()
+  })
+})
+
+/** A PNG signature and some bytes behind it: the queue reads the size, never the pixels. */
+function png(bytes: number, width = 1280, height = 800): ClipboardImage {
+  const data = new Uint8Array(bytes)
+  data.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  return { png: data, width, height }
+}
+
+describe('images attached to the prompt (#83)', () => {
+  it('spells the marker with the index, the pixels and whole kilobytes', () => {
+    expect(formatKilobytes(245_760)).toBe('240 KB')
+    expect(formatKilobytes(67)).toBe('1 KB')
+    expect(imageMarker(1, png(245_760))).toBe('[image 1: 1280x800 png, 240 KB]')
+    expect(imageMarker(3, png(2048, 32, 16))).toBe('[image 3: 32x16 png, 2 KB]')
+  })
+
+  it('keeps the image for the next prompt, puts its marker in the prompt, and sends it as a block next to the text', async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    const inserts: string[] = []
+    queue.onInsert((insert) => inserts.push(insert.text))
+
+    const attached = queue.attachImage(png(2048))
+    expect(attached).toMatchObject({ index: 1, marker: '[image 1: 1280x800 png, 2 KB]' })
+    expect(inserts).toEqual(['[image 1: 1280x800 png, 2 KB]'])
+    expect(queue.attached().map((image) => image.marker)).toEqual(inserts)
+
+    await queue.submit('Compare this with the mock.\n\n[image 1: 1280x800 png, 2 KB]')
+    expect(session.sent).toEqual(['Compare this with the mock.\n\n[image 1: 1280x800 png, 2 KB]'])
+    expect(session.images[0]).toHaveLength(1)
+    expect(session.images[0]?.[0]).toMatchObject({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png' },
+    })
+    const source = session.images[0]?.[0]?.source
+    expect(source?.type === 'base64' ? Buffer.from(source.data, 'base64').byteLength : -1).toBe(
+      2048,
+    )
+    // The next prompt starts with no image; the history and the state carry text only.
+    expect(queue.attached()).toEqual([])
+    expect(queue.history()).toEqual([
+      'Compare this with the mock.\n\n[image 1: 1280x800 png, 2 KB]',
+    ])
+    expect(JSON.stringify(queue.promptState())).not.toContain('base64')
+  })
+
+  it('drops an image whose marker was deleted from the prompt, and numbers the rest as attached', async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    queue.attachImage(png(1024, 10, 10))
+    queue.attachImage(png(1024, 20, 20))
+    await queue.submit('only the second: [image 2: 20x20 png, 1 KB]')
+    expect(session.images[0]).toHaveLength(1)
+    expect(queue.attached()).toEqual([])
+  })
+
+  it("keeps a queued prompt's images until its turn", async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    await queue.submit('first')
+    const second = queue.attachImage(png(512))
+    await queue.submit(`second ${second.marker}`)
+    expect(session.images).toEqual([[]])
+    expect(queue.state()).toEqual({
+      busy: true,
+      queued: [{ id: 'p2', text: `second ${second.marker}` }],
+    })
+    session.endTurn()
+    await settle()
+    expect(session.sent).toEqual(['first', `second ${second.marker}`])
+    expect(session.images[1]).toHaveLength(1)
+  })
+
+  it('refuses a fifth image and one over five megabytes', () => {
+    const queue = new PromptQueue(new FakeSession())
+    for (let n = 0; n < 4; n += 1) queue.attachImage(png(16))
+    expect(() => queue.attachImage(png(16))).toThrow(/4 images are already attached/)
+    expect(queue.attached()).toHaveLength(4)
+    const fresh = new PromptQueue(new FakeSession())
+    expect(() => fresh.attachImage(png(MAX_IMAGE_BYTES + 1))).toThrow(/5 MB at most/)
+    expect(fresh.attached()).toEqual([])
+    fresh.attachImage(png(MAX_IMAGE_BYTES))
+    expect(fresh.attached()).toHaveLength(1)
+  })
+
+  it('keeps the images attached when the send itself fails, since the text stays in the editor', async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    const image = queue.attachImage(png(64))
+    session.failNext = new Error('input closed')
+    await expect(queue.submit(`see ${image.marker}`)).rejects.toThrow('input closed')
+    expect(queue.attached().map((attached) => attached.marker)).toEqual([image.marker])
+    await queue.submit(`see ${image.marker}`)
+    expect(session.images[0]).toHaveLength(1)
   })
 })
 

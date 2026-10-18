@@ -54,6 +54,8 @@ void installPromptBuffer().then((prompt) => {
   }
   keys.onCommand = act
   palette.onRan = act
+  // `@` mentions a file at the start of a word and stays text inside one (#83).
+  keys.keepAsText = (press) => prompt.keepsAsText(press)
 })
 void window.nemesis.bindings().then(
   (bindings) => {

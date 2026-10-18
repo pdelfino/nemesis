@@ -6,7 +6,7 @@ import type {
   PermissionHandler,
 } from './events'
 import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
-import type { AgentDriver, AgentSession, Checkpoint, ToolCall } from './session'
+import type { AgentDriver, AgentSession, Checkpoint, ToolCall, UserImageBlock } from './session'
 import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } from './session'
 
 /**
@@ -264,8 +264,8 @@ export class SessionManager {
   }
 
   /** The prompt queue sends through here; a fresh session starts on demand. */
-  async send(text: string): Promise<void> {
-    await (await this.current()).send(text)
+  async send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
+    await (await this.current()).send(text, images)
   }
 
   /** The guide's Esc: stop the running turn, keep the session (#84). */

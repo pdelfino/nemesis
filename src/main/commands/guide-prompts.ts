@@ -64,6 +64,26 @@ export function screenshotPrompt(windowName: string, filePath: string): string {
   return `Screenshot of the window "${oneLine(windowName)}" at ${filePath}: read it as an image and compare it with what was asked; list the differences.`
 }
 
+/**
+ * The guide's table of what a specific prompt carries (#83), as two
+ * templates a command drops into the prompt to fill in: a symptom, what
+ * happens, what should, how to reproduce it and where it last worked; and
+ * a pattern, the file that does it right, what to copy from it and what
+ * differs here. Rows of the table, not a rewrite of them.
+ */
+export const SYMPTOM_TEMPLATE = [
+  'What happens:',
+  'What should happen:',
+  'How to reproduce:',
+  'Where it last worked:',
+].join('\n')
+
+export const PATTERN_TEMPLATE = [
+  'The file that does it right:',
+  'What to copy from it:',
+  'What differs here:',
+].join('\n')
+
 /** The description is one line in the prompt, whatever the palette gave. */
 function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim()

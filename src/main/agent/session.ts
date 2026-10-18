@@ -36,6 +36,15 @@ export interface RewindFilesOptions {
   readonly dryRun?: boolean
 }
 
+/**
+ * An image content block of a user message, as the SDK's own type spells it
+ * (#83): what `attach-image` sends next to the text of the same message.
+ */
+export type UserImageBlock = Extract<
+  Exclude<SDKUserMessage['message']['content'], string>[number],
+  { type: 'image' }
+>
+
 /** Anything the session can talk to: the real SDK query, or the mock. */
 export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>
@@ -436,8 +445,13 @@ export class AgentSession {
     this.reader = this.read(handle)
   }
 
-  /** Queue a message for the agent. Starts the session when it is not running yet. */
-  async send(text: string): Promise<void> {
+  /**
+   * Queue a message for the agent. Starts the session when it is not running
+   * yet. Images (#83) go out as content blocks next to the text in the same
+   * message; the events, the checkpoint and the transcript carry the text
+   * alone, whose marker lines stand for them.
+   */
+  async send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
     if (this.handle === null) await this.start()
     // The user's turn joins the stream before anything the agent answers to
     // it, so a listener reads the conversation in order (#62).
@@ -460,7 +474,10 @@ export class AgentSession {
     this.inTurn = true
     this.input.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: {
+        role: 'user',
+        content: images.length === 0 ? text : [{ type: 'text', text }, ...images],
+      },
       parent_tool_use_id: null,
       uuid,
     })

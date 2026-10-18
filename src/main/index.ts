@@ -1,5 +1,15 @@
-import { app, BrowserWindow, desktopCapturer, nativeTheme, session, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  nativeImage,
+  nativeTheme,
+  session,
+  shell,
+} from 'electron'
 import { join } from 'node:path'
+import type { ClipboardImage } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { SessionManager } from './agent/session-manager'
@@ -22,6 +32,8 @@ import {
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import { DiffBuffers } from './diffs'
+import { UrlFetcher } from './fetch-url'
+import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installMenu } from './menu'
 import { PlanBuffers } from './plans'
@@ -194,6 +206,39 @@ const EXTERNAL_LOG = '__nemesisExternal'
 /** A window screenshot is scaled to fit this (#81): enough to read a UI, small enough to send. */
 const SCREENSHOT_SIZE = { width: 1920, height: 1200 }
 
+/**
+ * The image on the clipboard as attach-image takes it (#83), or null when
+ * the clipboard holds none: the first entry with an image type, decoded and
+ * re-encoded as PNG whatever the clipboard's own format. Electron's
+ * clipboard is the W3C-shaped asynchronous one, so this reads through
+ * `clipboard.read()`. Under test a PNG file named by NEMESIS_CLIPBOARD_IMAGE
+ * stands in for the clipboard, so a spec never writes the user's clipboard;
+ * the variable is ignored in any other run.
+ */
+async function readClipboardImage(): Promise<ClipboardImage | null> {
+  const standIn = process.env['NEMESIS_CLIPBOARD_IMAGE']
+  if (process.env['NODE_ENV'] === 'test' && standIn !== undefined && standIn.length > 0) {
+    return clipboardImageOf(nativeImage.createFromPath(standIn))
+  }
+  for (const item of await clipboard.read()) {
+    const type = item.types.find((candidate) => candidate.startsWith('image/'))
+    if (type === undefined) continue
+    const blob = await item.getType(type)
+    if (!(blob instanceof Blob)) continue
+    const image = clipboardImageOf(
+      nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer())),
+    )
+    if (image !== null) return image
+  }
+  return null
+}
+
+function clipboardImageOf(image: Electron.NativeImage): ClipboardImage | null {
+  if (image.isEmpty()) return null
+  const { width, height } = image.getSize()
+  return { png: image.toPNG(), width, height }
+}
+
 /** One stream of the cockpit's own notices out of several policies. */
 function mergeNotices(...sources: readonly EventSource[]): EventSource {
   return {
@@ -318,6 +363,11 @@ void app.whenReady().then(() => {
       },
     },
   })
+  // The guide's rich prompts (#83): the files `@` lists come from git in the
+  // folder the app was started in; a URL the user asks for is fetched once,
+  // within the limits of fetch-url.ts, and wrapped as untrusted content.
+  const files = new WorkingFiles({ cwd: process.cwd() })
+  const fetcher = new UrlFetcher()
   const prompts = installSessionBridge({
     agent,
     permissions,
@@ -332,6 +382,7 @@ void app.whenReady().then(() => {
       issues,
       verifier,
       screenshots,
+      fetcher,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -350,6 +401,9 @@ void app.whenReady().then(() => {
     verifier,
     issues,
     screenshots,
+    files,
+    clipboard: { readImage: readClipboardImage },
+    fetcher,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({

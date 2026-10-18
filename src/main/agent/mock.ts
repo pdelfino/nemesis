@@ -62,7 +62,9 @@ import type { AgentDriver, AgentQueryHandle, RewindFilesOptions } from './sessio
  * a fork, so a side question never writes under the session it copied.
  *
  * The frames are the SDK's own types, not a loose imitation, so a spec that
- * passes here is reading the same shapes the real session reads.
+ * passes here is reading the same shapes the real session reads. Every user
+ * message read is recorded, text and the size of each image block (#83),
+ * on the driver and, for the specs, on `globalThis` under MOCK_RECEIVED_LOG.
  *
  * An interrupt ends the running turn and nothing else: the query goes on
  * reading prompts, as the real one does, so the context is kept (#84). Only
@@ -162,6 +164,45 @@ function promptText(message: SDKUserMessage): string {
   return parts.join('\n')
 }
 
+/**
+ * What the mock saw of one user message (#83): the text of every text block
+ * and, of every image block, its media type and how many bytes it carried,
+ * never the bytes. The specs read this to assert an attached image arrived
+ * next to its text.
+ */
+export type ReceivedBlock =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image'; readonly mediaType: string; readonly bytes: number }
+  | { readonly type: string }
+
+export interface ReceivedMessage {
+  readonly blocks: readonly ReceivedBlock[]
+}
+
+/** Every user message every mock query read, in order, across sessions. */
+const RECEIVED: ReceivedMessage[] = []
+
+/** Where the main process exposes the record under test, for `app.evaluate` in a spec. */
+export const MOCK_RECEIVED_LOG = '__nemesisMockReceived'
+
+function receivedOf(message: SDKUserMessage): ReceivedMessage {
+  const content = message.message.content
+  if (typeof content === 'string') return { blocks: [{ type: 'text', text: content }] }
+  return {
+    blocks: content.map((block): ReceivedBlock => {
+      if (block.type === 'text') return { type: 'text', text: block.text }
+      if (block.type === 'image' && block.source.type === 'base64') {
+        return {
+          type: 'image',
+          mediaType: block.source.media_type,
+          bytes: Buffer.from(block.source.data, 'base64').byteLength,
+        }
+      }
+      return { type: block.type }
+    }),
+  }
+}
+
 /** Resolves after `ms`, or at once when the turn is aborted meanwhile. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -250,6 +291,7 @@ class MockQuery implements AgentQueryHandle {
     yield this.init()
     for await (const message of this.prompt) {
       if (this.closed) return
+      RECEIVED.push(receivedOf(message))
       this.turn = new AbortController()
       if (message.uuid !== undefined) this.turnOf.set(message.uuid, this.turns + 1)
       yield* this.answer(promptText(message))
@@ -611,12 +653,16 @@ function answerOf(
  * cockpit that silently answered with canned text would be worse than one
  * that fails to start.
  */
-export function mockDriver(): AgentDriver {
+export function mockDriver(): AgentDriver & { readonly received: readonly ReceivedMessage[] } {
   if (process.env['NODE_ENV'] !== 'test') {
     throw new Error('The mock Agent SDK is available only when NODE_ENV is test')
   }
+  // The specs read the record off the main process; nothing else is test only here.
+  ;(globalThis as { [MOCK_RECEIVED_LOG]?: readonly ReceivedMessage[] })[MOCK_RECEIVED_LOG] =
+    RECEIVED
   let sessions = 0
   return {
+    received: RECEIVED,
     query: ({ prompt, options }) => {
       sessions += 1
       const sessionId = sessions === 1 ? MOCK_SESSION_ID : `${MOCK_SESSION_ID}-${sessions}`
