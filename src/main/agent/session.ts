@@ -1,9 +1,11 @@
 import type {
   CanUseTool,
   Options,
+  RewindFilesResult,
   SDKMessage,
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
+import { randomUUID } from 'node:crypto'
 import type {
   AgentEvent,
   AgentEventListener,
@@ -32,7 +34,33 @@ export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>
   setPermissionMode(mode: AgentPermissionMode): Promise<void>
   setModel(model?: string): Promise<void>
+  /** Restores the files the agent touched since the user message named (#84). */
+  rewindFiles(userMessageId: string): Promise<RewindFilesResult>
   close(): void
+}
+
+/**
+ * One checkpoint per user turn (#84): the point the rewind buffer lists and
+ * the SDK can take the files or the conversation back to. `uuid` is the id
+ * the user message was sent under, which `rewindFiles` takes; `before` is
+ * the SDK's uuid for the last assistant message ahead of it, which a resume
+ * at that point takes, or null when nothing came before.
+ */
+export interface Checkpoint {
+  /** 1 for the first prompt of the session. */
+  readonly index: number
+  readonly uuid: string
+  readonly before: string | null
+  /** The prompt, as the user sent it. */
+  readonly text: string
+  /** When the prompt was sent, in ms since the epoch. */
+  readonly at: number
+}
+
+/** A tool call the assistant made, as the undo prompt quotes it (#84). */
+export interface ToolCall {
+  readonly name: string
+  readonly input: Record<string, unknown>
 }
 
 /** The slice of the SDK the cockpit uses. `mock.ts` is the other implementation. */
@@ -47,6 +75,10 @@ export interface AgentSessionOptions {
   readonly permissionMode?: AgentPermissionMode | undefined
   /** Resume a session by its id instead of starting a new one. */
   readonly resume?: string | undefined
+  /** With `resume`: keep the conversation up to this chain entry only (#84). */
+  readonly resumeAt?: string | undefined
+  /** With `resume`: the checkpoints the kept conversation still has (#84). */
+  readonly checkpoints?: readonly Checkpoint[] | undefined
   /** Who answers a tool permission request. Denies everything when omitted. */
   readonly permissionHandler?: PermissionHandler | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
@@ -221,6 +253,11 @@ export class AgentSession {
   private modelValue: string | null
   private permissionModeValue: AgentPermissionMode
   private interrupted = false
+  private inTurn = false
+  private readonly checkpointList: Checkpoint[]
+  /** The SDK's uuid of the last assistant message seen: the chain entry a resume keeps up to. */
+  private lastEntry: string | null
+  private readonly toolCalls: ToolCall[] = []
 
   constructor(options: AgentSessionOptions) {
     this.options = options
@@ -229,6 +266,8 @@ export class AgentSession {
     this.sessionIdValue = options.resume ?? null
     this.modelValue = options.model ?? null
     this.permissionModeValue = options.permissionMode ?? 'default'
+    this.checkpointList = [...(options.checkpoints ?? [])]
+    this.lastEntry = options.resumeAt ?? null
   }
 
   /** The SDK's id for this session, known once it has started. Resume takes it. */
@@ -247,6 +286,21 @@ export class AgentSession {
 
   get running(): boolean {
     return this.handle !== null
+  }
+
+  /** True from a send until the turn it started ends. */
+  get busy(): boolean {
+    return this.inTurn
+  }
+
+  /** The checkpoints so far, oldest first: one per prompt sent (#84). */
+  checkpoints(): readonly Checkpoint[] {
+    return [...this.checkpointList]
+  }
+
+  /** The tool calls of the latest turn, in order; what `undo` quotes (#84). */
+  lastToolCalls(): readonly ToolCall[] {
+    return [...this.toolCalls]
   }
 
   /** Subscribe to the event stream. The returned function unsubscribes. */
@@ -290,12 +344,45 @@ export class AgentSession {
     // The user's turn joins the stream before anything the agent answers to
     // it, so a listener reads the conversation in order (#62).
     this.emit({ type: 'user-text', text })
-    // The query is already bound to its session, so the frame carries no id.
+    // The message goes out under a uuid of ours, so the checkpoint it opens
+    // can be named back to the SDK (#84). The query is already bound to its
+    // session, so the frame carries no session id.
+    const uuid = randomUUID()
+    this.checkpointList.push({
+      index: this.checkpointList.length + 1,
+      uuid,
+      before: this.lastEntry,
+      text,
+      at: Date.now(),
+    })
+    this.toolCalls.length = 0
+    this.inTurn = true
     this.input.push({
       type: 'user',
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
+      uuid,
     })
+  }
+
+  /**
+   * Stops the running turn and keeps the session, as Esc does in the CLI
+   * (#84): the context stays, the next prompt continues it. Resolves to
+   * false when no turn was running.
+   */
+  async interrupt(): Promise<boolean> {
+    const handle = this.handle
+    if (handle === null || !this.inTurn) return false
+    await handle.interrupt()
+    return true
+  }
+
+  /** Restores the files the agent touched since the checkpoint (#84). */
+  async rewindFiles(checkpoint: Checkpoint): Promise<RewindFilesResult> {
+    if (this.handle === null) await this.start()
+    const handle = this.handle
+    if (handle === null) throw new AgentSessionError('The session did not start')
+    return handle.rewindFiles(checkpoint.uuid)
   }
 
   async setPermissionMode(mode: AgentPermissionMode): Promise<void> {
@@ -330,8 +417,11 @@ export class AgentSession {
       cwd: this.options.cwd,
       permissionMode: this.permissionModeValue,
       canUseTool: this.canUseTool,
+      // Files are snapshotted before an edit, so a checkpoint can restore them (#84).
+      enableFileCheckpointing: true,
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.resume === undefined ? {} : { resume: this.options.resume }),
+      ...(this.options.resumeAt === undefined ? {} : { resumeSessionAt: this.options.resumeAt }),
     }
   }
 
@@ -356,11 +446,18 @@ export class AgentSession {
   private async read(handle: AgentQueryHandle): Promise<void> {
     try {
       for await (const message of handle) {
+        if (message.type === 'assistant' && message.parent_tool_use_id === null) {
+          this.lastEntry = message.uuid
+        }
         for (const event of eventsFromMessage(message)) {
           if (event.type === 'started') {
             this.sessionIdValue = event.sessionId
             this.modelValue = event.model
             this.permissionModeValue = event.permissionMode
+          } else if (event.type === 'tool-use') {
+            this.toolCalls.push({ name: event.name, input: event.input })
+          } else if (event.type === 'turn-end') {
+            this.inTurn = false
           }
           this.emit(event)
         }
@@ -368,6 +465,7 @@ export class AgentSession {
     } catch (error) {
       this.emit({ type: 'error', message: describe(error) })
     } finally {
+      this.inTurn = false
       this.emit({ type: 'stopped', reason: this.interrupted ? 'interrupted' : 'ended' })
     }
   }

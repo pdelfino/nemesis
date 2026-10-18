@@ -2,8 +2,10 @@ import type {
   NonNullableUsage,
   Options,
   PermissionResult,
+  RewindFilesResult,
   SDKAssistantMessage,
   SDKMessage,
+  SDKResultError,
   SDKResultMessage,
   SDKSystemMessage,
   SDKUserMessage,
@@ -22,16 +24,30 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *   `tool: Name`  a tool call named `Name` through `canUseTool`, then the reply
  *   `ask: ...`    an AskUserQuestion with three options through `canUseTool`,
  *                 then `You chose: <answer>` (#63)
+ *   `stream: ...` text frames `... 1`, `... 2`, one every few ms, until the
+ *                 turn is interrupted; the turn then ends as the CLI ends an
+ *                 interrupted one, with an error result (#84)
  *   anything else the reply `You said: <prompt>`
  *
  * The frames are the SDK's own types, not a loose imitation, so a spec that
  * passes here is reading the same shapes the real session reads.
+ *
+ * An interrupt ends the running turn and nothing else: the query goes on
+ * reading prompts, as the real one does, so the context is kept (#84). Only
+ * `close()` ends the stream. One driver numbers its sessions: the first is
+ * `mock-session`, the next `mock-session-2`, so a fresh session after
+ * `new-task` has an id of its own.
  */
 
 const MOCK_MODEL = 'claude-mock-1'
 const MOCK_SESSION_ID = 'mock-session'
 const MOCK_TOOLS = ['Read', 'Write', 'Bash', 'AskUserQuestion'] as const
 const MOCK_DURATION_MS = 1
+/** How often a `stream:` turn yields a text frame. */
+const STREAM_INTERVAL_MS = 20
+/** A `stream:` turn nobody interrupts still ends, so a spec cannot hang on it. */
+const STREAM_LIMIT = 500
+const INTERRUPTED = 'Interrupted by the user'
 
 /** The three options every `ask:` prompt offers; the spec answers with `2` (#63). */
 const MOCK_OPTIONS = [
@@ -70,29 +86,51 @@ function promptText(message: SDKUserMessage): string {
   return parts.join('\n')
 }
 
+/** Resolves after `ms`, or at once when the turn is aborted meanwhile. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(done, ms)
+    function done(): void {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
 class MockQuery implements AgentQueryHandle {
   private readonly prompt: AsyncIterable<SDKUserMessage>
   private readonly options: Options
   private readonly sessionId: string
-  private readonly aborter = new AbortController()
+  /** The running turn's controller: an interrupt aborts it, the next turn gets a new one. */
+  private turn = new AbortController()
   private counter = 0
   private turns = 0
   private model: string
   private permissionMode: NonNullable<Options['permissionMode']>
-  private interrupted = false
+  private closed = false
 
-  constructor(prompt: AsyncIterable<SDKUserMessage>, options: Options) {
+  constructor(prompt: AsyncIterable<SDKUserMessage>, options: Options, sessionId: string) {
     this.prompt = prompt
     this.options = options
-    this.sessionId = options.resume ?? MOCK_SESSION_ID
+    this.sessionId = options.resume ?? sessionId
     this.model = options.model ?? MOCK_MODEL
     this.permissionMode = options.permissionMode ?? 'default'
   }
 
   interrupt(): Promise<unknown> {
-    this.interrupted = true
-    this.aborter.abort()
+    this.turn.abort()
     return Promise.resolve(undefined)
+  }
+
+  /** The mock edits no file, so there is never anything to put back. */
+  rewindFiles(): Promise<RewindFilesResult> {
+    return Promise.resolve({ canRewind: true, filesChanged: [], insertions: 0, deletions: 0 })
   }
 
   setPermissionMode(mode: NonNullable<Options['permissionMode']>): Promise<void> {
@@ -106,19 +144,32 @@ class MockQuery implements AgentQueryHandle {
   }
 
   close(): void {
-    this.interrupted = true
+    this.closed = true
+    this.turn.abort()
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<SDKMessage> {
     yield this.init()
     for await (const message of this.prompt) {
-      if (this.interrupted) return
+      if (this.closed) return
+      this.turn = new AbortController()
       yield* this.answer(promptText(message))
     }
   }
 
   private async *answer(prompt: string): AsyncGenerator<SDKMessage> {
     this.turns += 1
+
+    if (prompt.startsWith('stream:')) {
+      const word = prompt.slice(7).trim() || 'chunk'
+      const signal = this.turn.signal
+      for (let n = 1; n <= STREAM_LIMIT && !signal.aborted; n += 1) {
+        yield this.assistant([{ type: 'text', text: `${word} ${n}`, citations: null }])
+        await sleep(STREAM_INTERVAL_MS, signal)
+      }
+      yield signal.aborted ? this.interruptedResult() : this.result(`${word} done`)
+      return
+    }
 
     if (prompt.startsWith('think:')) {
       yield this.assistant([{ type: 'thinking', thinking: prompt.slice(6).trim(), signature: '' }])
@@ -170,7 +221,7 @@ class MockQuery implements AgentQueryHandle {
     const canUseTool = this.options.canUseTool
     if (canUseTool === undefined) return { behavior: 'allow' }
     const decision = await canUseTool(name, input, {
-      signal: this.aborter.signal,
+      signal: this.turn.signal,
       toolUseID: `mock-tool-${this.turns}`,
       requestId: `mock-request-${this.turns}`,
     })
@@ -254,6 +305,26 @@ class MockQuery implements AgentQueryHandle {
       session_id: this.sessionId,
     }
   }
+
+  /** How the CLI ends a turn the user stopped: an error result naming the interrupt. */
+  private interruptedResult(): SDKResultError {
+    return {
+      type: 'result',
+      subtype: 'error_during_execution',
+      duration_ms: MOCK_DURATION_MS,
+      duration_api_ms: MOCK_DURATION_MS,
+      is_error: true,
+      num_turns: this.turns,
+      stop_reason: null,
+      total_cost_usd: 0,
+      usage: MOCK_USAGE,
+      modelUsage: {},
+      permission_denials: [],
+      errors: [INTERRUPTED],
+      uuid: mockUuid((this.counter += 1)),
+      session_id: this.sessionId,
+    }
+  }
 }
 
 function answerOf(
@@ -275,7 +346,12 @@ export function mockDriver(): AgentDriver {
   if (process.env['NODE_ENV'] !== 'test') {
     throw new Error('The mock Agent SDK is available only when NODE_ENV is test')
   }
+  let sessions = 0
   return {
-    query: ({ prompt, options }) => new MockQuery(prompt, options),
+    query: ({ prompt, options }) => {
+      sessions += 1
+      const sessionId = sessions === 1 ? MOCK_SESSION_ID : `${MOCK_SESSION_ID}-${sessions}`
+      return new MockQuery(prompt, options, sessionId)
+    },
   }
 }

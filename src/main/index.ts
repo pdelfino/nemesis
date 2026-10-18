@@ -2,6 +2,7 @@ import { app, BrowserWindow, nativeTheme, session } from 'electron'
 import { join } from 'node:path'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
+import { SessionManager } from './agent/session-manager'
 import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
 import { confirm, CONFIRM_SOURCES, DOWNLOAD_SOURCE, EXTERNAL_SOURCE } from './commands/confirm'
@@ -208,16 +209,21 @@ void app.whenReady().then(() => {
   // folder as it arrives (#64).
   const permissions = new PermissionBridge(buffers)
   const recorder = new SessionRecorder({ sessionsDir: settings.sessionsDir })
-  installSessionBridge({
+  // The manager holds that session and swaps it on new-task or a rewind (#84).
+  const agent = new SessionManager({
     cwd: process.cwd(),
+    model: settings.model,
+    permissionHandler: permissions,
+  })
+  const prompts = installSessionBridge({
+    agent,
     permissions,
     recorder,
-    model: settings.model,
     notices: mergeNotices(permissionPolicy, downloads, external),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
-  const deps = resolveCockpitDeps({ buffers, permissions, prompter })
+  const deps = resolveCockpitDeps({ buffers, permissions, prompter, agent, prompts })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({ prompter: deps.prompter, help: deps.help })
   // Keys mean nothing until the registry and the keymaps are up (#59).

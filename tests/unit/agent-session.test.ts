@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { mockDriver } from '../../src/main/agent/mock'
 import type { AgentSession } from '../../src/main/agent/session'
@@ -224,6 +224,75 @@ describe('an agent session', () => {
     const agent = session()
     await agent.start()
     await expect(agent.start()).rejects.toThrow(/already started/)
+    await agent.stop()
+  })
+
+  // Course corrections (#84): the turn stops, the session stays.
+  it('interrupts a streaming turn and keeps the session for the next prompt', async () => {
+    const agent = session()
+    const events = collect(agent)
+    expect(await agent.interrupt()).toBe(false)
+    await agent.send('stream: tick')
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.type === 'assistant-text')).toBe(true)
+    })
+    expect(agent.busy).toBe(true)
+    const turn = agent.waitForTurn()
+    expect(await agent.interrupt()).toBe(true)
+    expect(await turn).toMatchObject({ type: 'turn-end', isError: true, result: /Interrupted/ })
+    expect(agent.busy).toBe(false)
+    expect(kinds(events)).not.toContain('stopped')
+
+    await agent.send('after')
+    expect((await agent.waitForTurn()).result).toBe('You said: after')
+    expect(kinds(events).filter((kind) => kind === 'started')).toHaveLength(1)
+    await agent.stop()
+  })
+
+  it('opens one checkpoint per prompt, each naming the entry ahead of it', async () => {
+    const agent = session()
+    expect(agent.checkpoints()).toEqual([])
+    await agent.send('one')
+    await agent.waitForTurn()
+    await agent.send('two\nmore')
+    await agent.waitForTurn()
+
+    const checkpoints = agent.checkpoints()
+    expect(checkpoints.map((c) => [c.index, c.text])).toEqual([
+      [1, 'one'],
+      [2, 'two\nmore'],
+    ])
+    expect(checkpoints[0]?.before).toBeNull()
+    // The second checkpoint keeps the conversation up to the reply to the first.
+    expect(checkpoints[1]?.before).toMatch(/^00000000-0000-4000-8000-/)
+    expect(checkpoints[0]?.uuid).not.toBe(checkpoints[1]?.uuid)
+    await agent.stop()
+  })
+
+  it('remembers the tool calls of the latest turn only', async () => {
+    const agent = session({
+      permissionHandler: {
+        requestPermission(): Promise<PermissionDecision> {
+          return Promise.resolve({ behavior: 'allow' })
+        },
+      },
+    })
+    await agent.send('tool: Bash')
+    await agent.waitForTurn()
+    expect(agent.lastToolCalls()).toEqual([{ name: 'Bash', input: { path: '/mock/notes.txt' } }])
+    await agent.send('plain')
+    await agent.waitForTurn()
+    expect(agent.lastToolCalls()).toEqual([])
+    await agent.stop()
+  })
+
+  it('rewinds files through the SDK at a checkpoint', async () => {
+    const agent = session()
+    await agent.send('one')
+    await agent.waitForTurn()
+    const [checkpoint] = agent.checkpoints()
+    if (checkpoint === undefined) throw new Error('no checkpoint')
+    expect(await agent.rewindFiles(checkpoint)).toMatchObject({ canRewind: true, filesChanged: [] })
     await agent.stop()
   })
 })

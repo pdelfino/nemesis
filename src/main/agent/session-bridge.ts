@@ -11,7 +11,7 @@ import { handle, parseNothing } from '../ipc'
 import type { SessionRecorder } from '../transcripts'
 import type { PermissionBridge } from './permission-bridge'
 import { parseDraft, parsePromptText, PromptQueue } from './prompt-queue'
-import { createAgentSession } from './session'
+import type { SessionManager } from './session-manager'
 
 /**
  * The cockpit's agent session meets the window here (#61). One session, one
@@ -29,6 +29,10 @@ import { createAgentSession } from './session'
  * session folder on disk holds what the window showed. A third, optional
  * stream carries the cockpit's own notices, a refused site permission (#49),
  * to both places the same way.
+ *
+ * The session itself is the manager's (#84): it replaces the session on
+ * new-task and on a conversation rewind, and the queue, the recorder and the
+ * window follow through the one subscription taken here.
  */
 
 /** Anything that emits agent events the window and the recorder should see. */
@@ -36,27 +40,20 @@ export interface EventSource {
   on(listener: (event: AgentEvent) => void): () => void
 }
 export interface SessionBridgeOptions {
-  /** The working directory the agent runs in: the folder the app was started in. */
-  readonly cwd: string
+  /** Holds the current session and replaces it on new-task or rewind (#84). */
+  readonly agent: SessionManager
   readonly permissions: PermissionBridge
   /** Writes the session folder. */
   readonly recorder: SessionRecorder
-  /** The model from the settings; `null` leaves the choice to the CLI. */
-  readonly model: string | null
   /** The cockpit's own notices, shown and recorded like any event. */
   readonly notices?: EventSource | undefined
 }
 
 export function installSessionBridge(options: SessionBridgeOptions): PromptQueue {
-  const { permissions, recorder } = options
-  const session = createAgentSession({
-    cwd: options.cwd,
-    permissionHandler: permissions,
-    ...(options.model === null ? {} : { model: options.model }),
-  })
-  const queue = new PromptQueue(session)
+  const { agent, permissions, recorder } = options
+  const queue = new PromptQueue(agent)
 
-  session.on((event) => {
+  agent.on((event) => {
     recorder.record(event)
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
@@ -83,7 +80,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   // The CLI under the SDK is a child process; it must not outlive the app.
   // Stopping emits the final event, which the recorder writes and closes on.
   app.once('before-quit', () => {
-    void session.stop()
+    void agent.stop()
   })
 
   return queue

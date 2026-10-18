@@ -1,4 +1,13 @@
 import { PermissionBridge } from '../agent/permission-bridge'
+import { PromptQueue } from '../agent/prompt-queue'
+import {
+  describeCheckpoint,
+  describeCheckpoints,
+  REWIND_TARGETS,
+  SessionManager,
+  undoPrompt,
+  type RewindTarget,
+} from '../agent/session-manager'
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { HelpBuffers } from '../help'
@@ -24,6 +33,10 @@ import { CommandRegistry, defineCommand } from './registry'
  * commands act on the buffer registry they are given (#60), the answer
  * commands on the permission bridge (#63), and the palette commands read
  * their argument through the prompter and answer in the help buffer (#65).
+ * The course corrections of the guide (#84) act on the session manager:
+ * `C-g` interrupts the turn, `rewind` lists the checkpoints in the help
+ * buffer and reads one and what to restore, `undo` sends the guide's "undo
+ * that" with the last tool calls quoted, and `new-task` drops the session.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -37,16 +50,26 @@ export interface CockpitDeps {
   readonly help: HelpBuffers
   /** Shared by `describe-key` and the dispatcher, which is built after the registry. */
   readonly keys: KeyReader
+  /** The current agent session, and the way to replace it (#84). */
+  readonly agent: SessionManager
+  /** Where a prompt a command composes goes, like one the user typed (#84). */
+  readonly prompts: Pick<PromptQueue, 'submit'>
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
   const buffers = partial.buffers ?? createCockpitBuffers()
+  const permissions = partial.permissions ?? new PermissionBridge(buffers)
+  const agent =
+    partial.agent ??
+    new SessionManager({ cwd: process.cwd(), model: null, permissionHandler: permissions })
   return {
     buffers,
-    permissions: partial.permissions ?? new PermissionBridge(buffers),
+    permissions,
     prompter: partial.prompter ?? new Prompter(),
     help: partial.help ?? new HelpBuffers(buffers),
     keys: partial.keys ?? new KeyReader(),
+    agent,
+    prompts: partial.prompts ?? new PromptQueue(agent),
   }
 }
 
@@ -60,7 +83,7 @@ function report(name: string): (error: unknown) => void {
 }
 
 export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): readonly Command[] {
-  const { buffers, permissions, prompter, help, keys } = deps
+  const { buffers, permissions, prompter, help, keys, agent, prompts } = deps
   return [
     defineCommand({
       name: 'execute-command',
@@ -102,10 +125,42 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'keyboard-quit',
-      doc: 'Cancel the half-typed key sequence, the prompt or the running request.',
+      doc: 'Cancel the half-typed key sequence, the prompt or the running turn.',
       run: () => {
-        // The resolver already dropped the pending sequence; interrupting the
-        // agent request arrives with the session manager.
+        // The resolver already dropped the pending sequence, and the window
+        // closes the palette on this name. With no read open, C-g is the
+        // guide's Esc: the running turn stops and the context stays (#84).
+        if (prompter.pending === null) agent.interrupt().catch(report('keyboard-quit'))
+      },
+    }),
+    defineCommand({
+      name: 'rewind',
+      doc: 'List the checkpoints, then restore the conversation, the code or both at one.',
+      run: () => {
+        const checkpoints = agent.checkpoints()
+        help.show(describeCheckpoints(checkpoints))
+        if (checkpoints.length === 0) return
+        prompter.read({ source: 'checkpoints', prompt: 'Rewind to:' }, (uuid) => {
+          const checkpoint = checkpoints.find((candidate) => candidate.uuid === uuid)
+          if (checkpoint === undefined) return
+          prompter.read({ source: 'rewind-targets', prompt: 'Restore:' }, async (target) => {
+            if (isRewindTarget(target)) await agent.rewind(checkpoint, target)
+          })
+        })
+      },
+    }),
+    defineCommand({
+      name: 'undo',
+      doc: 'Ask the agent to undo its last actions, the tool calls quoted.',
+      run: () => {
+        prompts.submit(undoPrompt(agent.lastToolCalls())).catch(report('undo'))
+      },
+    }),
+    defineCommand({
+      name: 'new-task',
+      doc: 'Start a fresh session in this window; the next prompt carries no context over.',
+      run: () => {
+        agent.newTask().catch(report('new-task'))
       },
     }),
     defineCommand({
@@ -176,10 +231,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
   ]
 }
 
-/** The palette sources of M1 (#65): the commands, with their keys, and the buffers. */
+/**
+ * The palette sources of M1 (#65): the commands, with their keys, and the
+ * buffers; and the rewind reads of #84, the checkpoints and what to restore.
+ */
 export function cockpitSources(
   registry: CommandRegistry,
   buffers: BufferRegistry,
+  agent: SessionManager,
 ): readonly PaletteSource[] {
   return [
     {
@@ -201,7 +260,31 @@ export function cockpitSources(
           doc: `${buffer.kind} buffer${buffer.id === buffers.current?.id ? ', current' : ''}`,
         })),
     },
+    {
+      name: 'checkpoints',
+      candidates: () =>
+        agent.checkpoints().map((checkpoint) => ({
+          id: checkpoint.uuid,
+          label: describeCheckpoint(checkpoint),
+          doc: `Checkpoint ${checkpoint.index}`,
+        })),
+    },
+    {
+      name: 'rewind-targets',
+      candidates: () =>
+        REWIND_TARGETS.map((target) => ({ id: target, label: target, doc: REWIND_DOCS[target] })),
+    },
   ]
+}
+
+function isRewindTarget(value: string): value is RewindTarget {
+  return (REWIND_TARGETS as readonly string[]).includes(value)
+}
+
+const REWIND_DOCS: Record<RewindTarget, string> = {
+  conversation: 'The session goes back to before the checkpoint; later turns are dropped.',
+  code: 'Files the agent edited since the checkpoint go back to their state then.',
+  both: 'The conversation and the files, together.',
 }
 
 /** Bindings available in every buffer. The help keys are Emacs 28's. */
@@ -211,6 +294,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-c': 'send-prompt',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
+  'C-x n': 'new-task',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
@@ -247,7 +331,9 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
   const deps = resolveCockpitDeps(partial)
   const registry = new CommandRegistry()
   registry.registerAll(cockpitCommands(deps, registry))
-  for (const source of cockpitSources(registry, deps.buffers)) deps.prompter.addSource(source)
+  for (const source of cockpitSources(registry, deps.buffers, deps.agent)) {
+    deps.prompter.addSource(source)
+  }
   return registry
 }
 
