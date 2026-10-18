@@ -52,6 +52,28 @@ main {
   padding: 0.8rem;
   min-height: 6rem;
 }
+/* The pending request sits between the transcript and the prompt (#63). */
+#request {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+}
+#request:focus {
+  outline: none;
+}
+#request-title {
+  margin: 0;
+  font-weight: bold;
+}
+#request-options {
+  margin: 0.3rem 0 0;
+  padding-left: 1.6rem;
+}
+#request-options:empty {
+  display: none;
+}
+#request-keys {
+  margin: 0.3rem 0 0;
+}
 /* The current buffer carries the point, so it says so (#60). */
 [data-buffer-type][data-current] {
   box-shadow: inset 2px 0 0 var(--ink);
@@ -149,11 +171,20 @@ main {
   color: var(--muted);
   font-weight: normal;
 }
+#transcript .tr-header[data-role='request'] {
+  color: #8a1d1d;
+}
+#transcript .tr-body[data-role='request'] {
+  background: color-mix(in srgb, #8a1d1d 10%, transparent);
+}
 @media (prefers-color-scheme: dark) {
   #transcript .tr-header[data-role='user'] {
     color: #7fb2f0;
   }
   #transcript .tr-header[data-role='assistant'] {
     color: #e0a06a;
+  }
+  #transcript .tr-header[data-role='request'] {
+    color: #f08a8a;
   }
 }

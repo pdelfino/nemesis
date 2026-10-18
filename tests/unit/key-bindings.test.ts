@@ -21,7 +21,10 @@ describe('the shape of a keymap', () => {
     const bindings = createCockpitDispatcher().bindings
     expect(bindings.global.chords).toEqual(['C-c C-c', 'C-g', 'C-s', 'C-x b', 'C-x k', 'M-x'])
     expect(bindings.global.prefixes).toEqual(['C-c', 'C-x'])
-    expect(bindings.byBufferType.permission).toEqual({ chords: ['n', 'y'], prefixes: [] })
+    expect(bindings.byBufferType.permission).toEqual({
+      chords: ['1', '2', '3', '4', 'a', 'n', 'y'],
+      prefixes: [],
+    })
     expect(JSON.stringify(bindings)).not.toContain('switch-buffer')
   })
 })

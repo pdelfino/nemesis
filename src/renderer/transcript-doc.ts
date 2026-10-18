@@ -17,7 +17,7 @@ import {
   type TransactionSpec,
 } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
-import type { AgentEvent } from '../shared/agent'
+import type { AgentEvent, AgentQuestion } from '../shared/agent'
 
 /**
  * The transcript as a document (#62): the pure half of the transcript buffer.
@@ -33,7 +33,8 @@ import type { AgentEvent } from '../shared/agent'
  * keys and the search panel are in transcript-buffer.ts.
  */
 
-export type BlockKind = 'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'note'
+export type BlockKind =
+  'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'request' | 'note'
 
 /** One block: a header line, then zero or more body lines. Positions are in the document. */
 export interface TranscriptBlock {
@@ -58,7 +59,9 @@ export interface TranscriptState {
 /** A tool body longer than this starts folded. Thinking always does. */
 const FOLD_LINES = 6
 
-const HEADERS: Readonly<Record<Exclude<BlockKind, 'tool-use' | 'tool-result' | 'note'>, string>> = {
+const HEADERS: Readonly<
+  Record<Exclude<BlockKind, 'tool-use' | 'tool-result' | 'request' | 'note'>, string>
+> = {
   user: 'You',
   assistant: 'Claude',
   thinking: 'Thinking',
@@ -180,7 +183,57 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
       return appendBlock(state, 'note', `Error: ${event.message}`, '')
     case 'stopped':
       return appendBlock(state, 'note', `Session stopped (${event.reason})`, '')
+    case 'permission-request':
+      return event.questions === undefined
+        ? appendBlock(
+            state,
+            'request',
+            event.title ?? `Permission: ${event.toolName}`,
+            `${formatInput(event.input)}\ny allow once, n deny, a allow ${event.toolName} for this session`,
+          )
+        : appendBlock(
+            state,
+            'request',
+            `Question: ${event.questions.map((question) => question.header).join(', ')}`,
+            formatQuestions(event.questions),
+          )
+    case 'question-answered':
+      return appendBlock(state, 'note', `Answered ${event.header}: ${event.answer}`, '')
+    case 'permission-answered':
+      return event.outcome === 'answered'
+        ? null
+        : appendBlock(state, 'note', describeOutcome(event.toolName, event.outcome), '')
   }
+}
+
+function describeOutcome(
+  toolName: string,
+  outcome: 'allow' | 'allow-session' | 'deny' | 'aborted',
+): string {
+  switch (outcome) {
+    case 'allow':
+      return `Allowed ${toolName} once`
+    case 'allow-session':
+      return `Allowed ${toolName} for this session`
+    case 'deny':
+      return `Denied ${toolName}`
+    case 'aborted':
+      return `Request for ${toolName} withdrawn`
+  }
+}
+
+/** Each question, its options numbered from 1: what a digit answers. */
+function formatQuestions(questions: readonly AgentQuestion[]): string {
+  const lines: string[] = []
+  for (const question of questions) {
+    lines.push(question.question)
+    for (const [index, option] of question.options.entries()) {
+      const detail = option.description.length === 0 ? '' : `: ${option.description}`
+      lines.push(`${index + 1}. ${option.label}${detail}`)
+    }
+  }
+  lines.push('Press a digit to choose, or type a reply in the prompt buffer and send it.')
+  return lines.join('\n')
 }
 
 interface AppendOptions {

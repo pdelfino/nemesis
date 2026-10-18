@@ -21,9 +21,14 @@ function render(list: BufferList): void {
     modeline.textContent = list.buffers.map((buffer) => label(buffer, list.currentId)).join(' ')
   }
 
+  // Several buffers may share an element (every pending request shows in
+  // #request, #63); the current one, when any, is the one the element is for.
   const shown = new Map<string, BufferInfo>()
   for (const buffer of list.buffers) {
-    if (buffer.elementId !== null) shown.set(buffer.elementId, buffer)
+    if (buffer.elementId === null) continue
+    if (!shown.has(buffer.elementId) || buffer.id === list.currentId) {
+      shown.set(buffer.elementId, buffer)
+    }
   }
   for (const section of document.querySelectorAll<HTMLElement>('[data-buffer-type]')) {
     const buffer = shown.get(section.id)

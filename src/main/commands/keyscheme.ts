@@ -1,3 +1,4 @@
+import { PermissionBridge } from '../agent/permission-bridge'
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import type { BufferKeymaps } from './keymap'
@@ -15,10 +16,17 @@ import { CommandRegistry, defineCommand } from './registry'
  *
  * A command body stays empty until the surface it drives lands. #59 owns the
  * spine, the registry, the chord parser and the dispatch; the two buffer
- * commands act on the buffer registry they are given (#60).
+ * commands act on the buffer registry they are given (#60), and the answer
+ * commands on the permission bridge (#63).
  */
 
-export function cockpitCommands(buffers: BufferRegistry): readonly Command[] {
+/** How many options a question may offer, per the AskUserQuestion schema. */
+const QUESTION_OPTIONS = [1, 2, 3, 4] as const
+
+export function cockpitCommands(
+  buffers: BufferRegistry,
+  permissions: PermissionBridge,
+): readonly Command[] {
   return [
     defineCommand({
       name: 'execute-command',
@@ -71,18 +79,34 @@ export function cockpitCommands(buffers: BufferRegistry): readonly Command[] {
     }),
     defineCommand({
       name: 'answer-yes',
-      doc: 'Answer yes to the permission prompt.',
+      doc: 'Allow the pending tool once.',
       run: () => {
-        // The permission bridge answers; it lands with the permission prompt.
+        permissions.allowOnce()
       },
     }),
     defineCommand({
       name: 'answer-no',
-      doc: 'Answer no to the permission prompt.',
+      doc: 'Deny the pending tool, or decline the pending question.',
       run: () => {
-        // The permission bridge answers; it lands with the permission prompt.
+        permissions.deny()
       },
     }),
+    defineCommand({
+      name: 'allow-for-session',
+      doc: 'Allow the pending tool now and for the rest of the session.',
+      run: () => {
+        permissions.allowForSession()
+      },
+    }),
+    ...QUESTION_OPTIONS.map((number) =>
+      defineCommand({
+        name: `choose-option-${number}`,
+        doc: `Choose option ${number} of the pending question.`,
+        run: () => {
+          permissions.choose(number)
+        },
+      }),
+    ),
   ]
 }
 
@@ -102,6 +126,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   permission: defineKeymap('permission', {
     y: 'answer-yes',
     n: 'answer-no',
+    a: 'allow-for-session',
+    ...Object.fromEntries(
+      QUESTION_OPTIONS.map((number) => [`${number}`, `choose-option-${number}`]),
+    ),
   }),
 }
 
@@ -110,9 +138,10 @@ export const ABORT_CHORD = 'C-g'
 
 export function createCockpitRegistry(
   buffers: BufferRegistry = createCockpitBuffers(),
+  permissions: PermissionBridge = new PermissionBridge(buffers),
 ): CommandRegistry {
   const registry = new CommandRegistry()
-  registry.registerAll(cockpitCommands(buffers))
+  registry.registerAll(cockpitCommands(buffers, permissions))
   return registry
 }
 

@@ -20,6 +20,8 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *
  *   `think: ...`  a thinking block, then the reply
  *   `tool: Name`  a tool call named `Name` through `canUseTool`, then the reply
+ *   `ask: ...`    an AskUserQuestion with three options through `canUseTool`,
+ *                 then `You chose: <answer>` (#63)
  *   anything else the reply `You said: <prompt>`
  *
  * The frames are the SDK's own types, not a loose imitation, so a spec that
@@ -28,8 +30,15 @@ import type { AgentDriver, AgentQueryHandle } from './session'
 
 const MOCK_MODEL = 'claude-mock-1'
 const MOCK_SESSION_ID = 'mock-session'
-const MOCK_TOOLS = ['Read', 'Write', 'Bash'] as const
+const MOCK_TOOLS = ['Read', 'Write', 'Bash', 'AskUserQuestion'] as const
 const MOCK_DURATION_MS = 1
+
+/** The three options every `ask:` prompt offers; the spec answers with `2` (#63). */
+const MOCK_OPTIONS = [
+  { label: 'alpha', description: 'The first option.' },
+  { label: 'beta', description: 'The second option.' },
+  { label: 'gamma', description: 'The third option.' },
+] as const
 
 const MOCK_USAGE: NonNullableUsage = {
   cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
@@ -129,6 +138,28 @@ class MockQuery implements AgentQueryHandle {
       return
     }
 
+    if (prompt.startsWith('ask:')) {
+      const question = prompt.slice(4).trim() || 'Which one?'
+      const toolUseId = `mock-tool-${this.turns}`
+      const input = {
+        questions: [{ question, header: 'Choice', options: [...MOCK_OPTIONS], multiSelect: false }],
+      }
+      yield this.assistant([{ type: 'tool_use', id: toolUseId, name: 'AskUserQuestion', input }])
+      const decision = await this.ask('AskUserQuestion', input)
+      // The CLI reads the answers off the updated input, keyed by question text.
+      const answer =
+        decision.behavior === 'allow' ? answerOf(decision.updatedInput, question) : null
+      const reply = answer === null ? 'No answer.' : `You chose: ${answer}`
+      yield this.toolResult(
+        toolUseId,
+        decision.behavior === 'allow' ? (answer ?? '') : decision.message,
+        decision.behavior !== 'allow',
+      )
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
+      return
+    }
+
     const reply = `You said: ${prompt}`
     yield this.assistant([{ type: 'text', text: reply, citations: null }])
     yield this.result(reply)
@@ -223,6 +254,16 @@ class MockQuery implements AgentQueryHandle {
       session_id: this.sessionId,
     }
   }
+}
+
+function answerOf(
+  updatedInput: Record<string, unknown> | undefined,
+  question: string,
+): string | null {
+  const answers = updatedInput?.['answers']
+  if (typeof answers !== 'object' || answers === null) return null
+  const answer = (answers as Record<string, unknown>)[question]
+  return typeof answer === 'string' ? answer : null
 }
 
 /**

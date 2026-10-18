@@ -16,6 +16,7 @@ import {
   GLOBAL_KEYMAP,
 } from '../../src/main/commands/keyscheme'
 import { BufferRegistry } from '../../src/main/buffers'
+import { PermissionBridge } from '../../src/main/agent/permission-bridge'
 
 function press(key: string, options: Partial<KeyPress> = {}): KeyPress {
   return {
@@ -40,11 +41,19 @@ describe('the default Emacs keyscheme (#59)', () => {
     expect(GLOBAL_KEYMAP.commandFor('C-g')).toBe('keyboard-quit')
     expect(BUFFER_KEYMAPS.permission?.commandFor('y')).toBe('answer-yes')
     expect(BUFFER_KEYMAPS.permission?.commandFor('n')).toBe('answer-no')
+    // The session allow and the question digits (#63).
+    expect(BUFFER_KEYMAPS.permission?.commandFor('a')).toBe('allow-for-session')
+    expect(BUFFER_KEYMAPS.permission?.commandFor('1')).toBe('choose-option-1')
+    expect(BUFFER_KEYMAPS.permission?.commandFor('4')).toBe('choose-option-4')
+    expect(BUFFER_KEYMAPS.permission?.commandFor('5')).toBeUndefined()
   })
 
   it('registers every command a keymap names', () => {
     const registry = createCockpitRegistry()
-    expect(registry.list()).toHaveLength(cockpitCommands(new BufferRegistry()).length)
+    const buffers = new BufferRegistry()
+    expect(registry.list()).toHaveLength(
+      cockpitCommands(buffers, new PermissionBridge(buffers)).length,
+    )
     expect(() =>
       assertBindingsAreRegistered(registry, [GLOBAL_KEYMAP, ...Object.values(BUFFER_KEYMAPS)]),
     ).not.toThrow()

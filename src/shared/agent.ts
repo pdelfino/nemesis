@@ -9,9 +9,9 @@
  * defines: the transcript (#62) and the permission prompt (#63) read them.
  */
 
-import type { AgentEvent } from '../main/agent/events'
+import type { AgentEvent, AgentQuestion } from '../main/agent/events'
 
-export type { AgentEvent }
+export type { AgentEvent, AgentQuestion }
 
 /** A prompt waiting its turn. The text came from the renderer and goes back to it. */
 export interface QueuedPrompt {
@@ -25,10 +25,13 @@ export interface PromptQueueState {
   readonly queued: readonly QueuedPrompt[]
 }
 
-/** What the main process answers to a send: the prompt went now, or it waits. */
+/**
+ * What the main process answers to a send: the prompt went now, it waits, or
+ * the text answered the pending question instead of starting a turn (#63).
+ */
 export interface PromptReceipt {
   readonly id: string
-  readonly status: 'sent' | 'queued'
+  readonly status: 'sent' | 'queued' | 'answered'
   /** Place in the queue, 1 first; 0 when the prompt was sent at once. */
   readonly position: number
 }

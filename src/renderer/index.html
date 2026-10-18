@@ -27,6 +27,21 @@
         <!-- A read-only CodeMirror document of the session (#62). -->
         <div id="transcript-editor"></div>
       </section>
+      <!--
+        A pending permission request or question (#63). Shown while a request
+        buffer exists; it holds the point so y, n, a and a digit are answers.
+      -->
+      <section
+        id="request"
+        aria-label="pending request"
+        data-buffer-type="permission"
+        tabindex="-1"
+        hidden
+      >
+        <p id="request-title"></p>
+        <ol id="request-options" aria-label="options"></ol>
+        <p id="request-keys" class="placeholder"></p>
+      </section>
       <section id="prompt" aria-label="prompt buffer" data-buffer-type="prompt">
         <!-- CodeMirror mounts here (#61). -->
         <div id="prompt-editor"></div>

@@ -143,4 +143,88 @@ describe('the transcript document', () => {
     )
     expect(transactionFor(state, turnEnd)?.changes).toBeUndefined()
   })
+
+  it('shows a permission request with the tool, its arguments and the keys, then the answer (#63)', () => {
+    const asked: AgentEvent = {
+      type: 'permission-request',
+      requestId: 'r1',
+      toolUseId: 't1',
+      toolName: 'Bash',
+      input: { command: 'ls' },
+    }
+    const answered: AgentEvent = {
+      type: 'permission-answered',
+      requestId: 'r1',
+      toolName: 'Bash',
+      outcome: 'allow-session',
+    }
+    const state = append(empty(), asked, answered)
+    expect(state.doc.toString()).toBe(
+      [
+        'Permission: Bash',
+        '{',
+        '  "command": "ls"',
+        '}',
+        'y allow once, n deny, a allow Bash for this session',
+        '',
+        'Allowed Bash for this session',
+      ].join('\n'),
+    )
+    expect(state.field(transcriptField).blocks.map((block) => block.kind)).toEqual([
+      'request',
+      'note',
+    ])
+    // The SDK's own sentence heads the block when it supplied one.
+    const titled = append(empty(), { ...asked, title: 'Claude wants to run ls' })
+    expect(titled.doc.toString().startsWith('Claude wants to run ls\n{')).toBe(true)
+    const denied = append(empty(), asked, { ...answered, outcome: 'deny', message: 'no' })
+    expect(denied.doc.toString().endsWith('\n\nDenied Bash')).toBe(true)
+  })
+
+  it('numbers the options of a question and notes each answer (#63)', () => {
+    const asked: AgentEvent = {
+      type: 'permission-request',
+      requestId: 'r1',
+      toolUseId: 't1',
+      toolName: 'AskUserQuestion',
+      input: {},
+      questions: [
+        {
+          question: 'Which one?',
+          header: 'Choice',
+          options: [
+            { label: 'alpha', description: 'The first option.' },
+            { label: 'beta', description: '' },
+          ],
+          multiSelect: false,
+        },
+      ],
+    }
+    const picked: AgentEvent = {
+      type: 'question-answered',
+      requestId: 'r1',
+      index: 0,
+      header: 'Choice',
+      answer: 'beta',
+    }
+    const done: AgentEvent = {
+      type: 'permission-answered',
+      requestId: 'r1',
+      toolName: 'AskUserQuestion',
+      outcome: 'answered',
+    }
+    const state = append(empty(), asked, picked, done)
+    expect(state.doc.toString()).toBe(
+      [
+        'Question: Choice',
+        'Which one?',
+        '1. alpha: The first option.',
+        '2. beta',
+        'Press a digit to choose, or type a reply in the prompt buffer and send it.',
+        '',
+        'Answered Choice: beta',
+      ].join('\n'),
+    )
+    expect(transactionFor(state, done)).toBeNull()
+  })
 })

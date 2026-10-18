@@ -7,6 +7,7 @@ import {
   PROMPT_STATE_CHANNEL,
 } from '../../shared/agent'
 import { isInternalSender } from '../commands/dispatcher'
+import type { PermissionBridge } from './permission-bridge'
 import { parseDraft, parsePromptText, PromptQueue } from './prompt-queue'
 import { createAgentSession } from './session'
 
@@ -17,24 +18,34 @@ import { createAgentSession } from './session'
  * is pushed to the window unchanged, for the transcript (#62) and the
  * permission prompt (#63) to read.
  *
- * No permission handler is installed yet, so every tool call is denied
- * (SECURITY.org, T4); the policy is #55 and the prompt that asks is #63.
+ * The permission bridge (#63) is the session's handler: a tool the policy
+ * asks about waits on a key, and what the bridge announces goes to the
+ * window on the same channel as the session's own events. Text sent while
+ * a question is pending answers the question instead of starting a turn.
  */
 export interface SessionBridgeOptions {
   /** The working directory the agent runs in: the folder the app was started in. */
   readonly cwd: string
+  readonly permissions: PermissionBridge
 }
 
 export function installSessionBridge(options: SessionBridgeOptions): PromptQueue {
-  const session = createAgentSession({ cwd: options.cwd })
+  const { permissions } = options
+  const session = createAgentSession({ cwd: options.cwd, permissionHandler: permissions })
   const queue = new PromptQueue(session)
 
   session.on((event) => broadcast(AGENT_EVENT_CHANNEL, event))
+  permissions.on((event) => broadcast(AGENT_EVENT_CHANNEL, event))
   queue.subscribe((state) => broadcast(PROMPT_QUEUE_CHANNEL, state))
 
   ipcMain.handle(PROMPT_SEND_CHANNEL, (event: IpcMainInvokeEvent, payload: unknown) => {
     assertInternal(event, PROMPT_SEND_CHANNEL)
-    return queue.submit(parsePromptText(payload))
+    const text = parsePromptText(payload)
+    const question = permissions.pending[0]
+    if (question !== undefined && permissions.reply(text)) {
+      return { id: question.id, status: 'answered', position: 0 }
+    }
+    return queue.submit(text)
   })
   ipcMain.handle(PROMPT_DRAFT_CHANNEL, (event: IpcMainInvokeEvent, payload: unknown) => {
     assertInternal(event, PROMPT_DRAFT_CHANNEL)

@@ -177,7 +177,13 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
       replaceText('')
       parkDraft()
       cursor.reset((await window.nemesis.promptState()).history)
-      say(receipt.status === 'queued' ? `Queued (${receipt.position}).` : 'Sent.')
+      say(
+        receipt.status === 'queued'
+          ? `Queued (${receipt.position}).`
+          : receipt.status === 'answered'
+            ? 'Answered.'
+            : 'Sent.',
+      )
     } catch (error) {
       // The text stays where it was typed.
       say(`Not sent: ${error instanceof Error ? error.message : String(error)}`)

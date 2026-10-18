@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
+import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge } from './agent/session-bridge'
 import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
@@ -62,10 +63,12 @@ void app.whenReady().then(() => {
   installBufferBridge(buffers)
   // One agent session per cockpit, in the folder the app was started in; the
   // SDK loads the CLI's own settings, so the model and the permission rules are
-  // the CLI's (#61). It starts on the first prompt, not at launch.
-  installSessionBridge({ cwd: process.cwd() })
+  // the CLI's (#61). It starts on the first prompt, not at launch. A tool the
+  // rules ask about waits on a key through the permission bridge (#63).
+  const permissions = new PermissionBridge(buffers)
+  installSessionBridge({ cwd: process.cwd(), permissions })
   // Keys mean nothing until the registry and the keymaps are up (#59).
-  installKeyBridge(createCockpitDispatcher(createCockpitRegistry(buffers)))
+  installKeyBridge(createCockpitDispatcher(createCockpitRegistry(buffers, permissions)))
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
