@@ -66,6 +66,11 @@ describe('the default Emacs keyscheme (#59)', () => {
     for (const name of ['interview', 'investigate', 'ask-codebase']) {
       expect(GLOBAL_KEYMAP.entries().some((entry) => entry.command === name)).toBe(false)
     }
+    // The verify key (#81); attach-issue, attach-check and screenshot-window are M-x only.
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-v')).toBe('verify')
+    for (const name of ['attach-issue', 'attach-check', 'screenshot-window']) {
+      expect(GLOBAL_KEYMAP.entries().some((entry) => entry.command === name)).toBe(false)
+    }
   })
 
   it('registers every command a keymap names', () => {

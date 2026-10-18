@@ -189,6 +189,29 @@ export interface AgentPermissionModeEvent {
   readonly mode: AgentPermissionMode
 }
 
+/** Where the `verify` key took its command from (#81), in the order it looks. */
+export type VerifySource = 'issue' | 'settings' | 'default'
+
+/**
+ * Evidence (#81): what the check the `verify` key ran came to, the output
+ * verbatim with the exit code and the time it took. Emitted by the cockpit,
+ * not by the agent: the check ran with the user's permissions, outside the
+ * agent's tool path, and the agent sees nothing of it unless the user sends
+ * it. The transcript shows it folded with the status in the header; the Org
+ * file keeps the output as an example block.
+ */
+export interface AgentEvidenceEvent {
+  readonly type: 'evidence'
+  readonly command: string
+  readonly source: VerifySource
+  /** Null when the process was killed by a signal or never started. */
+  readonly exitCode: number | null
+  readonly signal: string | null
+  readonly durationMs: number
+  /** stdout and stderr as they arrived, the tail when there was too much. */
+  readonly output: string
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -206,6 +229,7 @@ export type AgentEvent =
   | AgentContextUsageEvent
   | AgentNudgeEvent
   | AgentPermissionModeEvent
+  | AgentEvidenceEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

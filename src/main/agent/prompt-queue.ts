@@ -1,4 +1,10 @@
-import type { PromptQueueState, PromptReceipt, PromptState, QueuedPrompt } from '../../shared/agent'
+import type {
+  PromptInsert,
+  PromptQueueState,
+  PromptReceipt,
+  PromptState,
+  QueuedPrompt,
+} from '../../shared/agent'
 import { MAX_PROMPT_LENGTH } from '../../shared/agent'
 import type { AgentSession } from './session'
 
@@ -21,12 +27,15 @@ const HISTORY_LIMIT = 100
 
 export type PromptQueueListener = (state: PromptQueueState) => void
 
+export type PromptInsertListener = (insert: PromptInsert) => void
+
 /** What the queue needs from a session: send, and say when a turn is over. */
 export type PromptTarget = Pick<AgentSession, 'send' | 'on'>
 
 export class PromptQueue {
   private readonly session: PromptTarget
   private readonly listeners = new Set<PromptQueueListener>()
+  private readonly insertListeners = new Set<PromptInsertListener>()
   private readonly queued: QueuedPrompt[] = []
   private readonly sent: string[] = []
   private draftText = ''
@@ -99,6 +108,24 @@ export class PromptQueue {
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)
+    }
+  }
+
+  /**
+   * Adds text to the prompt being composed (#81). The editor in the window
+   * holds the draft and appends it there; the draft parked here follows
+   * when the editor parks it again, so nothing typed since is overwritten.
+   */
+  insert(text: string): void {
+    const insert: PromptInsert = { text }
+    for (const listener of [...this.insertListeners]) listener(insert)
+  }
+
+  /** The IPC bridge subscribes, so the renderer appends what a command adds. */
+  onInsert(listener: PromptInsertListener): () => void {
+    this.insertListeners.add(listener)
+    return () => {
+      this.insertListeners.delete(listener)
     }
   }
 

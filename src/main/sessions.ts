@@ -58,6 +58,7 @@ const KNOWN_TYPES: Readonly<Record<AgentEvent['type'], true>> = {
   'context-usage': true,
   nudge: true,
   'permission-mode': true,
+  evidence: true,
 }
 
 interface LogEntry {

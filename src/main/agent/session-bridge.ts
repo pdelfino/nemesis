@@ -3,6 +3,7 @@ import {
   AGENT_EVENT_CHANNEL,
   type AgentEvent,
   PROMPT_DRAFT_CHANNEL,
+  PROMPT_INSERT_CHANNEL,
   PROMPT_QUEUE_CHANNEL,
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
@@ -71,6 +72,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
   queue.subscribe((state) => broadcast(PROMPT_QUEUE_CHANNEL, state))
+  queue.onInsert((insert) => broadcast(PROMPT_INSERT_CHANNEL, insert))
 
   handle(PROMPT_SEND_CHANNEL, parsePromptText, (text) => {
     const question = permissions.pending[0]

@@ -115,6 +115,28 @@ describe('the Org rendering', () => {
     )
   })
 
+  it("heads a check as evidence, the verify key's with its exit code and duration (#81)", () => {
+    const text = render([
+      { type: 'tool-use', toolUseId: 't1', name: 'Bash', input: { command: 'npm test' } },
+      { type: 'tool-result', toolUseId: 't1', isError: true, text: 'FAIL auth\nExit code 1' },
+      {
+        type: 'evidence',
+        command: 'npm run gate',
+        source: 'issue',
+        exitCode: 0,
+        signal: null,
+        durationMs: 61_500,
+        output: 'all green\n',
+      },
+    ])
+    expect(text).toContain(
+      '\n** Evidence: npm test (exit 1)\n#+begin_example\nFAIL auth\nExit code 1\n#+end_example\n',
+    )
+    expect(text).toContain(
+      '\n** Evidence: npm run gate (exit 0, 61.5s)\n#+begin_example\nall green\n#+end_example\n',
+    )
+  })
+
   it('renders what happened inside a subagent under headings that say so (#85)', () => {
     const text = render([
       { type: 'user-text', text: 'Use subagents to investigate x' },

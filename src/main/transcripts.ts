@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentEvent, AgentQuestion } from './agent/events'
+import { checkEvidenceHeader, looksLikeEvidence, toolEvidenceHeader } from '../shared/evidence'
 
 /**
  * Transcripts on disk (#64). Every session is a folder under the sessions dir,
@@ -11,8 +12,10 @@ import type { AgentEvent, AgentQuestion } from './agent/events'
  *                 happens and fsynced when a turn ends
  *   session.org   a rendering of the same events a person reads in Emacs: one
  *                 heading per turn, You and Claude under it, tool calls as
- *                 source blocks, tool output as example blocks, and what
- *                 happened inside a subagent under headings that say so (#85)
+ *                 source blocks, tool output as example blocks, what
+ *                 happened inside a subagent under headings that say so (#85),
+ *                 and evidence, the verify key's check or a tool result that
+ *                 reads like a test or build run, headed by its status (#81)
  *
  * The events arrive before the session id does (the user's text is in the
  * stream before the SDK answers with its init frame), so they wait in memory
@@ -118,6 +121,8 @@ function describeOutcome(
 export class OrgTranscript {
   private readonly now: () => Date
   private readonly toolNames = new Map<string, string>()
+  /** The command of a shell tool call, so its result can be read as evidence (#81). */
+  private readonly toolCommands = new Map<string, string>()
   /** Claude is mid-reply: the next text extends the block instead of opening one. */
   private open = false
 
@@ -156,23 +161,37 @@ export class OrgTranscript {
         return block('** Claude', escapeOrg(event.text))
       case 'assistant-thinking':
         return block('** Thinking', escapeOrg(event.text))
-      case 'tool-use':
+      case 'tool-use': {
         this.toolNames.set(event.toolUseId, event.name)
+        const command = event.input['command']
+        if (typeof command === 'string') this.toolCommands.set(event.toolUseId, command)
         return block(
           `** Tool: ${event.name}`,
           '#+begin_src json',
           escapeOrg(formatInput(event.input)),
           '#+end_src',
         )
+      }
       case 'tool-result': {
         const name = this.toolNames.get(event.toolUseId) ?? 'tool'
+        const command = this.toolCommands.get(event.toolUseId) ?? null
+        const heading = looksLikeEvidence(name, command, event.text)
+          ? toolEvidenceHeader(command, event.text, event.isError)
+          : `Result: ${name}${event.isError ? ' (error)' : ''}`
         return block(
-          `** Result: ${name}${event.isError ? ' (error)' : ''}`,
+          `** ${heading}`,
           '#+begin_example',
           escapeOrg(event.text.length === 0 ? '(no output)' : event.text),
           '#+end_example',
         )
       }
+      case 'evidence':
+        return block(
+          `** ${checkEvidenceHeader(event.command, event)}`,
+          '#+begin_example',
+          escapeOrg(event.output.trimEnd().length === 0 ? '(no output)' : event.output.trimEnd()),
+          '#+end_example',
+        )
       case 'started':
         return note(
           `Session started: ${event.model}, ${event.permissionMode} mode, in ${event.cwd}`,

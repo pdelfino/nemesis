@@ -364,8 +364,13 @@ main {
   color: var(--muted);
 }
 #transcript .tr-body[data-role='tool-use'],
-#transcript .tr-body[data-role='tool-result'] {
+#transcript .tr-body[data-role='tool-result'],
+#transcript .tr-body[data-role='evidence'] {
   background: color-mix(in srgb, var(--line) 35%, transparent);
+}
+/* Evidence (#81): a check's output, headed by its exit status, folded until asked for. */
+#transcript .tr-header[data-role='evidence'] {
+  color: #1d6b3a;
 }
 #transcript .tr-header[data-role='note'] {
   color: var(--muted);
@@ -394,5 +399,8 @@ main {
   }
   #transcript .tr-header[data-role='request'] {
     color: #f08a8a;
+  }
+  #transcript .tr-header[data-role='evidence'] {
+    color: #7fd39a;
   }
 }

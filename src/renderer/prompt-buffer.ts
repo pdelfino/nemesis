@@ -18,7 +18,9 @@ import { followAppearance } from './theme'
  * acts on three of the commands that come back, `send-prompt`, `compact`
  * (the text is the instruction of a `/compact`, #80) and `keyboard-quit`,
  * and binds `M-p`/`M-n` inside the editor, because walking the history is
- * editing, not a cockpit command.
+ * editing, not a cockpit command. Text a command adds to the prompt, the
+ * criterion of `attach-check` or the path of a screenshot (#81), arrives
+ * from the main process and is appended after what is typed.
  *
  * The draft, the history and the queue live in the main process, per session.
  * This buffer parks the draft as it changes and rebuilds itself from the main
@@ -128,6 +130,13 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
   // A reload must find the latest draft, not the one parked 200ms ago.
   window.addEventListener('pagehide', parkDraft)
 
+  // What a command adds goes after the text typed, on a paragraph of its own (#81).
+  window.nemesis.onPromptInsert((insert) => {
+    appendText(insert.text)
+    parkDraft()
+    say('Added to the prompt.')
+  })
+
   // The current buffer carries the point (#60): focus follows it.
   window.nemesis.onBuffersChanged((list) => {
     const current = list.buffers.find((buffer) => buffer.id === list.currentId)
@@ -140,6 +149,19 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: text },
       selection: { anchor: text.length },
+      scrollIntoView: true,
+    })
+  }
+
+  function appendText(text: string): void {
+    const end = view.state.doc.length
+    const typed = view.state.doc.toString()
+    const separator =
+      typed.length === 0 || typed.endsWith('\n\n') ? '' : typed.endsWith('\n') ? '\n' : '\n\n'
+    const insert = `${separator}${text}`
+    view.dispatch({
+      changes: { from: end, insert },
+      selection: { anchor: end + insert.length },
       scrollIntoView: true,
     })
   }

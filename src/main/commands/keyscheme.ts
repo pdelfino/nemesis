@@ -12,10 +12,13 @@ import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
 import { HelpBuffers } from '../help'
+import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
+import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
+import { describeSource, Verifier } from '../verify'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -24,9 +27,11 @@ import { defineKeymap, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
 import {
   askCodebasePrompt,
+  attachCheckPrompt,
   freshSessionPrompt,
   interviewPrompt,
   investigatePrompt,
+  screenshotPrompt,
 } from './guide-prompts'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
@@ -67,7 +72,13 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * `investigate` wraps it in the guide's "use subagents to investigate",
  * `interview` sends the guide's interview prompt; the spec the interview
  * ends with opens as a spec buffer, where `C-c C-c` is
- * `start-fresh-session-from-spec`.
+ * `start-fresh-session-from-spec`. The guide's first practice, a check the
+ * work is verified by (#81): `verify` on `C-c C-v` runs the attached
+ * issue's Verify command, else the settings' `verify`, else `npm run gate`,
+ * with the user's permissions, and the output lands as an evidence block;
+ * `attach-issue` reads the issue number; `attach-check` adds a criterion to
+ * the prompt, example cases and the check to run; `screenshot-window` puts
+ * a window of the screen in the prompt as an image.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -83,8 +94,8 @@ export interface CockpitDeps {
   readonly keys: KeyReader
   /** The current agent session, and the way to replace it (#84). */
   readonly agent: SessionManager
-  /** Where a prompt a command composes goes, like one the user typed (#84). */
-  readonly prompts: Pick<PromptQueue, 'submit'>
+  /** Where a prompt a command composes goes, like one the user typed (#84), or is added to (#81). */
+  readonly prompts: Pick<PromptQueue, 'submit' | 'insert'>
   /** The sessions folder, as `resume-session` lists and reads it (#67). */
   readonly sessions: SessionSource
   /** The transcripts on disk, as `search-transcripts` scans them (#69). */
@@ -95,6 +106,12 @@ export interface CockpitDeps {
   readonly plans: PlanBuffers
   /** The specs the agent writes at the end of an interview, as spec buffers (#85). */
   readonly specs: SpecBuffers
+  /** The check the verify key runs, and the evidence it produces (#81). */
+  readonly verifier: Verifier
+  /** The GitHub issue attached to the session, whose Verify section the check comes from (#81). */
+  readonly issues: IssueAttachment
+  /** The windows on the screen, as screenshot-window lists and captures them (#81). */
+  readonly screenshots: Screenshots
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -103,6 +120,12 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
   const agent =
     partial.agent ??
     new SessionManager({ cwd: process.cwd(), model: null, permissionHandler: permissions })
+  const issues =
+    partial.issues ??
+    new IssueAttachment({
+      cwd: process.cwd(),
+      fetch: () => Promise.reject(new CommandError('No issue fetcher is installed')),
+    })
   return {
     buffers,
     permissions,
@@ -124,6 +147,27 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.plans ??
       new PlanBuffers(buffers, permissions, { leavePlanMode: () => agent.leavePlanMode() }),
     specs: partial.specs ?? new SpecBuffers(buffers),
+    // Without the app there is no gh login, no shell to run a check in and no screen.
+    issues,
+    verifier:
+      partial.verifier ??
+      new Verifier({
+        cwd: process.cwd(),
+        settingsCommand: null,
+        issueBody: () => issues.current?.body ?? null,
+        run: () =>
+          Promise.resolve({
+            exitCode: null,
+            signal: null,
+            output: 'No check runner is installed\n',
+          }),
+      }),
+    screenshots:
+      partial.screenshots ??
+      new Screenshots({
+        dir: process.cwd(),
+        capturer: { list: () => Promise.resolve([]), capture: () => Promise.resolve(null) },
+      }),
   }
 }
 
@@ -150,7 +194,15 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     diffs,
     plans,
     specs,
+    verifier,
+    issues,
+    screenshots,
   } = deps
+  /** A command that composed text for the prompt gives it the point, so the text is seen. */
+  const switchToPrompt = (): void => {
+    const prompt = buffers.list().find((buffer) => buffer.kind === 'prompt')
+    if (prompt !== undefined) buffers.switchTo(prompt.id)
+  }
   return [
     defineCommand({
       name: 'execute-command',
@@ -406,6 +458,79 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'verify',
+      doc: "Run the project's check with your permissions: the attached issue's Verify command, else the settings' verify, else npm run gate; the output lands as evidence.",
+      run: () => {
+        // The check is a child of the cockpit, never a tool call of the
+        // agent: no permission rule is consulted and none is relaxed (#81).
+        const running = verifier.running
+        if (running !== null)
+          throw new CommandError(`A check is already running: ${running.command}`)
+        verifier.verify().catch(report('verify'))
+      },
+    }),
+    defineCommand({
+      name: 'attach-issue',
+      doc: 'Attach a GitHub issue to the session by number; its Verify section is what the verify key runs first.',
+      run: () => {
+        // A refused number or a gh failure is answered in the help buffer,
+        // since the palette has closed by the time it is known.
+        prompter.read(
+          { source: 'issue-number', prompt: 'Attach issue:', freeText: true },
+          async (text) => {
+            try {
+              await issues.attach(text)
+            } catch (error) {
+              help.show(
+                `Could not attach the issue: ${error instanceof Error ? error.message : String(error)}`,
+              )
+            }
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'attach-check',
+      doc: 'Add a verification criterion to the prompt: example cases, and the check to run after implementing.',
+      run: () => {
+        // Two reads, the guide's before and after: the cases as free text,
+        // then the check, where the one the verify key would run is the
+        // candidate and anything else typed is taken as is.
+        prompter.read(
+          { source: 'check-cases', prompt: 'Example cases (input is output):', freeText: true },
+          (cases) => {
+            prompter.read(
+              { source: 'check', prompt: 'Run after implementing:', freeText: true },
+              (check) => {
+                prompts.insert(attachCheckPrompt(cases, check))
+                switchToPrompt()
+              },
+            )
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'screenshot-window',
+      doc: 'Capture a window on the screen into the prompt as an image, to verify a UI change visually.',
+      run: () => {
+        screenshots
+          .refresh()
+          .then((windows) => {
+            if (windows.length === 0) {
+              help.show('No window to capture: the system listed none.')
+              return
+            }
+            prompter.read({ source: 'windows', prompt: 'Screenshot window:' }, async (id) => {
+              const shot = await screenshots.take(id)
+              prompts.insert(screenshotPrompt(shot.name, shot.path))
+              switchToPrompt()
+            })
+          })
+          .catch(report('screenshot-window'))
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -480,7 +605,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * and the two reads of a search (#69): the query, over nothing, since the
  * text typed is the answer, and the matches of the last search; and the
  * diffs of the session (#68), oldest first; and the one line the three
- * guideline commands read (#85), over nothing, like a search query.
+ * guideline commands read (#85), over nothing, like a search query; and the
+ * reads of the verify practice (#81): an issue number and the example cases
+ * over nothing, the check with the one the verify key would run as its
+ * candidate, and the windows on the screen as of the last refresh.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -489,6 +617,8 @@ export function cockpitSources(
   sessions: SessionSource,
   transcripts: TranscriptSearch,
   diffs: DiffBuffers,
+  verifier: Verifier,
+  screenshots: Screenshots,
 ): readonly PaletteSource[] {
   return [
     {
@@ -564,6 +694,36 @@ export function cockpitSources(
           doc: describeDiff(diff),
         })),
     },
+    {
+      name: 'issue-number',
+      candidates: () => [],
+    },
+    {
+      name: 'check-cases',
+      candidates: () => [],
+    },
+    {
+      name: 'check',
+      candidates: () => {
+        const check = verifier.command()
+        return [
+          {
+            id: check.command,
+            label: check.command,
+            doc: `The check C-c C-v runs, ${describeSource(check.source)}. Type another to use it instead.`,
+          },
+        ]
+      },
+    },
+    {
+      name: 'windows',
+      candidates: () =>
+        screenshots.windows.map((window) => ({
+          id: window.id,
+          label: window.name.length === 0 ? '(untitled window)' : window.name,
+          doc: `Window ${window.id}`,
+        })),
+    },
   ]
 }
 
@@ -585,6 +745,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-l': 'clear',
   'C-c C-k': 'compact',
   'C-c C-p': 'toggle-plan-mode',
+  'C-c C-v': 'verify',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
@@ -645,6 +806,8 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.sessions,
     deps.transcripts,
     deps.diffs,
+    deps.verifier,
+    deps.screenshots,
   )) {
     deps.prompter.addSource(source)
   }

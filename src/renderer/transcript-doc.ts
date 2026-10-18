@@ -20,6 +20,7 @@ import {
 } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import type { AgentEvent, AgentQuestion } from '../shared/agent'
+import { checkEvidenceHeader, looksLikeEvidence, toolEvidenceHeader } from '../shared/evidence'
 
 /**
  * The transcript as a document (#62): the pure half of the transcript buffer.
@@ -30,7 +31,10 @@ import type { AgentEvent, AgentQuestion } from '../shared/agent'
  * buffer, and copying a region yields the words on the screen and nothing
  * else. Markdown is highlighted, not rendered. What happened inside a
  * subagent (#85) is a child block: marked as such, folded on arrival, so an
- * investigation delegated there leaves the main view clean.
+ * investigation delegated there leaves the main view clean. Evidence (#81),
+ * the check the verify key ran or a tool result that reads like a test or
+ * build run, is a block of its own: the exit status in the header, the
+ * output folded under it, so a reviewer reads the verdict first.
  *
  * Nothing here touches a window: the unit tests build an EditorState from
  * transcriptExtensions() and run transactionFor() over it. The view, the
@@ -38,7 +42,7 @@ import type { AgentEvent, AgentQuestion } from '../shared/agent'
  */
 
 export type BlockKind =
-  'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'request' | 'note'
+  'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'request' | 'note' | 'evidence'
 
 /** One block: a header line, then zero or more body lines. Positions are in the document. */
 export interface TranscriptBlock {
@@ -58,6 +62,8 @@ export interface TranscriptState {
   readonly decorations: DecorationSet
   /** Tool names by tool-use id, so a result says which tool answered. */
   readonly toolNames: ReadonlyMap<string, string>
+  /** The command of a shell tool call by tool-use id, so its result can be read as evidence (#81). */
+  readonly toolCommands: ReadonlyMap<string, string>
   /** The last block is an assistant block still taking text. */
   readonly open: boolean
 }
@@ -66,7 +72,7 @@ export interface TranscriptState {
 const FOLD_LINES = 6
 
 const HEADERS: Readonly<
-  Record<Exclude<BlockKind, 'tool-use' | 'tool-result' | 'request' | 'note'>, string>
+  Record<Exclude<BlockKind, 'tool-use' | 'tool-result' | 'request' | 'note' | 'evidence'>, string>
 > = {
   user: 'You',
   assistant: 'Claude',
@@ -83,7 +89,11 @@ const blockAdded = StateEffect.define<TranscriptBlock>({
 /** The open assistant block took more text and now ends at `to`. */
 const blockExtended = StateEffect.define<number>({ map: (to, mapping) => mapping.mapPos(to) })
 /** A tool was called; its result will be paired by id. */
-const toolNamed = StateEffect.define<{ readonly id: string; readonly name: string }>()
+const toolNamed = StateEffect.define<{
+  readonly id: string
+  readonly name: string
+  readonly command: string | null
+}>()
 /** The turn ended, so the next assistant text starts a block of its own. */
 const blockClosed = StateEffect.define<null>()
 
@@ -98,9 +108,15 @@ function mapBlock(block: TranscriptBlock, mapping: ChangeDesc): TranscriptBlock 
 }
 
 export const transcriptField = StateField.define<TranscriptState>({
-  create: () => ({ blocks: [], decorations: Decoration.none, toolNames: new Map(), open: false }),
+  create: () => ({
+    blocks: [],
+    decorations: Decoration.none,
+    toolNames: new Map(),
+    toolCommands: new Map(),
+    open: false,
+  }),
   update(value, tr) {
-    let { blocks, decorations, toolNames, open } = value
+    let { blocks, decorations, toolNames, toolCommands, open } = value
     if (tr.docChanged) {
       blocks = blocks.map((block) => mapBlock(block, tr.changes))
       decorations = decorations.map(tr.changes)
@@ -127,11 +143,14 @@ export const transcriptField = StateField.define<TranscriptState>({
         })
       } else if (effect.is(toolNamed)) {
         toolNames = new Map(toolNames).set(effect.value.id, effect.value.name)
+        if (effect.value.command !== null) {
+          toolCommands = new Map(toolCommands).set(effect.value.id, effect.value.command)
+        }
       } else if (effect.is(blockClosed)) {
         open = false
       }
     }
-    return { blocks, decorations, toolNames, open }
+    return { blocks, decorations, toolNames, toolCommands, open }
   },
   provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
 })
@@ -180,13 +199,28 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
     case 'tool-use':
       return appendBlock(state, 'tool-use', `Tool: ${event.name}`, formatInput(event.input), {
         fold: 'long',
-        effects: [toolNamed.of({ id: event.toolUseId, name: event.name })],
+        effects: [
+          toolNamed.of({ id: event.toolUseId, name: event.name, command: commandOf(event.input) }),
+        ],
       })
     case 'tool-result': {
       const name = transcript.toolNames.get(event.toolUseId) ?? 'tool'
-      const header = `Result: ${name}${event.isError ? ' (error)' : ''}`
+      const command = transcript.toolCommands.get(event.toolUseId) ?? null
       const body = event.text.length === 0 ? '(no output)' : event.text
+      // A check the agent ran is evidence: headed by its status, folded (#81).
+      if (looksLikeEvidence(name, command, event.text)) {
+        const header = toolEvidenceHeader(command, event.text, event.isError)
+        return appendBlock(state, 'evidence', header, body.trimEnd(), { fold: true })
+      }
+      const header = `Result: ${name}${event.isError ? ' (error)' : ''}`
       return appendBlock(state, 'tool-result', header, body, { fold: 'long' })
+    }
+    case 'evidence': {
+      // The check the verify key ran (#81): exit code and duration in the header.
+      const body = event.output.trimEnd().length === 0 ? '(no output)' : event.output.trimEnd()
+      return appendBlock(state, 'evidence', checkEvidenceHeader(event.command, event), body, {
+        fold: true,
+      })
     }
     case 'started':
       return appendBlock(
@@ -255,7 +289,10 @@ function childTransaction(
         'tool-use',
         `Subagent tool: ${event.name}`,
         formatInput(event.input),
-        { ...options, effects: [toolNamed.of({ id: event.toolUseId, name: event.name })] },
+        {
+          ...options,
+          effects: [toolNamed.of({ id: event.toolUseId, name: event.name, command: null })],
+        },
       )
     case 'tool-result': {
       const name = transcript.toolNames.get(event.toolUseId) ?? 'tool'
@@ -348,6 +385,12 @@ function follow(state: EditorState, spec: TransactionSpec): TransactionSpec {
   if (!main.empty || main.head !== state.doc.length) return stamped
   const end = state.changes(spec.changes).newLength
   return { ...stamped, selection: { anchor: end }, scrollIntoView: true }
+}
+
+/** The command a shell tool call carries, as data for the evidence header; null for any other call. */
+function commandOf(input: Record<string, unknown>): string | null {
+  const command = input['command']
+  return typeof command === 'string' ? command : null
 }
 
 /** Tool arguments as data on the page, one JSON document, never run or interpreted. */

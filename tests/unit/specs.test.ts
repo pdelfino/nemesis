@@ -182,7 +182,10 @@ describe('the three commands and the fresh session', () => {
       prompter,
       specs,
       agent,
-      prompts: { submit: submit as unknown as (text: string) => Promise<never> },
+      prompts: {
+        submit: submit as unknown as (text: string) => Promise<never>,
+        insert: () => undefined,
+      },
     })
     const registry = createCockpitRegistry(deps)
     return { buffers, prompter, submit, specs, agent, registry }

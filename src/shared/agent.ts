@@ -67,3 +67,16 @@ export interface TranscriptGoto {
 
 /** The main process pushes a line for the transcript buffer to move its point to. */
 export const TRANSCRIPT_GOTO_CHANNEL = 'nemesis:transcript-goto' as const
+
+/**
+ * Text a command adds to the prompt being composed (#81): a verification
+ * criterion from `attach-check`, the path of a screenshot. The editor in
+ * the window holds the draft, so the text goes there and is appended after
+ * what is typed; the main process never rewrites the draft itself.
+ */
+export interface PromptInsert {
+  readonly text: string
+}
+
+/** The main process pushes text for the prompt buffer to append. */
+export const PROMPT_INSERT_CHANNEL = 'nemesis:prompt-insert' as const

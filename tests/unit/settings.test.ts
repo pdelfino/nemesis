@@ -19,6 +19,7 @@ describe('the settings schema', () => {
       model: null,
       keyscheme: 'cockpit',
       theme: 'system',
+      verify: null,
     })
   })
 
@@ -33,6 +34,12 @@ describe('the settings schema', () => {
     )
     expect(parseSettings({ theme: 'dark' }, defaults)).toEqual({ ...defaults, theme: 'dark' })
     expect(parseSettings({ theme: 'light' }, defaults).theme).toBe('light')
+    // The check the verify key runs when no issue names one (#81), as typed in a terminal.
+    expect(parseSettings({ verify: 'npm test' }, defaults)).toEqual({
+      ...defaults,
+      verify: 'npm test',
+    })
+    expect(parseSettings({ verify: null }, defaults).verify).toBeNull()
   })
 
   it('expands a leading ~ in the sessions folder', () => {
@@ -59,12 +66,14 @@ describe('the settings schema', () => {
     )
     expect(() => parseSettings({ theme: 'Dark' }, defaults)).toThrow(/"theme"/)
     expect(() => parseSettings({ theme: true }, defaults)).toThrow(/"theme"/)
+    expect(() => parseSettings({ verify: '' }, defaults)).toThrow(/"verify" is not a command/)
+    expect(() => parseSettings({ verify: ['npm', 'test'] }, defaults)).toThrow(/"verify"/)
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system"\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -101,6 +110,7 @@ describe('the settings file', () => {
       model: null,
       keyscheme: 'cockpit',
       theme: 'system',
+      verify: null,
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

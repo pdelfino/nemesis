@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   AGENT_EVENT_CHANNEL,
   PROMPT_DRAFT_CHANNEL,
+  PROMPT_INSERT_CHANNEL,
   PROMPT_QUEUE_CHANNEL,
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
@@ -60,6 +61,7 @@ const base = {
   onPlanShown: (listener) => on(PLAN_SHOWN_CHANNEL, listener),
   answerPlan: (answer) => invoke(PLAN_ANSWER_CHANNEL, answer),
   onSpecShown: (listener) => on(SPEC_SHOWN_CHANNEL, listener),
+  onPromptInsert: (listener) => on(PROMPT_INSERT_CHANNEL, listener),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

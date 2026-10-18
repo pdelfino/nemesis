@@ -26,6 +26,12 @@ export interface Settings {
    * sees it as `prefers-color-scheme` and never reads the settings (#33).
    */
   readonly theme: Theme
+  /**
+   * The check the `verify` key runs when no attached issue names one (#81),
+   * as typed in a terminal: `npm test`, `make check`. `null` leaves it to
+   * the default, `npm run gate`.
+   */
+  readonly verify: string | null
 }
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -37,7 +43,7 @@ const KEYSCHEMES: readonly string[] = ['cockpit']
 
 const THEMES: readonly Theme[] = ['system', 'light', 'dark']
 
-const KNOWN_KEYS: readonly string[] = ['sessionsDir', 'model', 'keyscheme', 'theme']
+const KNOWN_KEYS: readonly string[] = ['sessionsDir', 'model', 'keyscheme', 'theme', 'verify']
 
 export class SettingsError extends Error {
   override readonly name = 'SettingsError'
@@ -50,6 +56,7 @@ export function defaultSettings(documentsDir: string): Settings {
     model: null,
     keyscheme: 'cockpit',
     theme: 'system',
+    verify: null,
   }
 }
 
@@ -92,7 +99,12 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError(`Setting "theme" is not one of ${THEMES.join(', ')}`)
   }
 
-  return { sessionsDir: expanded, model, keyscheme, theme }
+  const verify = value['verify'] ?? defaults.verify
+  if (verify !== null && (typeof verify !== 'string' || verify.trim().length === 0)) {
+    throw new SettingsError('Setting "verify" is not a command or null')
+  }
+
+  return { sessionsDir: expanded, model, keyscheme, theme, verify }
 }
 
 /**
@@ -126,6 +138,7 @@ export function serializeSettings(settings: Settings): string {
     model: settings.model,
     keyscheme: settings.keyscheme,
     theme: settings.theme,
+    verify: settings.verify,
   }
   return `${JSON.stringify(body, null, 2)}\n`
 }

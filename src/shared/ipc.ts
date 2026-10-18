@@ -13,9 +13,11 @@ import type {
   AGENT_EVENT_CHANNEL,
   AgentEvent,
   PROMPT_DRAFT_CHANNEL,
+  PROMPT_INSERT_CHANNEL,
   PROMPT_QUEUE_CHANNEL,
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
+  PromptInsert,
   PromptQueueState,
   PromptReceipt,
   PromptState,
@@ -81,6 +83,7 @@ export interface PushChannels {
   readonly [DIFF_SHOWN_CHANNEL]: DiffContent
   readonly [PLAN_SHOWN_CHANNEL]: PlanContent
   readonly [SPEC_SHOWN_CHANNEL]: SpecContent
+  readonly [PROMPT_INSERT_CHANNEL]: PromptInsert
 }
 
 export type InvokeChannel = keyof InvokeChannels

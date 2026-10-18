@@ -118,6 +118,91 @@ describe('the transcript document', () => {
     expect(folds(state)).toEqual(['\nout loud', `\n${long.text}`])
   })
 
+  it('shows a check the agent ran as an evidence block, folded, with its status in the header (#81)', () => {
+    const test: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 't1',
+      name: 'Bash',
+      input: { command: 'npm test -- auth' },
+    }
+    const passed: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 't1',
+      isError: false,
+      text: ' Tests  3 passed (3)\n',
+    }
+    const list: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 't2',
+      name: 'Bash',
+      input: { command: 'ls' },
+    }
+    const listed: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 't2',
+      isError: false,
+      text: 'a\nb',
+    }
+    const build: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 't3',
+      name: 'Bash',
+      input: { command: 'cat build.log' },
+    }
+    const failed: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 't3',
+      isError: true,
+      text: 'error TS2322: wrong\nExit code 2',
+    }
+    const state = append(empty(), test, passed, list, listed, build, failed)
+    const text = state.doc.toString()
+    // The command named a check: evidence, headed passed, the output folded.
+    expect(text).toContain('Evidence: npm test -- auth (passed)\n Tests  3 passed (3)')
+    // A listing is a plain result.
+    expect(text).toContain('Result: Bash\na\nb')
+    // The output read like a build: evidence, with the exit code the result named.
+    expect(text).toContain('Evidence: cat build.log (exit 2)\nerror TS2322: wrong\nExit code 2')
+    expect(state.field(transcriptField).blocks.map((block) => block.kind)).toEqual([
+      'tool-use',
+      'evidence',
+      'tool-use',
+      'tool-result',
+      'tool-use',
+      'evidence',
+    ])
+    expect(folds(state)).toEqual(['\n Tests  3 passed (3)', '\nerror TS2322: wrong\nExit code 2'])
+  })
+
+  it('shows the check the verify key ran as evidence with the exit code and the duration (#81)', () => {
+    const evidence: AgentEvent = {
+      type: 'evidence',
+      command: 'npm run gate',
+      source: 'settings',
+      exitCode: 1,
+      signal: null,
+      durationMs: 12_345,
+      output: 'lint failed\n',
+    }
+    const silent: AgentEvent = { ...evidence, exitCode: 0, durationMs: 40, output: '' }
+    const state = append(empty(), evidence, silent)
+    expect(state.doc.toString()).toBe(
+      'Evidence: npm run gate (exit 1, 12.3s)\nlint failed\n\nEvidence: npm run gate (exit 0, 0.0s)\n(no output)',
+    )
+    expect(folds(state)).toEqual(['\nlint failed', '\n(no output)'])
+    const roles: string[] = []
+    state.field(transcriptField).decorations.between(0, state.doc.length, (_from, _to, deco) => {
+      const spec = deco.spec as { class: string; attributes: { 'data-role': string } }
+      roles.push(`${spec.class} ${spec.attributes['data-role']}`)
+    })
+    expect(roles).toEqual([
+      'tr-header evidence',
+      'tr-body evidence',
+      'tr-header evidence',
+      'tr-body evidence',
+    ])
+  })
+
   it('shows what happened inside a subagent as child blocks, folded, that never take the main reply (#85)', () => {
     const agent: AgentEvent = {
       type: 'tool-use',

@@ -27,6 +27,9 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *   `tool: Name`  a tool call named `Name` through `canUseTool`, then the reply
  *   `edit: ...`   an Edit call on /mock/notes.txt through `canUseTool`, the
  *                 line `beta` replaced by the text, then the reply (#68)
+ *   `check: ...`  a Bash call of `npm test -- <text>` through `canUseTool`,
+ *                 its result a test runner's summary, so the transcript has
+ *                 a tool result that reads as evidence (#81)
  *   `ask: ...`    an AskUserQuestion with three options through `canUseTool`,
  *                 then `You chose: <answer>` (#63)
  *   `plan: ...`   an ExitPlanMode call through `canUseTool` with a two-step
@@ -291,6 +294,26 @@ class MockQuery implements AgentQueryHandle {
       const allowed = decision.behavior === 'allow'
       yield this.toolResult(toolUseId, allowed ? 'Edit ran' : decision.message, !allowed)
       const reply = allowed ? 'Edited notes.txt.' : 'Did not edit notes.txt.'
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
+      return
+    }
+
+    if (prompt.startsWith('check:')) {
+      const what = prompt.slice(6).trim() || 'auth'
+      const toolUseId = `mock-tool-${this.turns}`
+      const input = { command: `npm test -- ${what}`, description: `Run the ${what} tests` }
+      yield this.assistant([{ type: 'tool_use', id: toolUseId, name: 'Bash', input }])
+      const decision = await this.ask('Bash', input)
+      const allowed = decision.behavior === 'allow'
+      yield this.toolResult(
+        toolUseId,
+        allowed
+          ? ` Test Files  1 passed (1)\n      Tests  3 passed (3)\n   Duration  0.42s\n`
+          : decision.message,
+        !allowed,
+      )
+      const reply = allowed ? `Ran the ${what} tests.` : `Did not run the ${what} tests.`
       yield this.assistant([{ type: 'text', text: reply, citations: null }])
       yield this.result(reply)
       return

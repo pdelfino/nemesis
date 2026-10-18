@@ -45,6 +45,25 @@ export function freshSessionPrompt(filePath: string, spec: string): string {
   ].join('\n')
 }
 
+/**
+ * A verification criterion for the prompt being composed (#81), after the
+ * guide's own before and after: the example cases, input and expected
+ * output, and the check to run after implementing, so the agent closes the
+ * loop itself and shows the output rather than a summary.
+ */
+export function attachCheckPrompt(cases: string, check: string): string {
+  return `Example cases: ${oneLine(cases)}. Run \`${oneLine(check)}\` after implementing, show its output, and iterate until it passes.`
+}
+
+/**
+ * A screenshot in the prompt (#81): the path of the image the cockpit wrote
+ * and what to do with it, the guide's "take a screenshot of the result and
+ * compare it". The agent reads the file as an image through its Read tool.
+ */
+export function screenshotPrompt(windowName: string, filePath: string): string {
+  return `Screenshot of the window "${oneLine(windowName)}" at ${filePath}: read it as an image and compare it with what was asked; list the differences.`
+}
+
 /** The description is one line in the prompt, whatever the palette gave. */
 function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim()

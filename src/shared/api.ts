@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  PromptInsert,
   PromptQueueState,
   PromptReceipt,
   PromptState,
@@ -54,6 +55,8 @@ export interface NemesisApi {
   answerPlan(answer: PlanAnswer): Promise<void>
   /** A spec buffer has content: the agent wrote the spec of an interview (#85). */
   onSpecShown(listener: (content: SpecContent) => void): void
+  /** A command adds text to the prompt being composed: attach-check, screenshot-window (#81). */
+  onPromptInsert(listener: (insert: PromptInsert) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

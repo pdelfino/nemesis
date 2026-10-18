@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeTheme, session, shell } from 'electron'
+import { app, BrowserWindow, desktopCapturer, nativeTheme, session, shell } from 'electron'
 import { join } from 'node:path'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
@@ -21,8 +21,10 @@ import {
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import { DiffBuffers } from './diffs'
+import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installMenu } from './menu'
 import { PlanBuffers } from './plans'
+import { Screenshots, SCREENSHOTS_FOLDER } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
 import { describeExternal, ExternalPolicy } from './security/external'
@@ -43,6 +45,7 @@ import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
+import { Verifier } from './verify'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
@@ -167,6 +170,9 @@ const REQUEST_LOG = '__nemesisRequests'
 /** The URLs handed to the system, for the downloads spec (#51). Main process only, under test only. */
 const EXTERNAL_LOG = '__nemesisExternal'
 
+/** A window screenshot is scaled to fit this (#81): enough to read a UI, small enough to send. */
+const SCREENSHOT_SIZE = { width: 1920, height: 1200 }
+
 /** One stream of the cockpit's own notices out of several policies. */
 function mergeNotices(...sources: readonly EventSource[]): EventSource {
   return {
@@ -255,11 +261,54 @@ void app.whenReady().then(() => {
   // Live events only: a resumed history reopens no spec.
   const specs = new SpecBuffers(buffers)
   agent.on((event) => specs.observe(event))
+  // The verify key (#81): the check of the attached issue, else the settings'
+  // verify entry, else npm run gate, run as a child of the cockpit with the
+  // user's permissions in the folder it was started in, never through the
+  // agent's tool path. The issue comes through the user's own gh login.
+  const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
+  const verifier = new Verifier({
+    cwd: process.cwd(),
+    settingsCommand: settings.verify,
+    issueBody: () => issues.current?.body ?? null,
+  })
+  // A window of the screen into the prompt as an image (#81): the system's
+  // capture under the user's screen-recording permission, the file written
+  // under the sessions folder, the one place session data goes.
+  const screenshots = new Screenshots({
+    dir: join(settings.sessionsDir, SCREENSHOTS_FOLDER),
+    capturer: {
+      list: async () =>
+        (
+          await desktopCapturer.getSources({
+            types: ['window'],
+            thumbnailSize: { width: 0, height: 0 },
+          })
+        ).map((source) => ({ id: source.id, name: source.name })),
+      capture: async (id) => {
+        const sources = await desktopCapturer.getSources({
+          types: ['window'],
+          thumbnailSize: SCREENSHOT_SIZE,
+        })
+        const source = sources.find((candidate) => candidate.id === id)
+        return source === undefined || source.thumbnail.isEmpty() ? null : source.thumbnail.toPNG()
+      },
+    },
+  })
   const prompts = installSessionBridge({
     agent,
     permissions,
     recorder,
-    notices: mergeNotices(permissionPolicy, downloads, external, diffs, plans, specs),
+    notices: mergeNotices(
+      permissionPolicy,
+      downloads,
+      external,
+      diffs,
+      plans,
+      specs,
+      issues,
+      verifier,
+      screenshots,
+    ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
@@ -274,6 +323,9 @@ void app.whenReady().then(() => {
     diffs,
     plans,
     specs,
+    verifier,
+    issues,
+    screenshots,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
