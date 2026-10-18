@@ -1,0 +1,361 @@
+#+TITLE: Nyxt study 03: modes, and what a mode object would add to the Nemesis keyscheme layers
+#+OPTIONS: toc:nil
+
+- Issue: #14 (feeds ADR 0004, #22, and the M4 page buffers, #73)
+- Nyxt read at: =~/projects/nyxt= at =fb49be5=, files =source/mode.lisp=,
+  =source/buffer.lisp=, =source/input.lisp=, =source/mode/base.lisp=,
+  =source/mode/keyscheme.lisp=, =source/mode/emacs.lisp=,
+  =source/mode/vi.lisp=, =source/mode/passthrough.lisp=,
+  =source/mode/document.lisp=, =source/mode/hint.lisp=,
+  =source/mode/blocker.lisp=, =source/mode/reading-line.lisp=,
+  =source/mode/no-script.lisp=, =source/mode/visual.lisp=
+- Nemesis read at: main after #95 (=src/main/commands/keyscheme.ts=,
+  =src/main/commands/keymap.ts=, =src/main/commands/registry.ts=,
+  =src/shared/buffers.ts=, =src/shared/keys.ts=)
+
+A note on the sources the issue named. This checkout has no =repl= mode, no
+=reader= mode and no auto-rules file: =source/mode/= holds 43 files and none
+of those three is among them, and a search of =source/= for auto rules, a
+reader mode or a repl mode finds nothing. The closest things that do exist
+are named where they matter below (=reading-line-mode= for reading,
+=default-modes= and =enable-page-mode= for choosing modes), and the
+"enabled by URL" question is answered as an absence, not guessed at. If the
+rules file lives in a newer Nyxt, this study does not describe it.
+
+* How Nyxt modes work
+
+** The mode is a class, one instance per buffer
+
+=mode.lisp= defines =mode= with =define-class=, an =nclasses= macro over CLOS,
+and every mode is a subclass made with =define-mode=, a thin macro that adds
+the =mode= superclass and the =mode-class= metaclass. A mode instance holds
+its =buffer=, an =enabled-p= flag, =visible-in-status-p= and a =glyph= for the
+status line, an =enable-hook= and a =disable-hook=, and a =keyscheme-map=. The
+class itself is abstract: an =initialize-instance= method errors when anyone
+instantiates =mode= directly. The instance belongs to one buffer, so state
+lives on the mode object: =hint-mode= keeps its alphabet and selector,
+=blocker-mode= keeps its hostlists and the table of blocked hosts,
+=keyscheme-mode= keeps =previous-keyscheme= to restore on disable.
+
+The buffer side is =modable-buffer= in =buffer.lisp=: a =modes= list of
+instances, an =enable-mode-hook= and a =disable-mode-hook=, and a
+=page-mode= slot for the one mode an internal page turns on and the buffer
+turns off when the user navigates away (=enable-page-mode= and
+=disable-page-mode=). Only a =modable-buffer= has modes; the generic =modes=
+and =enabled-modes= answer nil for any other buffer, so callers never test
+first. A prompt buffer is a modable buffer too, which is how the prompt gets
+its own keymap through the same machinery (=source/mode/prompt-buffer.lisp=).
+
+** Lifecycle: enable, disable, toggle
+
+=enable= and =disable= are generic functions with the custom =cascade= method
+combination: the mode's own method runs, then each parent mode's method, so a
+subclass adds setup without calling =call-next-method= and a parent's setup
+cannot be forgotten. Around them, =mode.lisp= wraps fixed behaviour:
+
+1. =enable :before= copies keyword arguments onto the slots they initialise.
+2. =enable :around= refuses to enable a second instance of the same class in
+   the same buffer and logs it instead. One instance per class per buffer is
+   the invariant that makes =find-submode= meaningful.
+3. =enable :after= sets =enabled-p=, runs the mode's =enable-hook=, pushes the
+   instance on the front of =modes= if it is new, runs the buffer's
+   =enable-mode-hook=, and re-renders a prompt buffer if that is the visible
+   one.
+4. =disable :around= only proceeds if =enabled-p= is true, otherwise it echoes
+   a warning. =disable :after= clears the flag and runs the two disable hooks.
+   The instance stays in =modes=; a TODO in the file says so. "Enabled" is a
+   flag, not membership, which is why every keymap and hook walk goes through
+   =enabled-modes=, the filtered list.
+
+The user-facing verbs sit on top. =enable-modes*= and =disable-modes*= take
+mode symbols and buffers, create the instance on first use or reuse the
+existing one (so a disabled mode keeps its slot values across a re-enable),
+and apply =enable= or =disable=. =toggle-mode= flips on =enabled-p=, with an
+optional =activate= argument to force a direction, and the commands
+=enable-modes=, =disable-modes= and =toggle-modes= prompt through the mode
+sources (=mode-source=, =active-mode-source=, =inactive-mode-source=), the
+last of which lists exactly the modes not yet enabled in every chosen buffer.
+
+The metaclass =mode-class= earns its keep here: unless a mode says
+=(:toggler-command-p nil)=, defining the class also defines a global command
+of the same name that calls =toggle-mode=, through
+=define-or-undefine-command-for-mode=. Every mode is therefore on the
+command palette as soon as it exists. =base-mode=, =keyscheme-mode= and the
+keyscheme modes opt out, because toggling them alone makes no sense.
+
+Mode code reacts to the buffer's life through generic functions specialised on
+the mode class, not through registered callbacks. =vi.lisp= defines
+=on-signal-load-finished=, =on-signal-button-press= and =on-signal-key-press=
+methods for =vi-normal-mode= and =vi-insert-mode=; =no-script.lisp= defines
+=on-signal-load-started= for =no-script-mode=; =reading-line.lisp= re-enables
+itself on load finished. The buffer dispatches the signal to each enabled
+mode, and the mode that has no method ignores it.
+
+** The mixin pattern, and what it gives that a plain object would not
+
+A mode is a CLOS class, so combining behaviours is inheritance plus method
+combination, and the file shows five distinct uses:
+
+- *Extending a mode.* =visual-mode= is a =hint-mode=
+  (=source/mode/visual.lisp=) and inherits the hint alphabet, selector and
+  placement; =dark-mode= is a =style-mode= (=source/mode/style.lisp=);
+  =repeat-mode= is a =process-mode=. The subclass overrides slot defaults and
+  the cascade runs both setups.
+- *A capability for a family.* Every mode that sets a keyscheme inherits
+  =keyscheme-mode=. Its =enable :before= disables the other enabled keyscheme
+  modes in the buffer and records =previous-keyscheme=, so exactly one is on
+  and disable puts the old one back (=source/mode/keyscheme.lisp=).
+  =emacs-mode= is that class with a glyph and a scheme and no code
+  (=source/mode/emacs.lisp=), and =vi-normal-mode= is the same plus keys.
+- *Variants by subclassing.* The blocker docs show a user defining
+  =my-blocker-mode= as a subclass that overrides the =hostlists= slot, then
+  naming it in =default-modes= (=source/mode/blocker.lisp=). The variant
+  carries its own name, toggler command and status glyph.
+- *Methods that read the instance.* =request-resource-block= in
+  =blocker.lisp= is a hook handler that does =find-submode= to reach the
+  buffer's blocker and read its table, so one function serves every buffer
+  and each buffer's configuration differs.
+- *Hooks on the object.* A mode's =enable= installs a handler on a buffer
+  hook and its =disable= removes it (=blocker-mode= adds and removes
+  =request-resource-block= on =request-resource-hook=;
+  =passthrough-mode= flips =forward-input-events-p=;
+  =no-script-mode= restores JavaScript). Enable and disable are the
+  transaction boundary, and because they cascade, a parent's installs are
+  undone by the same call.
+
+What a plain object with an =enable()= and a =disable()= would lack: cascade
+without the subclass remembering to call super; find by family
+(=find-submode= matches subclasses, so asking for =hint-mode= finds a
+=visual-mode=); a free command, status entry and prompt source per class;
+and symbol-level override, because the user's =define-configuration= names a
+class and replaces it in =default-modes= without touching the original. What
+it costs is the CLOS and metaclass machinery, a flag-based "enabled" that
+every walk must filter, and an invariant (one instance per class) enforced in
+an =:around= method instead of by construction. A TypeScript port gets
+cascade and find-by-family from an explicit parent chain and a
+=kind: string[]= tag if it wants them, and does not need the rest.
+
+** Keymap stacking: who wins and who yields
+
+Each mode owns a =keyscheme-map=, a table from keyscheme to keymap built by
+=define-keyscheme-map= (the nkeymaps side is in =04-keymaps.org=). The mode's
+=keymap= method in =mode.lisp= picks the entry for the buffer's current
+keyscheme, falling back through the scheme's parents when the mode defines
+none. =current-keymaps= in =source/input.lisp= then does:
+
+#+begin_example
+keymaps = (delete nil (mapcar #'keymap (enabled-modes buffer)))
+keymaps = run (current-keymaps-hook buffer) over keymaps   ; may reorder or add
+lookup-key key-stack keymaps                               ; first keymap that answers wins
+#+end_example
+
+So the order of =modes= is the priority order, and =enable :after= conses a
+new instance on the front: the mode enabled last is consulted first. Buffer
+creation compensates: =customize-instance :after= in =buffer.lisp= enables
+=(reverse (default-modes buffer))=, so the first symbol in =default-modes=
+ends up at the front, which the =default-modes= docstring states as "modes at
+the beginning of the list have higher priority". A mode that wants to yield
+simply does not bind the key; one that wants to win is earlier in the list.
+Three effects of the lookup rules matter for design:
+
+- Within one mode the keymap of the current scheme sits above the keymaps of
+  the scheme's parents, so a mode's emacs binding beats its own default one.
+- A prefix in an earlier mode wins over a command in a later one, and a
+  command with keys left over does not block a longer sequence in a later
+  mode, as the keymaps study records.
+- Modes can hold the whole stack hostage. =passthrough-mode= binds only
+  =C-M-z= (=source/mode/passthrough.lisp=) and sets
+  =forward-input-events-p=, so every other key falls through to the page;
+  =document-mode= binds =C-M-Z= to turn it on (=source/mode/document.lisp=).
+  =vi-insert-mode= is the same idea with a scheme that has no parent.
+
+Precedence is therefore the product of three things: the order of =modes=,
+the keyscheme chosen per buffer, and the =current-keymaps-hook= that can
+rewrite the list for a buffer. There is no per-mode priority number and no
+check at definition time that two modes bind the same key.
+
+** Mode-specific configuration
+
+Configuration is slots. A mode documents them, the user sets them with
+=define-configuration= on the mode class (the =hint-mode= docstring lists
+=hints-alphabet=, =hints-selector=, =hinting-type=, =x-placement=), or builds a
+named subclass as the blocker docs do. Instance state set at runtime
+(=blocked-hosts=, =previous-keyscheme=) lives on the same object. Two details
+carry over: serialisation of a mode drops the heavy slots on purpose
+(=serializable-slots= in =mode.lisp= removes =keyscheme-map=, and
+=blocker.lisp= removes =hostlists=), and slots can be initialised from
+=enable= keyword arguments, so =toggle-mode= and =enable-modes*= pass
+settings in at the moment of enabling.
+
+** How a mode becomes default for a buffer class
+
+=default-modes= in =buffer.lisp= is a generic function with =append= method
+combination. A =buffer= has a =default-modes= slot, and each class in the
+buffer's inheritance chain contributes its own list, with the base
+=%default-modes= (=(base-mode)=) at the end of the chain. The =:around=
+method removes duplicates keeping the first occurrence, then resolves every
+symbol (so =:dark-mode= and =emacs-mode= from any package both work). The
+modes of a buffer class are therefore the sum of its own, its parents' and
+the global default, and a user adds one for every buffer with
+=define-configuration buffer= and =(default-modes (append '(x) %slot-value%))=
+(shown in =source/manual.lisp= and the help pages in =source/help.lisp=). A
+prompt buffer draws on the same mechanism, passing its default modes to
+=enable-modes*= when it is created (=source/prompt-buffer.lisp=).
+
+Enabling by URL is not in this checkout. What exists is the per-page seam:
+=enable-page-mode= for internal pages, and mode methods on
+=on-signal-load-started= (=no-script-mode= toggles JavaScript according to
+the URL it is loading). A rules table that maps a URL to a set of modes is a
+newer layer and is not studied here.
+
+* The Nyxt modes that matter, one line each
+
+| Mode                    | What it does                                                                  | Mechanism worth copying or avoiding                                                                       |
+|-------------------------+-------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------|
+| =base-mode=             | General commands for every buffer: =C-l=, buffer switching, =C-h= help, =M-x= | Hidden from the status line; the layer that every buffer has; keymap per scheme in one table               |
+| =emacs-mode=            | Sets the buffer's keyscheme to emacs                                          | A mode that is only a setting: a glyph and one slot, behaviour inherited from =keyscheme-mode=             |
+| =vi-normal-mode= and =vi-insert-mode= | Modal keys; the two swap on =i= and =escape=, and on input focus | Swapping by =enable-modes*= inside signal methods; insert has no parent scheme                             |
+| =passthrough-mode=      | All keys go to the page except =C-M-z=                                        | Enable and disable only flip =forward-input-events-p=; the whole mode is 26 lines                          |
+| =document-mode=         | Scrolling, zoom, headings, QR, inspector, =C-M-Z= to passthrough               | The default behaviour of any structured page; one mode, many commands                                      |
+| =hint-mode=             | Follow, copy and open elements by typed hints                                 | Many slots (alphabet, selector, placement); =visual-mode= subclasses it                                    |
+| =blocker-mode=          | Drops requests to listed hosts                                                | Enable adds a hook handler, disable removes it; the handler finds the mode by =find-submode=               |
+| =reading-line-mode=     | A line cursor injected into the page to track reading                         | Enable injects DOM, disable removes it; re-enables itself on =on-signal-load-finished=                     |
+| =no-script-mode=        | JavaScript off except on internal pages                                       | Setting restored in =disable=; toggled by URL in =on-signal-load-started=; takes effect on reload          |
+
+* How the Nemesis layers stack today
+
+Nemesis has no mode object. It has two things that stand in for one part of
+it each.
+
+*Keymap layers by buffer type.* =KeyResolver.layersFor= in
+=src/main/commands/keymap.ts= returns the buffer type's keymap followed by
+the global one, or the global one alone, and =KeyResolver.resolve= walks that
+list once per sequence, first layer that answers wins, a prefix in an earlier
+layer returning =pending= before a later layer's command is looked at. The
+tables are =GLOBAL_KEYMAP= and =BUFFER_KEYMAPS= in
+=src/main/commands/keyscheme.ts=, keyed by =BufferType= from
+=src/shared/keys.ts= (=prompt=, =transcript=, =permission=, =help=, =diff=,
+=plan=, =spec=), of which only =permission=, =diff=, =plan= and =spec= have
+an entry in =BUFFER_KEYMAPS=. The only per-type behaviour besides
+bindings is =MODAL_BUFFER_TYPES=, a one-element list that tells the renderer
+an unmodified key is a command.
+
+*The buffer registry.* A buffer is a =BufferInfo= with an =id=, a =kind=
+(the same =BufferType=), a =title= and an =elementId= (=src/shared/buffers.ts=),
+created from a =BufferSpec=. A kind is fixed for the life of the buffer and
+has no state of its own, no hooks, no settings.
+
+What a mode would add, set against the Nyxt mechanisms above:
+
+| Nyxt mechanism                                          | Nemesis today                                                         | What a mode adds                                                                              |
+|---------------------------------------------------------+-----------------------------------------------------------------------+-----------------------------------------------------------------------------------------------|
+| Many modes per buffer, in priority order                 | Exactly one type layer then global, fixed by the buffer's kind          | A list per buffer: =layersFor= takes the buffer's modes, not only its type                     |
+| Mode enabled and disabled at runtime                     | Nothing; a kind never changes                                           | Turning hint, blocker or reader behaviour on in a page buffer without a new kind              |
+| Per-instance state and settings (alphabet, hostlists)    | Nothing per buffer; settings would be globals                           | A place for them, and a value the status line and describe-key can name                        |
+| Enable and disable install and remove hooks              | Nothing; behaviour is a branch on the kind                              | A transaction: a blocker adds its request handler on enable and removes it on disable          |
+| =default-modes= by buffer class, user-extensible         | The kind picks the keymap                                               | A table kind to modes, so M3's =init.ts= (#71) extends it without editing the kind's own table |
+| Find a mode by family (=find-submode=)                   | Not needed                                                              | A page buffer's blocker is found by the request handler that must consult it                   |
+| Toggler command for free                                 | Each command is written by hand in =registry.ts=                        | A =toggle-<mode>= command per mode, in the palette, without a line per mode                    |
+| =passthrough-mode= flips forwarding                      | None; the renderer decides from the published shape (ADR 0002)          | An exit chord and a renderer rule while it is on (keymaps study, item 6)                       |
+| Keyscheme mode: one on at a time                         | One scheme                                                              | Not wanted; there is one scheme                                                                |
+| Cascade through parents                                  | Not applicable                                                          | Optional; see the ADR 0004 options below                                                       |
+
+Two seams the current code already leaves open. =layersFor= is a single
+function, so growing it from "type then global" to "each enabled mode, then
+global" changes one place; and =BufferInfo.kind= is a closed string union, so
+a page buffer's kind is one more member and its modes are a field next to it.
+The keymaps study, item 3, made the same observation from the keymap side.
+
+** Design pressure for ADR 0004
+
+These are the questions the Nyxt reading raises, not the ADR's answers:
+
+- Class hierarchy or plain objects. Nyxt's cascade and family lookup need
+  inheritance; Nemesis's modes are few and mostly flat. A mode as an object
+  with =enable=, =disable=, a keymap, hooks and settings, plus an optional
+  =parent= name for the two or three real cases (=visual= over =hint=), keeps
+  the cascade and drops the metaclass.
+- Where the invariant lives. One instance per mode per buffer should be true
+  by construction (a map from mode name to state), not enforced after the
+  fact as in the =:around= method.
+- Enabled as flag or as membership. Nyxt keeps a disabled instance and filters
+  on a flag, which preserves slot values across a toggle. A map that deletes
+  on disable is simpler to read and loses nothing the cockpit needs; the
+  trade is visible in =toggle-mode=, which has to look at both.
+- Priority by position. The order of enabling decides today, and the
+  docstring has to explain the reverse in =customize-instance=. An explicit
+  =priority= number, or "kind layer, then modes in listed order, then global",
+  states it once.
+- Who may enable a mode. Page content is untrusted (CLAUDE.md), so a mode
+  switch must come from a command, the user's config, or a rule the user
+  wrote, never from text on the page; Nyxt's signal methods enable modes from
+  page events (=vi-insert-on-input-fields= reads the focused element), which
+  is a pattern to bound, not to copy.
+
+* Inventory
+
+** The cockpit needs now (M1 to M3)
+
+The cockpit's buffers are not pages, so what it needs from modes is small and
+mostly names things it already has.
+
+1. A =base= layer: the global map (=GLOBAL_KEYMAP=) expressed as the mode
+   every buffer has, hidden from the mode line. No behaviour change; it is
+   what makes the next items layers instead of special cases.
+2. One mode per existing buffer type's keys, not a per-kind branch: =permission=
+   (modal, unmodified keys are answers), =plan=, =spec= and =diff=. Each is
+   today a =BUFFER_KEYMAPS= entry; as modes they can be seen in the mode line
+   and by =describe-key= as the layer that answered.
+3. A =passthrough= mode, once a buffer holds something that wants every key
+   (a terminal or an editor under the cockpit). Its design is already in the
+   keymaps study; it needs the mode object to switch it on and an exit chord.
+4. A user mode door for =init.ts= (#71): enable, disable and a keymap for a
+   user-defined mode, and an addition to the default table, so the extension
+   story is "define a mode", not "patch the type table".
+
+** M4 needs (page buffers, #73)
+
+1. =document= mode: scroll, zoom, find, copy, the default of a page buffer, in
+   the role of =document-mode=.
+2. =hint= mode: follow and copy by typed hint, with the hint alphabet and
+   selector as settings.
+3. =blocker= mode: a hostlist and a request handler on the page buffer's
+   session, installed on enable and removed on disable. This is the clearest
+   case for hooks owned by the mode; the handler lives in the main process and
+   checks the host, never the page.
+4. A reader mode (the name used by the issue; Nyxt in this checkout has only
+   =reading-line-mode=, which is a line cursor, not a reader view): a
+   simplified, scripts-off view of the page text. If wanted, it is new design,
+   not a port, and goes through the same untrusted-content labelling as any
+   page text that reaches the agent.
+5. =passthrough= for pages, as above, bound to a chord that a page cannot
+   take.
+6. =no-script= and =no-image=, as per-buffer settings of the page session,
+   after the blocker, only if the privacy pillar asks for them.
+
+** Not wanted
+
+- Keyscheme modes (=emacs-mode=, =vi-normal-mode=, =vi-insert-mode=, the CUA
+  default). Emacs everywhere is pinned in CLAUDE.md; the keymaps study already
+  rules out vi and cua.
+- A repl mode. This checkout has none, and the cockpit's surface for running
+  code is the agent session, not a Lisp prompt.
+- The metaclass toggler. A toggle command per mode is wanted; the machinery
+  that generates it by defining a class is not. A mode registers its toggle
+  with the registry when it is registered.
+- Enabling a mode from page events (=vi-insert-on-input-fields=,
+  =on-signal-load-finished= re-enables). A page cannot decide which mode a
+  buffer is in; only commands, config and user-written rules can.
+- Multiple instances of one mode in a buffer. Nyxt forbids it by an =:around=
+  method; Nemesis should not be able to represent it.
+- Serialising a mode's heavy slots (hostlists) into a session file. Nyxt
+  excludes them by hand in =serializable-slots=; the on-disk session format is
+  not to be decided here and mode state stays out of it until ADR 0004 says
+  otherwise.
+- Modes whose purpose is a product feature of a different app (=password=,
+  =autofill=, =bookmark=, =history=, =proxy=, =file-manager=, =watch=,
+  =cruise-control=, =expedition=). Each may return as a feature with its own
+  issue; none is a mode question.
+- Mode-level hooks for every buffer event (=on-signal-button-press=,
+  =on-signal-key-press=). The keymaps study excluded mouse keys; a mode
+  receives the events its buffer kind can produce, no wider.
