@@ -1,4 +1,10 @@
-import type { BufferType, DispatchRecord, KeyOutcome, KeyPress } from '../../shared/keys'
+import type {
+  BufferType,
+  DispatchRecord,
+  KeyBindings,
+  KeyOutcome,
+  KeyPress,
+} from '../../shared/keys'
 import type { Keymap, KeyResolver } from './keymap'
 import { strokeFromKeyPress } from './keymap'
 import type { CommandRegistry } from './registry'
@@ -93,6 +99,11 @@ export class KeyDispatcher {
   /** Dispatched commands, oldest first. Chords and names only, never buffer text. */
   get log(): readonly DispatchRecord[] {
     return [...this.records]
+  }
+
+  /** The shape of the keymaps, so the renderer knows which keys are the cockpit's (#61). */
+  get bindings(): KeyBindings {
+    return this.resolver.bindings()
   }
 
   async handle(press: KeyPress): Promise<KeyOutcome> {

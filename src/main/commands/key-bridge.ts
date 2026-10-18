@@ -1,5 +1,5 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
-import { DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../../shared/keys'
+import { BINDINGS_CHANNEL, DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../../shared/keys'
 import type { KeyDispatcher } from './dispatcher'
 import { isInternalSender, parseKeyPress } from './dispatcher'
 import { createCockpitDispatcher } from './keyscheme'
@@ -17,6 +17,13 @@ export function installKeyBridge(
   ipcMain.handle(KEY_CHANNEL, async (event: IpcMainInvokeEvent, payload: unknown) => {
     assertInternal(event, KEY_CHANNEL)
     return dispatcher.handle(parseKeyPress(payload))
+  })
+
+  // The renderer learns the shape of the keymaps, never the commands, so it
+  // can leave every unbound key to the editor under it (#61).
+  ipcMain.handle(BINDINGS_CHANNEL, (event: IpcMainInvokeEvent) => {
+    assertInternal(event, BINDINGS_CHANNEL)
+    return dispatcher.bindings
   })
 
   // Test-only: the end-to-end spec reads what the keys dispatched (#59).

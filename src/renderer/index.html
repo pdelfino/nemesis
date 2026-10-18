@@ -27,7 +27,14 @@
         <p class="placeholder">The transcript buffer arrives in #62.</p>
       </section>
       <section id="prompt" aria-label="prompt buffer" data-buffer-type="prompt">
-        <p class="placeholder">The prompt buffer arrives in #61.</p>
+        <!-- CodeMirror mounts here (#61). -->
+        <div id="prompt-editor"></div>
+        <p id="prompt-status" class="placeholder">
+          <span id="prompt-note"></span>
+          <span id="prompt-agent"></span>
+        </p>
+        <!-- One line per prompt waiting for the agent. -->
+        <ol id="prompt-queued" aria-label="queued prompts"></ol>
       </section>
     </main>
     <script type="module" src="./main.ts"></script>

@@ -60,3 +60,36 @@ main {
   color: var(--muted);
   margin: 0;
 }
+/* The prompt buffer is a CodeMirror editor (#61); it wraps and grows to a cap. */
+#prompt .cm-editor {
+  max-height: 40vh;
+}
+#prompt .cm-editor.cm-focused {
+  outline: none;
+}
+#prompt .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#prompt .cm-content {
+  min-height: 4.5rem;
+  padding: 0;
+}
+#prompt-status {
+  margin: 0.4rem 0 0;
+  display: flex;
+  gap: 1rem;
+}
+#prompt-status:empty {
+  display: none;
+}
+#prompt-queued {
+  margin: 0.2rem 0 0;
+  padding-left: 1.4rem;
+  color: var(--muted);
+}
+#prompt-queued:empty {
+  display: none;
+}

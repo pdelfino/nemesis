@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
+import { installSessionBridge } from './agent/session-bridge'
 import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
 import { installKeyBridge } from './commands/key-bridge'
@@ -59,6 +60,10 @@ void app.whenReady().then(() => {
   // it, so it exists before the window that shows it (#60).
   const buffers = createCockpitBuffers()
   installBufferBridge(buffers)
+  // One agent session per cockpit, in the folder the app was started in; the
+  // SDK loads the CLI's own settings, so the model and the permission rules are
+  // the CLI's (#61). It starts on the first prompt, not at launch.
+  installSessionBridge({ cwd: process.cwd() })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   installKeyBridge(createCockpitDispatcher(createCockpitRegistry(buffers)))
   createWindow()

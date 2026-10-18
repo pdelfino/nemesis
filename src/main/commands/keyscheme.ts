@@ -39,7 +39,10 @@ export function cockpitCommands(buffers: BufferRegistry): readonly Command[] {
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
-        // The prompt buffer lands in #61.
+        // The text lives in the renderer. When the dispatch answers with this
+        // name, the prompt buffer sends its text through the prompt bridge and
+        // the queue in src/main/agent/session-bridge.ts takes it from there
+        // (#61). Running it from the palette (#65) takes the same path.
       },
     }),
     defineCommand({
