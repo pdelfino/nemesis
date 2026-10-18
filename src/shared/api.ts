@@ -6,6 +6,7 @@ import type {
   TranscriptGoto,
 } from './agent'
 import type { BufferInfo, BufferList, BufferSpec } from './buffers'
+import type { DiffContent } from './diff'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 
@@ -43,6 +44,8 @@ export interface NemesisApi {
   onHelpShown(listener: (content: HelpContent) => void): void
   /** The transcript's point should go to this line: a search match was opened (#69). */
   onTranscriptGoto(listener: (target: TranscriptGoto) => void): void
+  /** A diff buffer has content: list-diffs opened an Edit or a Write in it (#68). */
+  onDiffShown(listener: (content: DiffContent) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

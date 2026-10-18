@@ -201,7 +201,11 @@ function activeBufferType(): BufferType | null {
   const value = document.activeElement
     ?.closest('[data-buffer-type]')
     ?.getAttribute('data-buffer-type')
-  return value === 'prompt' || value === 'transcript' || value === 'permission' || value === 'help'
+  return value === 'prompt' ||
+    value === 'transcript' ||
+    value === 'permission' ||
+    value === 'help' ||
+    value === 'diff'
     ? value
     : null
 }

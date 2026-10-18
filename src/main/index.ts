@@ -1,11 +1,17 @@
-import { app, BrowserWindow, nativeTheme, session } from 'electron'
+import { app, BrowserWindow, nativeTheme, session, shell } from 'electron'
 import { join } from 'node:path'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { SessionManager } from './agent/session-manager'
 import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
-import { confirm, CONFIRM_SOURCES, DOWNLOAD_SOURCE, EXTERNAL_SOURCE } from './commands/confirm'
+import {
+  confirm,
+  CONFIRM_SOURCES,
+  DOWNLOAD_SOURCE,
+  EXTERNAL_SOURCE,
+  OPEN_FILE_SOURCE,
+} from './commands/confirm'
 import { installKeyBridge } from './commands/key-bridge'
 import {
   cockpitKeymapLayers,
@@ -14,6 +20,7 @@ import {
 } from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
+import { DiffBuffers } from './diffs'
 import { installMenu } from './menu'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
@@ -221,11 +228,24 @@ void app.whenReady().then(() => {
     model: settings.model,
     permissionHandler: permissions,
   })
+  // The Edit and Write calls of the session, listed and opened as diff
+  // buffers (#68). The collector reads the live events and a resumed
+  // session's history before the bridge pushes them, so list-diffs is never
+  // behind the window; `C-c C-o` asks in the prompt buffer, then hands the
+  // file to the system through the one `shell.openPath` call site.
+  const diffs = new DiffBuffers(buffers, {
+    confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
+    open: (path) => shell.openPath(path),
+  })
+  agent.on((event) => diffs.observe(event))
+  agent.onHistory((history) => {
+    for (const event of history) diffs.observe(event)
+  })
   const prompts = installSessionBridge({
     agent,
     permissions,
     recorder,
-    notices: mergeNotices(permissionPolicy, downloads, external),
+    notices: mergeNotices(permissionPolicy, downloads, external, diffs),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
@@ -237,9 +257,10 @@ void app.whenReady().then(() => {
     prompts,
     sessions,
     transcripts,
+    diffs,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
-  installPaletteBridge({ prompter: deps.prompter, help: deps.help, transcripts })
+  installPaletteBridge({ prompter: deps.prompter, help: deps.help, transcripts, diffs })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher = createCockpitDispatcher(deps)
   installKeyBridge(dispatcher)

@@ -10,6 +10,7 @@ import {
 } from '../agent/session-manager'
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
+import { describeDiff, DiffBuffers } from '../diffs'
 import { HelpBuffers } from '../help'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
@@ -46,7 +47,9 @@ import { CommandRegistry, defineCommand } from './registry'
  * The guide's context management (#80): `clear` on `C-c C-l` is a fresh
  * session, `compact` on `C-c C-k` sends the prompt buffer as the compaction
  * instruction, `side-question` asks a throwaway fork and answers in the help
- * buffer, and `correct` counts the next prompt as a correction.
+ * buffer, and `correct` counts the next prompt as a correction. The diffs
+ * of the session (#68): `list-diffs` reads one Edit or Write off the palette
+ * and opens it in a diff buffer, where `C-c C-o` is `open-diff-file`.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -68,6 +71,8 @@ export interface CockpitDeps {
   readonly sessions: SessionSource
   /** The transcripts on disk, as `search-transcripts` scans them (#69). */
   readonly transcripts: TranscriptSearch
+  /** The Edit and Write calls of the session, as `list-diffs` opens them (#68). */
+  readonly diffs: DiffBuffers
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -86,6 +91,13 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     prompts: partial.prompts ?? new PromptQueue(agent),
     sessions: partial.sessions ?? NO_SESSIONS,
     transcripts: partial.transcripts ?? new TranscriptSearch({ sessionsDir: null }),
+    // Without the window there is nobody to ask and nothing to open.
+    diffs:
+      partial.diffs ??
+      new DiffBuffers(buffers, {
+        confirm: () => Promise.resolve(false),
+        open: () => Promise.resolve('No file opener is installed'),
+      }),
   }
 }
 
@@ -99,7 +111,18 @@ function report(name: string): (error: unknown) => void {
 }
 
 export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): readonly Command[] {
-  const { buffers, permissions, prompter, help, keys, agent, prompts, sessions, transcripts } = deps
+  const {
+    buffers,
+    permissions,
+    prompter,
+    help,
+    keys,
+    agent,
+    prompts,
+    sessions,
+    transcripts,
+    diffs,
+  } = deps
   return [
     defineCommand({
       name: 'execute-command',
@@ -260,6 +283,26 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'list-diffs',
+      doc: 'List the Edit and Write calls of the session; one opens as a diff buffer.',
+      run: () => {
+        if (diffs.list().length === 0) {
+          help.show('No diffs yet: the agent has made no Edit or Write call in this session.')
+          return
+        }
+        prompter.read({ source: 'diffs', prompt: 'Show diff:' }, (id) => {
+          diffs.show(id)
+        })
+      },
+    }),
+    defineCommand({
+      name: 'open-diff-file',
+      doc: 'Open the file of the current diff buffer with the default application, after a yes.',
+      run: () => {
+        diffs.openCurrent().catch(report('open-diff-file'))
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -332,7 +375,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * buffers; the rewind reads of #84, the checkpoints and what to restore;
  * the sessions on disk (#67), newest first, titled by their first prompt;
  * and the two reads of a search (#69): the query, over nothing, since the
- * text typed is the answer, and the matches of the last search.
+ * text typed is the answer, and the matches of the last search; and the
+ * diffs of the session (#68), oldest first.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -340,6 +384,7 @@ export function cockpitSources(
   agent: SessionManager,
   sessions: SessionSource,
   transcripts: TranscriptSearch,
+  diffs: DiffBuffers,
 ): readonly PaletteSource[] {
   return [
     {
@@ -402,6 +447,15 @@ export function cockpitSources(
           doc: `${match.sessionId}, line ${match.line}`,
         })),
     },
+    {
+      name: 'diffs',
+      candidates: () =>
+        diffs.list().map((diff) => ({
+          id: diff.id,
+          label: `${diff.index}. ${diff.tool} ${diff.filePath}`,
+          doc: describeDiff(diff),
+        })),
+    },
   ]
 }
 
@@ -442,6 +496,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
       QUESTION_OPTIONS.map((number) => [`${number}`, `choose-option-${number}`]),
     ),
   }),
+  // A diff buffer's file goes to the system on the Org key for opening a link (#68).
+  diff: defineKeymap('diff', {
+    'C-c C-o': 'open-diff-file',
+  }),
 }
 
 /** The chord that abandons a half-typed sequence. */
@@ -468,6 +526,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.agent,
     deps.sessions,
     deps.transcripts,
+    deps.diffs,
   )) {
     deps.prompter.addSource(source)
   }

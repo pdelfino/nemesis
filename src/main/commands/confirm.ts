@@ -3,9 +3,10 @@ import type { PaletteSource, Prompter } from './prompter'
 /**
  * A yes or no read through the prompt buffer (#51, SECURITY.org T2). The
  * download and external-protocol policies in src/main/security ask the user
- * before anything lands on disk or launches; they know nothing of the
+ * before anything lands on disk or launches, and so does a diff buffer
+ * before its file goes to the system (#68); they know nothing of the
  * palette, only a function that answers true or false. This file is that
- * function and the two fixed sources it reads from.
+ * function and the three fixed sources it reads from.
  *
  * The no comes first in both sources, so it is the highlighted candidate
  * when the read opens: a stray `RET` refuses, and a yes takes a deliberate
@@ -17,6 +18,8 @@ import type { PaletteSource, Prompter } from './prompter'
 
 export const DOWNLOAD_SOURCE = 'download'
 export const EXTERNAL_SOURCE = 'external'
+/** A diff buffer's `C-c C-o` asks before the file goes to the system (#68). */
+export const OPEN_FILE_SOURCE = 'open-file'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -42,6 +45,17 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'Open with the system handler',
         doc: 'The link is handed to the application the system has for it.',
+      },
+    ],
+  },
+  {
+    name: OPEN_FILE_SOURCE,
+    candidates: () => [
+      { id: NO, label: 'Do not open', doc: 'Nothing is launched.' },
+      {
+        id: YES,
+        label: 'Open with the default application',
+        doc: 'The file is handed to the application the system has for it; the cockpit does not run it.',
       },
     ],
   },

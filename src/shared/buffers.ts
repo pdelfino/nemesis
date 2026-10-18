@@ -10,8 +10,8 @@ import type { BufferType } from './keys'
 
 /**
  * One buffer, as the renderer and the specs see it. `kind` is the buffer type
- * the per-type keymaps already speak (`prompt`, `transcript`); `diff` and
- * `page` join that vocabulary when those buffers land.
+ * the per-type keymaps already speak (`prompt`, `transcript`, `diff` since
+ * #68); `page` joins that vocabulary when the page buffer lands.
  */
 export interface BufferInfo {
   /** Stable for the life of the buffer. Assigned by the registry. */

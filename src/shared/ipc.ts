@@ -30,6 +30,7 @@ import type {
   BUFFERS_CHANNEL,
   BufferSpec,
 } from './buffers'
+import type { DIFF_SHOWN_CHANNEL, DiffContent } from './diff'
 import type {
   BINDINGS_CHANNEL,
   DISPATCH_LOG_CHANNEL,
@@ -74,6 +75,7 @@ export interface PushChannels {
   readonly [PALETTE_OPEN_CHANNEL]: PaletteRequest
   readonly [HELP_SHOWN_CHANNEL]: HelpContent
   readonly [TRANSCRIPT_GOTO_CHANNEL]: TranscriptGoto
+  readonly [DIFF_SHOWN_CHANNEL]: DiffContent
 }
 
 export type InvokeChannel = keyof InvokeChannels

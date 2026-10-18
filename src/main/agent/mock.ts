@@ -24,6 +24,8 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *
  *   `think: ...`  a thinking block, then the reply
  *   `tool: Name`  a tool call named `Name` through `canUseTool`, then the reply
+ *   `edit: ...`   an Edit call on /mock/notes.txt through `canUseTool`, the
+ *                 line `beta` replaced by the text, then the reply (#68)
  *   `ask: ...`    an AskUserQuestion with three options through `canUseTool`,
  *                 then `You chose: <answer>` (#63)
  *   `stream: ...` text frames `... 1`, `... 2`, one every few ms, until the
@@ -52,7 +54,10 @@ import type { AgentDriver, AgentQueryHandle } from './session'
 
 const MOCK_MODEL = 'claude-mock-1'
 const MOCK_SESSION_ID = 'mock-session'
-const MOCK_TOOLS = ['Read', 'Write', 'Bash', 'AskUserQuestion'] as const
+const MOCK_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'AskUserQuestion'] as const
+/** The file every `edit:` prompt edits, and what it held before (#68). */
+const MOCK_FILE = '/mock/notes.txt'
+const MOCK_FILE_TEXT = 'alpha\nbeta\ngamma\n'
 const MOCK_DURATION_MS = 1
 /** How often a `stream:` turn yields a text frame. */
 const STREAM_INTERVAL_MS = 20
@@ -235,6 +240,24 @@ class MockQuery implements AgentQueryHandle {
       const allowed = decision.behavior === 'allow'
       yield this.toolResult(toolUseId, allowed ? `${name} ran` : decision.message, !allowed)
       const reply = allowed ? `Ran ${name}.` : `Did not run ${name}.`
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
+      return
+    }
+
+    if (prompt.startsWith('edit:')) {
+      const replacement = prompt.slice(5).trim() || 'beta changed'
+      const toolUseId = `mock-tool-${this.turns}`
+      const input = {
+        file_path: MOCK_FILE,
+        old_string: MOCK_FILE_TEXT,
+        new_string: MOCK_FILE_TEXT.replace('beta', replacement),
+      }
+      yield this.assistant([{ type: 'tool_use', id: toolUseId, name: 'Edit', input }])
+      const decision = await this.ask('Edit', input)
+      const allowed = decision.behavior === 'allow'
+      yield this.toolResult(toolUseId, allowed ? 'Edit ran' : decision.message, !allowed)
+      const reply = allowed ? 'Edited notes.txt.' : 'Did not edit notes.txt.'
       yield this.assistant([{ type: 'text', text: reply, citations: null }])
       yield this.result(reply)
       return

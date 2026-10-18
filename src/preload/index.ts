@@ -10,6 +10,7 @@ import {
 import type { NemesisApi } from '../shared/api'
 import type { BufferSpec } from '../shared/buffers'
 import { BUFFER_CREATE_CHANNEL, BUFFERS_CHANGED_CHANNEL, BUFFERS_CHANNEL } from '../shared/buffers'
+import { DIFF_SHOWN_CHANNEL } from '../shared/diff'
 import type {
   InvokeAnswer,
   InvokeArgs,
@@ -53,6 +54,7 @@ const base = {
   answerPalette: (answer) => invoke(PALETTE_ANSWER_CHANNEL, answer),
   onHelpShown: (listener) => on(HELP_SHOWN_CHANNEL, listener),
   onTranscriptGoto: (listener) => on(TRANSCRIPT_GOTO_CHANNEL, listener),
+  onDiffShown: (listener) => on(DIFF_SHOWN_CHANNEL, listener),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

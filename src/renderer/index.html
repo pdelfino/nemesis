@@ -36,6 +36,12 @@
       <section id="help" aria-label="help" data-buffer-type="help" hidden>
         <div id="help-editor"></div>
       </section>
+      <!-- A diff buffer (#68): one Edit or Write of the session, shown while one is open. -->
+      <section id="diff" aria-label="diff" data-buffer-type="diff" hidden>
+        <p id="diff-file"></p>
+        <div id="diff-editor"></div>
+        <p id="diff-keys" class="placeholder"></p>
+      </section>
       <!--
         A pending permission request or question (#63). Shown while a request
         buffer exists; it holds the point so y, n, a and a digit are answers.

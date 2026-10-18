@@ -52,6 +52,9 @@ describe('the default Emacs keyscheme (#59)', () => {
     // The guide's context keys (#80).
     expect(GLOBAL_KEYMAP.commandFor('C-c C-l')).toBe('clear')
     expect(GLOBAL_KEYMAP.commandFor('C-c C-k')).toBe('compact')
+    // A diff buffer's file opens on the Org key for a link (#68).
+    expect(BUFFER_KEYMAPS.diff?.commandFor('C-c C-o')).toBe('open-diff-file')
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-o')).toBeUndefined()
   })
 
   it('registers every command a keymap names', () => {

@@ -123,6 +123,41 @@ main {
   font-size: inherit;
   line-height: 1.45;
 }
+/* A diff buffer is a read-only merge view under the transcript (#68). */
+#diff {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+#diff[hidden] {
+  display: none;
+}
+#diff-file {
+  margin: 0 0 0.3rem;
+  font-weight: bold;
+}
+#diff-keys {
+  margin: 0.3rem 0 0;
+}
+#diff .cm-editor {
+  min-height: 0;
+}
+#diff .cm-editor.cm-focused {
+  outline: none;
+}
+#diff .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#diff .cm-gutters {
+  background: transparent;
+  border-right: none;
+  color: var(--muted);
+}
 /* The palette takes the prompt section's place while a choice is read (#65). */
 #prompt.palette-open {
   display: none;

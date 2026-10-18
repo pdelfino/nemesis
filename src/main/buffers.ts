@@ -12,7 +12,7 @@ import type { BufferType } from '../shared/keys'
  * cycles through.
  */
 
-const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission', 'help']
+const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission', 'help', 'diff']
 
 const MAX_TITLE = 200
 

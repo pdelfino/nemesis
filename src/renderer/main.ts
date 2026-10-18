@@ -1,6 +1,7 @@
 import { APP_NAME } from '../shared/api'
 import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
+import { installDiffBuffer } from './diff-buffer'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
 import { installModeline } from './modeline'
@@ -26,6 +27,8 @@ const transcript = installTranscriptBuffer()
 installRequestBuffer()
 // And the help buffer: describe-command answers there (#65).
 const help = installHelpBuffer()
+// And the diff buffer: list-diffs opens an Edit or a Write there (#68).
+const diff = installDiffBuffer()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 
@@ -39,6 +42,7 @@ void installPromptBuffer().then((prompt) => {
     prompt.onCommand(outcome, bufferType)
     transcript.onCommand(outcome, bufferType)
     help.onCommand(outcome, bufferType)
+    diff.onCommand(outcome, bufferType)
   }
   keys.onCommand = act
   palette.onRan = act
