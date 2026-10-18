@@ -14,7 +14,7 @@ Nemesis is developed on macOS first and mostly by Claude Code under the rules in
 
 * Issues are the unit of work
 
-Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). Issues bigger than one file carry =## Approach= with the chosen design before anyone edits code. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment.
+Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). Issues bigger than one file carry =## Approach= with the chosen design before anyone edits code. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment. A choice between libraries or architectures that a later issue would otherwise reopen is recorded as an ADR; the process, the numbering and the index live in =docs/adr/README.org=.
 
 * Commits and pull requests
 

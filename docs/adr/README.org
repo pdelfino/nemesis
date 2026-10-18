@@ -1,0 +1,60 @@
+#+TITLE: Architecture decision records
+#+OPTIONS: toc:nil
+
+An ADR is a short Org file that records one decision: the context that forced
+it, the choice, the options that lost and why, and what the choice costs. It
+exists so that a later issue does not reopen the question without reading the
+answer first, and so that an agent writing one copies a file instead of
+guessing a style.
+
+* When an ADR is required
+
+- A choice between libraries or architectures that a later issue would
+  otherwise reopen: a keymap engine, a prompt buffer design, a storage format,
+  a mode system, a hook or MCP surface.
+- Any =## Approach= table in an issue whose pick changes more than one module.
+  The issue holds the options and the pick; the ADR is where the pick lives
+  once the code lands, with the losing options and their reasons preserved.
+- Any rule under =SECURITY.org= that the code enforces by construction, so the
+  reasoning survives the person who wrote it.
+
+A one-file fix, an errand, or a choice that the next issue can change in an
+afternoon does not need an ADR.
+
+* How to write one
+
+1. Copy =0000-template.org= to =NNNN-<slug>.org= with the next free number.
+2. Fill the four fields (Status, Date, Threat or Pillar, Issue), then Context,
+   Decision, Alternatives considered, Consequences. Keep the section names.
+3. Add a row to the index below in the same commit.
+4. The pull request or commit that lands the code names the ADR.
+
+* Numbering
+
+Four digits, zero padded, the next free number after the highest in this
+directory. A number is never reused and never renumbered, even when the ADR it
+names is superseded, so that links from issues and commits stay valid.
+=0000= is the template and is not a decision.
+
+* Status words
+
+- =proposed=: written, not yet picked. The issue it names is still open on the
+  question.
+- =accepted=: the pick is made and the code follows it.
+- =superseded by NNNN=: a later ADR replaced it. The old file stays, with its
+  status line changed to point at the new number, and the new ADR names the
+  old one in its Context.
+
+* Format
+
+Docs are Org, as CLAUDE.md says, so every ADR is an =.org= file. The header is
+a =#+TITLE= line of the form =ADR NNNN: <decision>=, followed by the four
+fields as a plain list. Dates in prose use the month name, for example
+2026-OCTOBER-17; filenames stay ISO. No em-dashes anywhere.
+
+* Index
+
+| Number | Title                    | Status   | Issue |
+|--------+--------------------------+----------+-------|
+| [[file:0000-template.org][0000]]   | Template                 | n/a      |       |
+| [[file:0001-dependencies.org][0001]]   | Dependency policy        | accepted | #56   |
