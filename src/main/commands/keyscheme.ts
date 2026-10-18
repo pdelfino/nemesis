@@ -64,7 +64,9 @@ export function cockpitCommands(buffers: BufferRegistry): readonly Command[] {
       name: 'search-buffer',
       doc: 'Search in the current buffer.',
       run: () => {
-        // Search is a CodeMirror surface; it lands with the transcript (#62).
+        // Search is a CodeMirror surface: when the dispatch answers with this
+        // name, the transcript buffer opens its search panel, or steps to the
+        // next match when the panel is already open (#62).
       },
     }),
     defineCommand({

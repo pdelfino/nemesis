@@ -41,7 +41,10 @@ main {
 }
 #transcript {
   flex: 1;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: 0.8rem;
 }
 #prompt {
@@ -92,4 +95,65 @@ main {
 }
 #prompt-queued:empty {
   display: none;
+}
+/* The transcript is a read-only CodeMirror document (#62); it fills its section and scrolls. */
+#transcript-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#transcript .cm-editor {
+  flex: 1;
+  min-height: 0;
+}
+#transcript .cm-editor.cm-focused {
+  outline: none;
+}
+#transcript .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#transcript .cm-gutters {
+  background: transparent;
+  border-right: none;
+  color: var(--muted);
+}
+/* Roles are decorations over plain text: a header line and its body lines. */
+#transcript .tr-header {
+  font-weight: bold;
+  margin-top: 0.3rem;
+}
+#transcript .tr-header[data-role='user'] {
+  color: #1d5fa8;
+}
+#transcript .tr-header[data-role='assistant'] {
+  color: #8a3f0d;
+}
+#transcript .tr-header[data-role='thinking'],
+#transcript .tr-body[data-role='thinking'] {
+  color: var(--muted);
+  font-style: italic;
+}
+#transcript .tr-header[data-role='tool-use'],
+#transcript .tr-header[data-role='tool-result'] {
+  color: var(--muted);
+}
+#transcript .tr-body[data-role='tool-use'],
+#transcript .tr-body[data-role='tool-result'] {
+  background: color-mix(in srgb, var(--line) 35%, transparent);
+}
+#transcript .tr-header[data-role='note'] {
+  color: var(--muted);
+  font-weight: normal;
+}
+@media (prefers-color-scheme: dark) {
+  #transcript .tr-header[data-role='user'] {
+    color: #7fb2f0;
+  }
+  #transcript .tr-header[data-role='assistant'] {
+    color: #e0a06a;
+  }
 }

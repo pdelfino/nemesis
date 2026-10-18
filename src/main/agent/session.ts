@@ -287,6 +287,9 @@ export class AgentSession {
   /** Queue a message for the agent. Starts the session when it is not running yet. */
   async send(text: string): Promise<void> {
     if (this.handle === null) await this.start()
+    // The user's turn joins the stream before anything the agent answers to
+    // it, so a listener reads the conversation in order (#62).
+    this.emit({ type: 'user-text', text })
     // The query is already bound to its session, so the frame carries no id.
     this.input.push({
       type: 'user',

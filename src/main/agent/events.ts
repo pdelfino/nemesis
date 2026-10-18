@@ -20,6 +20,16 @@ export interface AgentStartedEvent {
   readonly tools: readonly string[]
 }
 
+/**
+ * A message the user sent to the agent, emitted by the session as it takes
+ * the text, before anything the agent answers. The transcript (#62) shows the
+ * conversation in order from this one stream.
+ */
+export interface AgentUserTextEvent {
+  readonly type: 'user-text'
+  readonly text: string
+}
+
 /** One finished text block from the assistant. */
 export interface AgentTextEvent {
   readonly type: 'assistant-text'
@@ -71,6 +81,7 @@ export interface AgentStoppedEvent {
 
 export type AgentEvent =
   | AgentStartedEvent
+  | AgentUserTextEvent
   | AgentTextEvent
   | AgentThinkingEvent
   | AgentToolUseEvent
