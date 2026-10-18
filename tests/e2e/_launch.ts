@@ -20,14 +20,18 @@ export interface LaunchedApp {
  * itself, so no spec leaves a transcript in ~/Documents and the folder goes
  * with the profile when a caller deletes it.
  */
-export async function launchApp(prefix = 'nemesis-e2e-'): Promise<LaunchedApp> {
+export async function launchApp(
+  prefix = 'nemesis-e2e-',
+  chromiumSwitches: readonly string[] = [],
+): Promise<LaunchedApp> {
   const userData = mkdtempSync(join(tmpdir(), prefix))
   const sessionsDir = join(userData, 'sessions')
   writeFileSync(join(userData, 'settings.json'), `${JSON.stringify({ sessionsDir })}\n`)
   const app = await electron.launch({
     // NEMESIS_USER_DATA is what the main process reads; the Chromium switch
-    // keeps caches and partitions inside the same throwaway tree.
-    args: ['.', `--user-data-dir=${userData}`],
+    // keeps caches and partitions inside the same throwaway tree. A caller
+    // may add Chromium switches of its own (the security harness does).
+    args: ['.', `--user-data-dir=${userData}`, ...chromiumSwitches],
     env: { ...process.env, NODE_ENV: 'test', NEMESIS_USER_DATA: userData },
   })
   return { app, userData, sessionsDir }

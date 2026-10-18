@@ -203,6 +203,8 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
       return event.outcome === 'answered'
         ? null
         : appendBlock(state, 'note', describeOutcome(event.toolName, event.outcome), '')
+    case 'notice':
+      return appendBlock(state, 'note', event.text, '')
   }
 }
 

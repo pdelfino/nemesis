@@ -174,7 +174,16 @@ export interface Nemesis {
  * and never reaches the network or an account.
  */
 export async function launchNemesis(): Promise<Nemesis> {
-  const { app, userData } = await launchApp('nemesis-security-')
+  // Fake camera and microphone devices (#49): with the real ones, a
+  // microphone request from a page buffer sat in Chromium's audio capture
+  // on macOS and never reached the app's permission handler, whatever the
+  // system's own permission said. The fake devices skip that stack, so the
+  // request reaches the handler, which is the control under test. The
+  // switch grants nothing: that would be `--use-fake-ui-for-media-stream`,
+  // which no spec may pass.
+  const { app, userData } = await launchApp('nemesis-security-', [
+    '--use-fake-device-for-media-stream',
+  ])
   const window = await app.firstWindow()
   await window.waitForLoadState('domcontentloaded')
 

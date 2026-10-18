@@ -9,6 +9,7 @@ import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyschem
 import { installPaletteBridge } from './commands/palette-bridge'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { applyNavigationPolicy } from './security/navigation-policy'
+import { PermissionPolicy } from './security/permissions'
 import { internalPagePreferences } from './security/web-preferences'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { SessionRecorder } from './transcripts'
@@ -23,7 +24,18 @@ if (userData) app.setPath('userData', userData)
 // path into the checkout is only resolved when there is a checkout to resolve.
 const iconPath = app.isPackaged ? undefined : join(__dirname, '../../resources/icon-512.png')
 
+// T6 (#49): site permissions and device access are denied unless the user
+// allowed them for that origin in this run. The allow set lives in memory
+// only and is emptied on quit.
+const permissionPolicy = new PermissionPolicy()
+app.on('will-quit', () => permissionPolicy.clear())
+
 app.on('web-contents-created', (_event, contents) => {
+  // T6 (#49): whatever partition this WebContents uses gets the deny-by-default
+  // handlers the moment it exists, so a partition the app creates later (#54)
+  // cannot miss them. Electron grants everything on a session without them.
+  permissionPolicy.apply(contents.session)
+  permissionPolicy.watch(contents)
   // T1 and T3 (#48): every WebContents gets the page policy the moment it
   // exists, whoever created it, so no creation site can forget it. The one
   // internal page corrects its kind in createWindow below. The buffer manager
@@ -104,7 +116,13 @@ void app.whenReady().then(() => {
   // folder as it arrives (#64).
   const permissions = new PermissionBridge(buffers)
   const recorder = new SessionRecorder({ sessionsDir: settings.sessionsDir })
-  installSessionBridge({ cwd: process.cwd(), permissions, recorder, model: settings.model })
+  installSessionBridge({
+    cwd: process.cwd(),
+    permissions,
+    recorder,
+    model: settings.model,
+    notices: permissionPolicy,
+  })
   // The palette reads a choice for a command, and help answers in a buffer (#65).
   const deps = resolveCockpitDeps({ buffers, permissions })
   installPaletteBridge({ prompter: deps.prompter, help: deps.help })

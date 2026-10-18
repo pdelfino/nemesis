@@ -135,6 +135,17 @@ export interface AgentPermissionAnsweredEvent {
   readonly message?: string | undefined
 }
 
+/**
+ * A one-line notice from the cockpit itself, not from the agent: a site
+ * permission refused by the policy in src/main/security/permissions.ts (#49).
+ * The transcript shows it as a note, so the user knows why a page "does not
+ * work", and the session folder keeps it with the rest.
+ */
+export interface AgentNoticeEvent {
+  readonly type: 'notice'
+  readonly text: string
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -148,6 +159,7 @@ export type AgentEvent =
   | AgentPermissionRequestEvent
   | AgentQuestionAnsweredEvent
   | AgentPermissionAnsweredEvent
+  | AgentNoticeEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

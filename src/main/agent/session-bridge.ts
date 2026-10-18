@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import {
   AGENT_EVENT_CHANNEL,
+  type AgentEvent,
   PROMPT_DRAFT_CHANNEL,
   PROMPT_QUEUE_CHANNEL,
   PROMPT_SEND_CHANNEL,
@@ -24,9 +25,16 @@ import { createAgentSession } from './session'
  * window on the same channel as the session's own events. Text sent while
  * a question is pending answers the question instead of starting a turn.
  *
- * The same two streams, in the same order, go to the recorder (#64), so the
- * session folder on disk holds what the window showed.
+ * The same streams, in the same order, go to the recorder (#64), so the
+ * session folder on disk holds what the window showed. A third, optional
+ * stream carries the cockpit's own notices, a refused site permission (#49),
+ * to both places the same way.
  */
+
+/** Anything that emits agent events the window and the recorder should see. */
+export interface EventSource {
+  on(listener: (event: AgentEvent) => void): () => void
+}
 export interface SessionBridgeOptions {
   /** The working directory the agent runs in: the folder the app was started in. */
   readonly cwd: string
@@ -35,6 +43,8 @@ export interface SessionBridgeOptions {
   readonly recorder: SessionRecorder
   /** The model from the settings; `null` leaves the choice to the CLI. */
   readonly model: string | null
+  /** The cockpit's own notices, shown and recorded like any event. */
+  readonly notices?: EventSource | undefined
 }
 
 export function installSessionBridge(options: SessionBridgeOptions): PromptQueue {
@@ -51,6 +61,10 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
   permissions.on((event) => {
+    recorder.record(event)
+    broadcast(AGENT_EVENT_CHANNEL, event)
+  })
+  options.notices?.on((event) => {
     recorder.record(event)
     broadcast(AGENT_EVENT_CHANNEL, event)
   })

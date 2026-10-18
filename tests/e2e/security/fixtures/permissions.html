@@ -61,7 +61,10 @@
           })
         },
         hid: function () {
-          return navigator.hid.requestDevice({ filters: [] }).then(function () {
+          // WebHID resolves with an empty list, rather than rejecting, when
+          // the chooser is refused or never shown: an empty list is a refusal.
+          return navigator.hid.requestDevice({ filters: [] }).then(function (devices) {
+            if (devices.length === 0) throw new Error('no device granted')
             return 'granted'
           })
         },

@@ -184,6 +184,8 @@ export class OrgTranscript {
         return event.outcome === 'answered'
           ? ''
           : note(describeOutcome(event.toolName, event.outcome))
+      case 'notice':
+        return note(event.text)
     }
   }
 }

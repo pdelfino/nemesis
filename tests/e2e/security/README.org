@@ -12,7 +12,10 @@ the same ground:
 - =launchNemesis()= builds on a throwaway =userData= directory, launches the
   built app in =out/= with =NODE_ENV=test= so the main process resolves the
   deterministic Agent SDK mock in =src/main/agent/mock.ts=, hands back the
-  cockpit window, and deletes the profile on =close()=.
+  cockpit window, and deletes the profile on =close()=. It passes Chromium
+  =--use-fake-device-for-media-stream= so a camera or microphone request
+  reaches the app's permission handler instead of stalling in the real
+  audio capture stack on macOS (#49); the switch grants nothing.
 - =openPageBuffer(url)= loads a URL in its own hardened, preload-free
   =WebContents=, the way a page buffer will hold one, and reports Chromium's
   refusal in =loadError= when the load never commits. =openPageBuffer(url,
