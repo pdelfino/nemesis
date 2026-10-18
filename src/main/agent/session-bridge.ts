@@ -7,6 +7,7 @@ import {
   PROMPT_STATE_CHANNEL,
 } from '../../shared/agent'
 import { isInternalSender } from '../commands/dispatcher'
+import type { SessionRecorder } from '../transcripts'
 import type { PermissionBridge } from './permission-bridge'
 import { parseDraft, parsePromptText, PromptQueue } from './prompt-queue'
 import { createAgentSession } from './session'
@@ -22,20 +23,37 @@ import { createAgentSession } from './session'
  * asks about waits on a key, and what the bridge announces goes to the
  * window on the same channel as the session's own events. Text sent while
  * a question is pending answers the question instead of starting a turn.
+ *
+ * The same two streams, in the same order, go to the recorder (#64), so the
+ * session folder on disk holds what the window showed.
  */
 export interface SessionBridgeOptions {
   /** The working directory the agent runs in: the folder the app was started in. */
   readonly cwd: string
   readonly permissions: PermissionBridge
+  /** Writes the session folder. */
+  readonly recorder: SessionRecorder
+  /** The model from the settings; `null` leaves the choice to the CLI. */
+  readonly model: string | null
 }
 
 export function installSessionBridge(options: SessionBridgeOptions): PromptQueue {
-  const { permissions } = options
-  const session = createAgentSession({ cwd: options.cwd, permissionHandler: permissions })
+  const { permissions, recorder } = options
+  const session = createAgentSession({
+    cwd: options.cwd,
+    permissionHandler: permissions,
+    ...(options.model === null ? {} : { model: options.model }),
+  })
   const queue = new PromptQueue(session)
 
-  session.on((event) => broadcast(AGENT_EVENT_CHANNEL, event))
-  permissions.on((event) => broadcast(AGENT_EVENT_CHANNEL, event))
+  session.on((event) => {
+    recorder.record(event)
+    broadcast(AGENT_EVENT_CHANNEL, event)
+  })
+  permissions.on((event) => {
+    recorder.record(event)
+    broadcast(AGENT_EVENT_CHANNEL, event)
+  })
   queue.subscribe((state) => broadcast(PROMPT_QUEUE_CHANNEL, state))
 
   ipcMain.handle(PROMPT_SEND_CHANNEL, (event: IpcMainInvokeEvent, payload: unknown) => {
@@ -57,6 +75,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   })
 
   // The CLI under the SDK is a child process; it must not outlive the app.
+  // Stopping emits the final event, which the recorder writes and closes on.
   app.once('before-quit', () => {
     void session.stop()
   })
