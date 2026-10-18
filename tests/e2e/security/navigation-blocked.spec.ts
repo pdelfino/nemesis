@@ -5,16 +5,25 @@ import { HARDENED_WEB_PREFERENCES } from '../../../src/main/security/web-prefere
 import { fixtureServer, launchNemesis } from './_harness'
 
 /**
- * SECURITY.org, non-negotiables row 5: "Navigation is controlled", asserted
- * the way the table asks, `will-navigate` blocks `file:`, `javascript:` and a
- * top-level `data:` URL (#48, threats T1 and T3).
+ * SECURITY.org, non-negotiables row 5: "Navigation is controlled" (#48,
+ * threats T1 and T3): from a page, `file:` and a top-level `data:` URL never
+ * commit, a `javascript:` URL never reaches the app and never leaves the
+ * page's own origin, and the policy refuses all three, and anything off
+ * http(s), for any navigation that does reach it (the unit table in
+ * tests/unit/navigation-policy.test.ts).
  *
  * The navigation fixture sets `location` to each of the three from a page
- * buffer, and none commits: the URL, the title and a canary paragraph are what
- * they were. Chromium's renderer refuses all three from an http page before
- * the main process hears of them, so the live evidence that the policy is
- * installed and deciding on that WebContents is a fourth URL the renderer does
- * hand over, one on the internal scheme, which a page may never reach.
+ * buffer. Chromium's renderer refuses `file:` and top-level `data:` before any
+ * navigation exists and says so on the page's console; the spec waits for
+ * that line, so it never races the refusal, then reads the untouched
+ * document. A `javascript:` URL is not a navigation at all: Chromium runs it
+ * as the page's own script, in the page's own origin, on a posted task, and
+ * replaces the document with the string it returns, which the page's own
+ * script could do at any time. The spec waits for that rewrite and asserts
+ * that nothing left the origin, nothing was requested and the main process
+ * saw nothing. The live evidence that the policy is installed and deciding on
+ * that WebContents is a fourth URL the renderer does hand over, one on the
+ * internal scheme, which a page may never reach.
  *
  * The cockpit is an internal page on nemesis://app (#50), a standard and
  * secure origin, so Chromium's renderer refuses file:///etc/hosts from it
@@ -27,7 +36,7 @@ import { fixtureServer, launchNemesis } from './_harness'
 
 interface NavigationWindow {
   readonly __navigation?: { readonly label: string; readonly url: string }
-  readonly location?: { href: string }
+  readonly location?: { href: string; readonly origin: string }
   readonly document?: {
     readonly title: string
     readonly readyState: string
@@ -90,15 +99,19 @@ test('a page cannot navigate itself or the app to file:, javascript: or a top-le
     await expect(buffer.page).toHaveTitle('navigation')
     await expect(buffer.page.locator('#canary')).toHaveText(CANARY)
 
-    // The three the row names, from the fixture's own buttons. Each one is
-    // asked for (the fixture records it) and none commits.
-    for (const [button, label] of [
-      ['#go-file', 'file'],
-      ['#go-data', 'data'],
-      ['#go-javascript', 'javascript'],
+    // file: and a top-level data: URL, from the fixture's own buttons. Each
+    // one is asked for (the fixture records it), Chromium's renderer refuses
+    // it before any navigation exists and says so on the page's console, and
+    // nothing commits: the URL, the title and the canary are what they were.
+    const pageConsole: string[] = []
+    buffer.page.on('console', (message) => pageConsole.push(message.text()))
+    for (const [button, label, refusal] of [
+      ['#go-file', 'file', 'Not allowed to load local resource: file:///etc/hosts'],
+      ['#go-data', 'data', 'Not allowed to navigate top frame to data URL'],
     ] as const) {
       await buffer.page.click(button)
       await expect(buffer.page.locator('#result')).toHaveText(label)
+      await expect.poll(() => pageConsole.some((line) => line.startsWith(refusal))).toBe(true)
       expect(
         (await buffer.page.evaluate(() => (globalThis as NavigationWindow).__navigation))?.label,
       ).toBe(label)
@@ -125,6 +138,39 @@ test('a page cannot navigate itself or the app to file:, javascript: or a top-le
       pwned: false,
       appName: null,
     })
+
+    // javascript: is not a navigation. Chromium runs the URL as the page's
+    // own script, in the page's own origin, on a posted task, and replaces
+    // the document with the string it returns: the page rewrote itself,
+    // which its own script could do at any time. The spec waits for the
+    // rewrite (an earlier version read the page before the task ran, passed
+    // by luck on a fast machine and lost its context under it on CI), then
+    // asserts what matters: the URL and the origin are the page's, nothing
+    // was requested, and the main process saw no navigation to refuse.
+    // Everything here goes through `evaluate`: after the cancelled navigation
+    // above, a click or a locator on this page would hang (see readState).
+    const refusalsBefore = blocked().length
+    await buffer.page.evaluate(() => {
+      const page = globalThis as NavigationWindow
+      if (page.location)
+        page.location.href = `javascript:'<h1 id="pwned">NEMESIS-NAVIGATION-PWNED</h1>'`
+    })
+    await expect
+      .poll(async () => {
+        try {
+          return (await readState(buffer.page)).pwned
+        } catch {
+          // The rewrite can land under a read; the next one sees the new document.
+          return false
+        }
+      })
+      .toBe(true)
+    expect(buffer.page.url()).toBe(url)
+    expect(
+      await buffer.page.evaluate(() => (globalThis as NavigationWindow).location?.origin ?? null),
+    ).toBe(fixtures.httpOrigin)
+    expect(fixtures.requested).toEqual(['/navigation.html'])
+    expect(blocked().length).toBe(refusalsBefore)
 
     // The internal page: file:///etc/hosts is refused by the renderer, which
     // says so on the console, and https: is a page's place, not the
