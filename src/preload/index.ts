@@ -5,6 +5,7 @@ import {
   PROMPT_QUEUE_CHANNEL,
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
+  TRANSCRIPT_GOTO_CHANNEL,
 } from '../shared/agent'
 import type { NemesisApi } from '../shared/api'
 import type { BufferSpec } from '../shared/buffers'
@@ -51,6 +52,7 @@ const base = {
   onPaletteOpen: (listener) => on(PALETTE_OPEN_CHANNEL, listener),
   answerPalette: (answer) => invoke(PALETTE_ANSWER_CHANNEL, answer),
   onHelpShown: (listener) => on(HELP_SHOWN_CHANNEL, listener),
+  onTranscriptGoto: (listener) => on(TRANSCRIPT_GOTO_CHANNEL, listener),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

@@ -3,6 +3,7 @@ import { EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '../../src/shared/agent'
 import {
+  lineWithText,
   transactionFor,
   transcriptExtensions,
   transcriptField,
@@ -226,5 +227,33 @@ describe('the transcript document', () => {
       ].join('\n'),
     )
     expect(transactionFor(state, done)).toBeNull()
+  })
+})
+
+describe('the line a search match points at (#69)', () => {
+  const state = append(
+    empty(),
+    user,
+    { type: 'notice', text: 'Session started: claude-mock-1, default mode, in /work' },
+    reply,
+    turnEnd,
+    { type: 'user-text', text: 'hello' },
+    { type: 'assistant-text', text: 'You said: hello' },
+    { type: 'assistant-text', text: 'and the tomatoes need sun' },
+  )
+
+  it('is the last line with that text, the resumed history being the newest part', () => {
+    expect(state.doc.lines).toBe(14)
+    expect(lineWithText(state.doc, 'You said: hello')?.number).toBe(13)
+    expect(lineWithText(state.doc, 'hello')?.number).toBe(10)
+  })
+
+  it('finds a note without the dash the Org file gave it, then any line containing the text', () => {
+    expect(
+      lineWithText(state.doc, '- Session started: claude-mock-1, default mode, in /work')?.text,
+    ).toBe('Session started: claude-mock-1, default mode, in /work')
+    expect(lineWithText(state.doc, 'tomatoes')?.text).toBe('and the tomatoes need sun')
+    expect(lineWithText(state.doc, 'nowhere')).toBeNull()
+    expect(lineWithText(state.doc, '')).toBeNull()
   })
 })

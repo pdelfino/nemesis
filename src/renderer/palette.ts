@@ -2,8 +2,8 @@ import { EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { BufferType, KeyOutcome } from '../shared/keys'
-import type { PaletteCandidate, PaletteRequest } from '../shared/palette'
-import { rankCandidates } from '../shared/palette'
+import type { PaletteAnswer, PaletteCandidate, PaletteRequest } from '../shared/palette'
+import { FREE_TEXT_DOC, rankCandidates } from '../shared/palette'
 import { followAppearance } from './theme'
 
 /**
@@ -12,7 +12,9 @@ import { followAppearance } from './theme'
  * section gives way to a one-line query with Emacs keys, the candidates ranked
  * under it and the doc line of the highlighted one. `RET` answers with that
  * candidate, `C-g` (through `keyboard-quit`, from any buffer) and `ESC` answer
- * with nothing, `C-n`/`C-p`, the arrows and `TAB` move the highlight.
+ * with nothing, `C-n`/`C-p`, the arrows and `TAB` move the highlight. A read
+ * that takes free text (#69) is answered with the query itself when it
+ * matches no candidate; the doc line says so while nothing is highlighted.
  *
  * The renderer decides nothing about what a choice means: the main process
  * owns the sources and acts on the answer, and tells this module when the
@@ -150,20 +152,31 @@ export function installPalette(): Palette {
       }),
     )
     const current = ranked[selected]
-    doc.textContent = current === undefined ? 'No match.' : current.doc
+    doc.textContent =
+      current !== undefined ? current.doc : request?.freeText === true ? FREE_TEXT_DOC : 'No match.'
   }
 
   function accept(): boolean {
     if (request === null) return true
     const choice = ranked[selected]
-    if (choice === undefined) {
-      doc.textContent = 'No match.'
+    if (choice !== undefined) {
+      answer({ id: request.id, choice: choice.id })
       return true
     }
-    const { id } = request
+    // A free-text read takes the query itself; an empty one is nothing to answer.
+    const typed = view.state.doc.toString()
+    if (request.freeText === true && typed.trim().length > 0) {
+      answer({ id: request.id, choice: null, text: typed })
+      return true
+    }
+    doc.textContent = request.freeText === true ? FREE_TEXT_DOC : 'No match.'
+    return true
+  }
+
+  function answer(reply: PaletteAnswer): void {
     const from = openedFrom
     close()
-    window.nemesis.answerPalette({ id, choice: choice.id }).then(
+    window.nemesis.answerPalette(reply).then(
       (outcome) => {
         if (outcome.command !== undefined) {
           palette.onRan?.({ status: 'command', chord: 'M-x', command: outcome.command }, from)
@@ -171,7 +184,6 @@ export function installPalette(): Palette {
       },
       (error: unknown) => console.error('Palette answer failed:', error),
     )
-    return true
   }
 
   function cancel(): boolean {

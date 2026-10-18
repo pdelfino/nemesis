@@ -1,4 +1,10 @@
-import type { AgentEvent, PromptQueueState, PromptReceipt, PromptState } from './agent'
+import type {
+  AgentEvent,
+  PromptQueueState,
+  PromptReceipt,
+  PromptState,
+  TranscriptGoto,
+} from './agent'
 import type { BufferInfo, BufferList, BufferSpec } from './buffers'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
@@ -35,6 +41,8 @@ export interface NemesisApi {
   answerPalette(answer: PaletteAnswer): Promise<PaletteOutcome>
   /** The help buffer has new text: describe-command or describe-key answered (#65). */
   onHelpShown(listener: (content: HelpContent) => void): void
+  /** The transcript's point should go to this line: a search match was opened (#69). */
+  onTranscriptGoto(listener: (target: TranscriptGoto) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

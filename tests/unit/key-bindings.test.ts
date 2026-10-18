@@ -28,6 +28,7 @@ describe('the shape of a keymap', () => {
       'C-x b',
       'C-x k',
       'C-x n',
+      'C-x s',
       'M-x',
     ])
     expect(bindings.global.prefixes).toEqual(['C-c', 'C-h', 'C-x'])

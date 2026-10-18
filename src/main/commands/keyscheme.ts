@@ -12,6 +12,7 @@ import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { HelpBuffers } from '../help'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
+import { describeMatch, TranscriptSearch } from '../transcript-search'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -39,7 +40,9 @@ import { CommandRegistry, defineCommand } from './registry'
  * buffer and reads one and what to restore, `undo` sends the guide's "undo
  * that" with the last tool calls quoted, and `new-task` drops the session.
  * `resume-session` (#67) reads a past session off the sessions folder and
- * picks it up through the manager.
+ * picks it up through the manager. `search-transcripts` (#69) reads a query
+ * as free text, lists the matches of every transcript on disk, and opens
+ * the session a match belongs to with the transcript's point on that line.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -59,6 +62,8 @@ export interface CockpitDeps {
   readonly prompts: Pick<PromptQueue, 'submit'>
   /** The sessions folder, as `resume-session` lists and reads it (#67). */
   readonly sessions: SessionSource
+  /** The transcripts on disk, as `search-transcripts` scans them (#69). */
+  readonly transcripts: TranscriptSearch
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -76,6 +81,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     agent,
     prompts: partial.prompts ?? new PromptQueue(agent),
     sessions: partial.sessions ?? NO_SESSIONS,
+    transcripts: partial.transcripts ?? new TranscriptSearch({ sessionsDir: null }),
   }
 }
 
@@ -89,7 +95,7 @@ function report(name: string): (error: unknown) => void {
 }
 
 export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): readonly Command[] {
-  const { buffers, permissions, prompter, help, keys, agent, prompts, sessions } = deps
+  const { buffers, permissions, prompter, help, keys, agent, prompts, sessions, transcripts } = deps
   return [
     defineCommand({
       name: 'execute-command',
@@ -179,6 +185,31 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'search-transcripts',
+      doc: 'Search every session on disk for a text; a match opens its session at that line.',
+      run: () => {
+        // Two reads: the query as free text, then one of the matches. The
+        // match resumes its session the way resume-session does, then the
+        // transcript buffer takes the point and is told the line to go to.
+        prompter.read(
+          { source: 'search-query', prompt: 'Search transcripts:', freeText: true },
+          async (query) => {
+            const matches = await transcripts.search(query.trim())
+            const prompt =
+              matches.length === 0 ? `Nothing matches "${query.trim()}":` : 'Open match:'
+            prompter.read({ source: 'matches', prompt }, async (id) => {
+              const match = transcripts.matches[Number(id)]
+              if (match === undefined) return
+              await agent.resume(match.sessionId, sessions.history(match.sessionId))
+              const transcript = buffers.list().find((buffer) => buffer.kind === 'transcript')
+              if (transcript !== undefined) buffers.switchTo(transcript.id)
+              transcripts.goTo(match)
+            })
+          },
+        )
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -248,14 +279,17 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
 
 /**
  * The palette sources of M1 (#65): the commands, with their keys, and the
- * buffers; the rewind reads of #84, the checkpoints and what to restore; and
- * the sessions on disk (#67), newest first, titled by their first prompt.
+ * buffers; the rewind reads of #84, the checkpoints and what to restore;
+ * the sessions on disk (#67), newest first, titled by their first prompt;
+ * and the two reads of a search (#69): the query, over nothing, since the
+ * text typed is the answer, and the matches of the last search.
  */
 export function cockpitSources(
   registry: CommandRegistry,
   buffers: BufferRegistry,
   agent: SessionManager,
   sessions: SessionSource,
+  transcripts: TranscriptSearch,
 ): readonly PaletteSource[] {
   return [
     {
@@ -301,6 +335,19 @@ export function cockpitSources(
           doc: `${session.id} in ${session.cwd}${session.id === agent.sessionId ? ', current' : ''}`,
         })),
     },
+    {
+      name: 'search-query',
+      candidates: () => [],
+    },
+    {
+      name: 'matches',
+      candidates: () =>
+        transcripts.matches.map((match, index) => ({
+          id: String(index),
+          label: describeMatch(match),
+          doc: `${match.sessionId}, line ${match.line}`,
+        })),
+    },
   ]
 }
 
@@ -322,6 +369,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
+  'C-x s': 'search-transcripts',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
@@ -358,7 +406,13 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
   const deps = resolveCockpitDeps(partial)
   const registry = new CommandRegistry()
   registry.registerAll(cockpitCommands(deps, registry))
-  for (const source of cockpitSources(registry, deps.buffers, deps.agent, deps.sessions)) {
+  for (const source of cockpitSources(
+    registry,
+    deps.buffers,
+    deps.agent,
+    deps.sessions,
+    deps.transcripts,
+  )) {
     deps.prompter.addSource(source)
   }
   return registry

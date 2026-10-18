@@ -14,6 +14,8 @@ import {
   StateField,
   type ChangeDesc,
   type Extension,
+  type Line,
+  type Text,
   type TransactionSpec,
 } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
@@ -296,6 +298,26 @@ function formatInput(input: Record<string, unknown>): string {
   } catch {
     return '(arguments could not be shown)'
   }
+}
+
+/**
+ * The line a search match points at (#69): the last line with that text,
+ * since a resumed history is the newest part of the document; failing that,
+ * a note's text without the list dash the Org file gave it, then any line
+ * containing the text. Null when nothing in the document has it.
+ */
+export function lineWithText(doc: Text, text: string): Line | null {
+  if (text.length === 0) return null
+  const note = text.startsWith('- ') ? text.slice(2) : null
+  let containing: Line | null = null
+  let asNote: Line | null = null
+  for (let number = doc.lines; number >= 1; number -= 1) {
+    const line = doc.line(number)
+    if (line.text === text) return line
+    if (asNote === null && note !== null && line.text === note) asNote = line
+    if (containing === null && line.text.includes(text)) containing = line
+  }
+  return asNote ?? containing
 }
 
 /** A header line folds its block; the fold gutter, TAB and search all ask here. */

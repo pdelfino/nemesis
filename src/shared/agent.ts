@@ -56,3 +56,14 @@ export const PROMPT_STATE_CHANNEL = 'nemesis:prompt-state' as const
 export const PROMPT_QUEUE_CHANNEL = 'nemesis:prompt-queue' as const
 /** The main process pushes every agent event, unchanged. */
 export const AGENT_EVENT_CHANNEL = 'nemesis:agent-event' as const
+
+/**
+ * Where the transcript's point should go (#69): the line of a search match,
+ * as the window shows it, once the session it belongs to is shown again.
+ */
+export interface TranscriptGoto {
+  readonly text: string
+}
+
+/** The main process pushes a line for the transcript buffer to move its point to. */
+export const TRANSCRIPT_GOTO_CHANNEL = 'nemesis:transcript-goto' as const

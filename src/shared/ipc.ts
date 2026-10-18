@@ -19,6 +19,8 @@ import type {
   PromptQueueState,
   PromptReceipt,
   PromptState,
+  TRANSCRIPT_GOTO_CHANNEL,
+  TranscriptGoto,
 } from './agent'
 import type {
   BUFFER_CREATE_CHANNEL,
@@ -71,6 +73,7 @@ export interface PushChannels {
   readonly [AGENT_EVENT_CHANNEL]: AgentEvent
   readonly [PALETTE_OPEN_CHANNEL]: PaletteRequest
   readonly [HELP_SHOWN_CHANNEL]: HelpContent
+  readonly [TRANSCRIPT_GOTO_CHANNEL]: TranscriptGoto
 }
 
 export type InvokeChannel = keyof InvokeChannels
