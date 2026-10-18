@@ -30,20 +30,30 @@ export interface AgentUserTextEvent {
   readonly text: string
 }
 
+/**
+ * Set on an event that happened inside a subagent (#85): the id of the tool
+ * call, on the main thread, that started it. The transcript shows these as
+ * collapsed child blocks, so an investigation delegated to subagents leaves
+ * the main view clean. Absent on everything the main thread did itself.
+ */
+export interface AgentChildEvent {
+  readonly parentToolUseId?: string | undefined
+}
+
 /** One finished text block from the assistant. */
-export interface AgentTextEvent {
+export interface AgentTextEvent extends AgentChildEvent {
   readonly type: 'assistant-text'
   readonly text: string
 }
 
 /** One finished thinking block. The transcript shows it folded (#62). */
-export interface AgentThinkingEvent {
+export interface AgentThinkingEvent extends AgentChildEvent {
   readonly type: 'assistant-thinking'
   readonly text: string
 }
 
 /** The assistant asked for a tool. The arguments are data, never instructions. */
-export interface AgentToolUseEvent {
+export interface AgentToolUseEvent extends AgentChildEvent {
   readonly type: 'tool-use'
   readonly toolUseId: string
   readonly name: string
@@ -51,7 +61,7 @@ export interface AgentToolUseEvent {
 }
 
 /** What a tool returned, paired with its call by `toolUseId`. */
-export interface AgentToolResultEvent {
+export interface AgentToolResultEvent extends AgentChildEvent {
   readonly type: 'tool-result'
   readonly toolUseId: string
   readonly isError: boolean

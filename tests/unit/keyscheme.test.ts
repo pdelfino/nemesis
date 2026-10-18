@@ -60,6 +60,12 @@ describe('the default Emacs keyscheme (#59)', () => {
     expect(GLOBAL_KEYMAP.commandFor('C-c C-p')).toBe('toggle-plan-mode')
     expect(BUFFER_KEYMAPS.plan?.commandFor('C-c C-c')).toBe('approve-plan')
     expect(BUFFER_KEYMAPS.plan?.commandFor('C-c C-k')).toBe('reject-plan')
+    // The spec buffer's one action over the global send (#85); the three
+    // guideline commands are M-x only.
+    expect(BUFFER_KEYMAPS.spec?.commandFor('C-c C-c')).toBe('start-fresh-session-from-spec')
+    for (const name of ['interview', 'investigate', 'ask-codebase']) {
+      expect(GLOBAL_KEYMAP.entries().some((entry) => entry.command === name)).toBe(false)
+    }
   })
 
   it('registers every command a keymap names', () => {

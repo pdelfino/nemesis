@@ -118,6 +118,81 @@ describe('the transcript document', () => {
     expect(folds(state)).toEqual(['\nout loud', `\n${long.text}`])
   })
 
+  it('shows what happened inside a subagent as child blocks, folded, that never take the main reply (#85)', () => {
+    const agent: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 'agent-1',
+      name: 'Agent',
+      input: { prompt: 'how tokens refresh' },
+    }
+    const childUse: AgentEvent = {
+      type: 'tool-use',
+      toolUseId: 'read-1',
+      name: 'Read',
+      input: { path: '/mock/notes.txt' },
+      parentToolUseId: 'agent-1',
+    }
+    const childResult: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 'read-1',
+      isError: false,
+      text: 'alpha',
+      parentToolUseId: 'agent-1',
+    }
+    const childText: AgentEvent = {
+      type: 'assistant-text',
+      text: 'Found 2 files.',
+      parentToolUseId: 'agent-1',
+    }
+    const summary: AgentEvent = {
+      type: 'tool-result',
+      toolUseId: 'agent-1',
+      isError: false,
+      text: 'Summary.',
+    }
+    const state = append(empty(), user, reply, agent, childUse, childResult, childText, summary, {
+      type: 'assistant-text',
+      text: 'Investigated.',
+    })
+    expect(state.doc.toString()).toContain(
+      'Subagent tool: Read\n{\n  "path": "/mock/notes.txt"\n}\n\nSubagent result: Read\nalpha\n\nSubagent: Claude\nFound 2 files.',
+    )
+    // Every child body is folded; the main thread's blocks are not.
+    expect(folds(state)).toEqual([
+      '\n{\n  "path": "/mock/notes.txt"\n}',
+      '\nalpha',
+      '\nFound 2 files.',
+    ])
+    const blocks = state.field(transcriptField).blocks
+    expect(blocks.map((block) => `${block.kind}${block.child ? ' child' : ''}`)).toEqual([
+      'user',
+      'assistant',
+      'tool-use',
+      'tool-use child',
+      'tool-result child',
+      'assistant child',
+      'tool-result',
+      'assistant',
+    ])
+    // The child lines carry the class the stylesheet indents.
+    const classes: string[] = []
+    state.field(transcriptField).decorations.between(0, state.doc.length, (_f, _t, deco) => {
+      classes.push((deco.spec as { class: string }).class)
+    })
+    expect(classes.filter((name) => name.includes('tr-child'))).toEqual([
+      'tr-header tr-child',
+      'tr-body tr-child',
+      'tr-body tr-child',
+      'tr-body tr-child',
+      'tr-header tr-child',
+      'tr-body tr-child',
+      'tr-header tr-child',
+      'tr-body tr-child',
+    ])
+    // The main reply after the summary is a block of its own, not a line of the child's.
+    expect(state.doc.toString().endsWith('\n\nClaude\nInvestigated.')).toBe(true)
+  })
+
   it('notes a nudge and shows nothing for the context meter, which the mode line draws (#80)', () => {
     const state = append(
       empty(),

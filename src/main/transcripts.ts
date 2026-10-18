@@ -11,7 +11,8 @@ import type { AgentEvent, AgentQuestion } from './agent/events'
  *                 happens and fsynced when a turn ends
  *   session.org   a rendering of the same events a person reads in Emacs: one
  *                 heading per turn, You and Claude under it, tool calls as
- *                 source blocks, tool output as example blocks
+ *                 source blocks, tool output as example blocks, and what
+ *                 happened inside a subagent under headings that say so (#85)
  *
  * The events arrive before the session id does (the user's text is in the
  * stream before the SDK answers with its init frame), so they wait in memory
@@ -130,6 +131,17 @@ export class OrgTranscript {
   }
 
   append(event: AgentEvent): string {
+    if (
+      (event.type === 'assistant-text' ||
+        event.type === 'assistant-thinking' ||
+        event.type === 'tool-use' ||
+        event.type === 'tool-result') &&
+      event.parentToolUseId !== undefined
+    ) {
+      // A subagent's frames never continue Claude's reply on the main thread.
+      this.open = false
+      return this.appendChild(event)
+    }
     if (event.type === 'assistant-text' && this.open) return `${escapeOrg(event.text)}\n`
     this.open = false
     switch (event.type) {
@@ -193,6 +205,42 @@ export class OrgTranscript {
       case 'context-usage':
         // The log keeps the numbers; a person reading the Org file does not need them.
         return ''
+    }
+  }
+
+  private appendChild(
+    event: Extract<AgentEvent, { parentToolUseId?: string | undefined }>,
+  ): string {
+    return appendChildOf(this.toolNames, event)
+  }
+}
+
+/** What happened inside a subagent (#85): the same blocks, under headings that say so. */
+function appendChildOf(
+  toolNames: Map<string, string>,
+  event: Extract<AgentEvent, { parentToolUseId?: string | undefined }>,
+): string {
+  switch (event.type) {
+    case 'assistant-text':
+      return block('** Subagent: Claude', escapeOrg(event.text))
+    case 'assistant-thinking':
+      return block('** Subagent thinking', escapeOrg(event.text))
+    case 'tool-use':
+      toolNames.set(event.toolUseId, event.name)
+      return block(
+        `** Subagent tool: ${event.name}`,
+        '#+begin_src json',
+        escapeOrg(formatInput(event.input)),
+        '#+end_src',
+      )
+    case 'tool-result': {
+      const name = toolNames.get(event.toolUseId) ?? 'tool'
+      return block(
+        `** Subagent result: ${name}${event.isError ? ' (error)' : ''}`,
+        '#+begin_example',
+        escapeOrg(event.text.length === 0 ? '(no output)' : event.text),
+        '#+end_example',
+      )
     }
   }
 }

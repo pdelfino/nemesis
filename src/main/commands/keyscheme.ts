@@ -14,6 +14,7 @@ import { describeDiff, DiffBuffers } from '../diffs'
 import { HelpBuffers } from '../help'
 import { PlanBuffers } from '../plans'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
+import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
@@ -21,6 +22,12 @@ import type { BufferType } from '../../shared/keys'
 import type { BufferKeymaps, Keymap } from './keymap'
 import { defineKeymap, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
+import {
+  askCodebasePrompt,
+  freshSessionPrompt,
+  interviewPrompt,
+  investigatePrompt,
+} from './guide-prompts'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -54,7 +61,13 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * guide's plan mode (#82): `toggle-plan-mode` on `C-c C-p` flips the
  * session's permission mode, and in the plan buffer the agent's plan opens
  * in, `C-c C-c` is `approve-plan` and `C-c C-k` is `reject-plan`, both
- * acted on by the renderer, which holds the text as edited.
+ * acted on by the renderer, which holds the text as edited. The guide's
+ * communication practices (#85) are three named commands that read a line
+ * and send a prompt: `ask-codebase` sends the question as typed,
+ * `investigate` wraps it in the guide's "use subagents to investigate",
+ * `interview` sends the guide's interview prompt; the spec the interview
+ * ends with opens as a spec buffer, where `C-c C-c` is
+ * `start-fresh-session-from-spec`.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -80,6 +93,8 @@ export interface CockpitDeps {
   readonly diffs: DiffBuffers
   /** The plans the agent asks to leave plan mode with, as plan buffers (#82). */
   readonly plans: PlanBuffers
+  /** The specs the agent writes at the end of an interview, as spec buffers (#85). */
+  readonly specs: SpecBuffers
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -108,6 +123,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     plans:
       partial.plans ??
       new PlanBuffers(buffers, permissions, { leavePlanMode: () => agent.leavePlanMode() }),
+    specs: partial.specs ?? new SpecBuffers(buffers),
   }
 }
 
@@ -133,6 +149,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     transcripts,
     diffs,
     plans,
+    specs,
   } = deps
   return [
     defineCommand({
@@ -340,6 +357,55 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'ask-codebase',
+      doc: 'Ask the codebase a question, as you would ask another engineer; sent as typed.',
+      run: () => {
+        prompter.read(
+          { source: 'question', prompt: 'Ask the codebase:', freeText: true },
+          async (question) => {
+            await prompts.submit(askCodebasePrompt(question))
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'investigate',
+      doc: 'Delegate a question to subagents, so the research stays out of the main context.',
+      run: () => {
+        prompter.read(
+          { source: 'question', prompt: 'Investigate:', freeText: true },
+          async (question) => {
+            await prompts.submit(investigatePrompt(question))
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'interview',
+      doc: 'Have the agent interview you about a feature and write the spec to SPEC.md; the spec opens as a buffer.',
+      run: () => {
+        prompter.read(
+          { source: 'question', prompt: 'Interview me about:', freeText: true },
+          async (description) => {
+            await prompts.submit(interviewPrompt(description))
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'start-fresh-session-from-spec',
+      doc: 'Clear the context and start a fresh session with the spec in the current spec buffer as its first message.',
+      run: () => {
+        const spec = specs.current
+        if (spec === null) throw new CommandError('No spec buffer is open')
+        specs.take(spec.bufferId)
+        agent
+          .newTask()
+          .then(() => prompts.submit(freshSessionPrompt(spec.filePath, spec.text)))
+          .catch(report('start-fresh-session-from-spec'))
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -413,7 +479,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * the sessions on disk (#67), newest first, titled by their first prompt;
  * and the two reads of a search (#69): the query, over nothing, since the
  * text typed is the answer, and the matches of the last search; and the
- * diffs of the session (#68), oldest first.
+ * diffs of the session (#68), oldest first; and the one line the three
+ * guideline commands read (#85), over nothing, like a search query.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -473,6 +540,10 @@ export function cockpitSources(
     },
     {
       name: 'side-question',
+      candidates: () => [],
+    },
+    {
+      name: 'question',
       candidates: () => [],
     },
     {
@@ -542,6 +613,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   plan: defineKeymap('plan', {
     'C-c C-c': 'approve-plan',
     'C-c C-k': 'reject-plan',
+  }),
+  // In a spec buffer the send key starts the fresh session the guide says to (#85).
+  spec: defineKeymap('spec', {
+    'C-c C-c': 'start-fresh-session-from-spec',
   }),
 }
 

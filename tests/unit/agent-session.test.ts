@@ -333,6 +333,66 @@ describe('the event mapping', () => {
     const partial = { type: 'stream_event', session_id: 'mock-session' } as unknown as SDKMessage
     expect(eventsFromMessage(partial)).toEqual([])
   })
+
+  it('names the parent tool call on every frame produced inside a subagent (#85)', () => {
+    const inside: SDKMessage = {
+      type: 'assistant',
+      parent_tool_use_id: 'agent-1',
+      uuid: '00000000-0000-4000-8000-000000000001',
+      session_id: 'mock-session',
+      message: {
+        id: 'm1',
+        container: null,
+        content: [
+          { type: 'text', text: 'Found it.', citations: null },
+          { type: 'tool_use', id: 'read-1', name: 'Read', input: { path: '/x' } },
+        ],
+        context_management: null,
+        diagnostics: null,
+        model: 'claude-mock-1',
+        role: 'assistant',
+        stop_details: null,
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        type: 'message',
+        usage: {} as SDKAssistantMessage['message']['usage'],
+      },
+    }
+    expect(eventsFromMessage(inside)).toEqual([
+      { type: 'assistant-text', text: 'Found it.', parentToolUseId: 'agent-1' },
+      {
+        type: 'tool-use',
+        toolUseId: 'read-1',
+        name: 'Read',
+        input: { path: '/x' },
+        parentToolUseId: 'agent-1',
+      },
+    ])
+    const result: SDKMessage = {
+      type: 'user',
+      parent_tool_use_id: 'agent-1',
+      uuid: '00000000-0000-4000-8000-000000000002',
+      session_id: 'mock-session',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'read-1', content: 'alpha', is_error: false },
+        ],
+      },
+    }
+    expect(eventsFromMessage(result)).toEqual([
+      {
+        type: 'tool-result',
+        toolUseId: 'read-1',
+        isError: false,
+        text: 'alpha',
+        parentToolUseId: 'agent-1',
+      },
+    ])
+    // A main-thread frame carries no parent at all, not a null one.
+    const main = { ...inside, parent_tool_use_id: null }
+    expect(eventsFromMessage(main).every((event) => !('parentToolUseId' in event))).toBe(true)
+  })
 })
 
 // The context meter and the compaction (#80), over the mock's usage numbers:

@@ -28,7 +28,9 @@ import type { AgentEvent, AgentQuestion } from '../shared/agent'
  * decorations and fold ranges over that text, never markup inside it. So
  * search, copy, kill-ring-save and the point behave as they do in any text
  * buffer, and copying a region yields the words on the screen and nothing
- * else. Markdown is highlighted, not rendered.
+ * else. Markdown is highlighted, not rendered. What happened inside a
+ * subagent (#85) is a child block: marked as such, folded on arrival, so an
+ * investigation delegated there leaves the main view clean.
  *
  * Nothing here touches a window: the unit tests build an EditorState from
  * transcriptExtensions() and run transactionFor() over it. The view, the
@@ -41,6 +43,8 @@ export type BlockKind =
 /** One block: a header line, then zero or more body lines. Positions are in the document. */
 export interface TranscriptBlock {
   readonly kind: BlockKind
+  /** The block happened inside a subagent (#85): shown indented and folded. */
+  readonly child: boolean
   /** Start of the header line. */
   readonly from: number
   /** End of the header line. The body, when there is one, starts on the next line. */
@@ -86,6 +90,7 @@ const blockClosed = StateEffect.define<null>()
 function mapBlock(block: TranscriptBlock, mapping: ChangeDesc): TranscriptBlock {
   return {
     kind: block.kind,
+    child: block.child,
     from: mapping.mapPos(block.from, 1),
     headerTo: mapping.mapPos(block.headerTo, -1),
     to: mapping.mapPos(block.to, -1),
@@ -108,7 +113,8 @@ export const transcriptField = StateField.define<TranscriptState>({
           add: lineDecorations(tr.state, block, block.from),
           sort: true,
         })
-        open = block.kind === 'assistant'
+        // A subagent's reply never takes the main thread's next text.
+        open = block.kind === 'assistant' && !block.child
       } else if (effect.is(blockExtended)) {
         const last = blocks[blocks.length - 1]
         if (last === undefined) continue
@@ -137,8 +143,11 @@ function lineDecorations(state: EditorState, block: TranscriptBlock, fromPos: nu
   for (let number = state.doc.lineAt(fromPos).number; number <= last; number += 1) {
     const line = state.doc.line(number)
     const role = line.from === block.from ? 'tr-header' : 'tr-body'
+    const className = block.child ? `${role} tr-child` : role
     ranges.push(
-      Decoration.line({ class: role, attributes: { 'data-role': block.kind } }).range(line.from),
+      Decoration.line({ class: className, attributes: { 'data-role': block.kind } }).range(
+        line.from,
+      ),
     )
   }
   return ranges
@@ -150,6 +159,15 @@ function lineDecorations(state: EditorState, block: TranscriptBlock, fromPos: nu
  */
 export function transactionFor(state: EditorState, event: AgentEvent): TransactionSpec | null {
   const transcript = state.field(transcriptField)
+  if (
+    (event.type === 'assistant-text' ||
+      event.type === 'assistant-thinking' ||
+      event.type === 'tool-use' ||
+      event.type === 'tool-result') &&
+    event.parentToolUseId !== undefined
+  ) {
+    return childTransaction(state, event)
+  }
   switch (event.type) {
     case 'user-text':
       return appendBlock(state, 'user', HEADERS.user, event.text)
@@ -216,6 +234,38 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
   }
 }
 
+/**
+ * What happened inside a subagent (#85): one block per event, named for what
+ * it is, folded on arrival. The main view keeps the header line only.
+ */
+function childTransaction(
+  state: EditorState,
+  event: Extract<AgentEvent, { parentToolUseId?: string | undefined }>,
+): TransactionSpec {
+  const transcript = state.field(transcriptField)
+  const options = { fold: true, child: true } as const
+  switch (event.type) {
+    case 'assistant-text':
+      return appendBlock(state, 'assistant', 'Subagent: Claude', event.text, options)
+    case 'assistant-thinking':
+      return appendBlock(state, 'thinking', 'Subagent thinking', event.text, options)
+    case 'tool-use':
+      return appendBlock(
+        state,
+        'tool-use',
+        `Subagent tool: ${event.name}`,
+        formatInput(event.input),
+        { ...options, effects: [toolNamed.of({ id: event.toolUseId, name: event.name })] },
+      )
+    case 'tool-result': {
+      const name = transcript.toolNames.get(event.toolUseId) ?? 'tool'
+      const header = `Subagent result: ${name}${event.isError ? ' (error)' : ''}`
+      const body = event.text.length === 0 ? '(no output)' : event.text
+      return appendBlock(state, 'tool-result', header, body, options)
+    }
+  }
+}
+
 function describeOutcome(
   toolName: string,
   outcome: 'allow' | 'allow-session' | 'deny' | 'aborted',
@@ -249,6 +299,8 @@ function formatQuestions(questions: readonly AgentQuestion[]): string {
 interface AppendOptions {
   /** `true` folds the body at once; `'long'` folds it past FOLD_LINES lines. */
   readonly fold?: boolean | 'long'
+  /** The block happened inside a subagent (#85). */
+  readonly child?: boolean
   readonly effects?: readonly StateEffect<unknown>[]
 }
 
@@ -264,6 +316,7 @@ function appendBlock(
   const from = state.doc.length + separator.length
   const block: TranscriptBlock = {
     kind,
+    child: options.child === true,
     from,
     headerTo: from + header.length,
     to: from + text.length,

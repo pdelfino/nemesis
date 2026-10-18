@@ -115,6 +115,40 @@ describe('the Org rendering', () => {
     )
   })
 
+  it('renders what happened inside a subagent under headings that say so (#85)', () => {
+    const text = render([
+      { type: 'user-text', text: 'Use subagents to investigate x' },
+      { type: 'assistant-text', text: 'Looking.' },
+      { type: 'tool-use', toolUseId: 'a1', name: 'Agent', input: { prompt: 'x' } },
+      {
+        type: 'tool-use',
+        toolUseId: 'r1',
+        name: 'Read',
+        input: { path: '/x' },
+        parentToolUseId: 'a1',
+      },
+      {
+        type: 'tool-result',
+        toolUseId: 'r1',
+        isError: false,
+        text: 'alpha',
+        parentToolUseId: 'a1',
+      },
+      { type: 'assistant-text', text: 'Found it.', parentToolUseId: 'a1' },
+      { type: 'tool-result', toolUseId: 'a1', isError: false, text: 'Summary.' },
+      { type: 'assistant-text', text: 'Investigated.' },
+    ])
+    expect(text).toContain('\n** Tool: Agent\n')
+    expect(text).toContain(
+      '\n** Subagent tool: Read\n#+begin_src json\n{\n  "path": "/x"\n}\n#+end_src\n',
+    )
+    expect(text).toContain('\n** Subagent result: Read\n#+begin_example\nalpha\n#+end_example\n')
+    expect(text).toContain('\n** Subagent: Claude\nFound it.\n')
+    expect(text).toContain('\n** Result: Agent\n#+begin_example\nSummary.\n#+end_example\n')
+    // The main thread's reply after the subagent opens a Claude block of its own.
+    expect(text).toContain('\n** Claude\nInvestigated.\n')
+  })
+
   it('renders thinking, questions and the permission notes the window showed', () => {
     const text = render([
       { type: 'user-text', text: 'ask: Which?' },

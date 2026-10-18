@@ -41,6 +41,7 @@ import type {
   KeyPress,
 } from './keys'
 import type { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL, PlanAnswer, PlanContent } from './plan'
+import type { SPEC_SHOWN_CHANNEL, SpecContent } from './spec'
 import type {
   HELP_SHOWN_CHANNEL,
   HelpContent,
@@ -79,6 +80,7 @@ export interface PushChannels {
   readonly [TRANSCRIPT_GOTO_CHANNEL]: TranscriptGoto
   readonly [DIFF_SHOWN_CHANNEL]: DiffContent
   readonly [PLAN_SHOWN_CHANNEL]: PlanContent
+  readonly [SPEC_SHOWN_CHANNEL]: SpecContent
 }
 
 export type InvokeChannel = keyof InvokeChannels

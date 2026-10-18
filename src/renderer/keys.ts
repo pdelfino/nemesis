@@ -29,6 +29,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'help',
   'diff',
   'plan',
+  'spec',
 ]
 
 /** Told what a key ran, so a buffer can act on it (the prompt sends on `send-prompt`). */

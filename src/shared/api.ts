@@ -10,6 +10,7 @@ import type { DiffContent } from './diff'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 import type { PlanAnswer, PlanContent } from './plan'
+import type { SpecContent } from './spec'
 
 /**
  * The surface internal pages see as `window.nemesis`. Implemented by the
@@ -51,6 +52,8 @@ export interface NemesisApi {
   onPlanShown(listener: (content: PlanContent) => void): void
   /** Approves or rejects the plan in a buffer, with the text as edited there (#82). */
   answerPlan(answer: PlanAnswer): Promise<void>
+  /** A spec buffer has content: the agent wrote the spec of an interview (#85). */
+  onSpecShown(listener: (content: SpecContent) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

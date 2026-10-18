@@ -13,6 +13,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { UUID } from 'node:crypto'
+import { join } from 'node:path'
 import type { AgentDriver, AgentQueryHandle } from './session'
 
 /**
@@ -33,6 +34,16 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *                 plan file's content; allowed, the reply quotes the plan
  *                 as approved, the edited one when `updatedInput` carried
  *                 it, and denied, the reply quotes the feedback (#82)
+ *   `I want to build X. Interview me in detail using the AskUserQuestion
+ *   tool.` the guide's interview prompt (#85): one AskUserQuestion about X
+ *                 through `canUseTool`, then a Write of SPEC.md in the cwd
+ *                 through `canUseTool`, with the answer in the spec, then
+ *                 `Spec written to SPEC.md.`
+ *   `Use subagents to investigate X` the guide's investigation prompt (#85):
+ *                 an Agent call on the main thread, then a Read, its result
+ *                 and a text inside the subagent, every frame of it with
+ *                 `parent_tool_use_id` set, then the summary as the Agent
+ *                 result and `Investigated: X`
  *   `stream: ...` text frames `... 1`, `... 2`, one every few ms, until the
  *                 turn is interrupted; the turn then ends as the CLI ends an
  *                 interrupted one, with an error result (#84)
@@ -59,7 +70,15 @@ import type { AgentDriver, AgentQueryHandle } from './session'
 
 const MOCK_MODEL = 'claude-mock-1'
 const MOCK_SESSION_ID = 'mock-session'
-const MOCK_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'AskUserQuestion', 'ExitPlanMode'] as const
+const MOCK_TOOLS = [
+  'Read',
+  'Edit',
+  'Write',
+  'Bash',
+  'Agent',
+  'AskUserQuestion',
+  'ExitPlanMode',
+] as const
 /** The file every `edit:` prompt edits, and what it held before (#68). */
 const MOCK_FILE = '/mock/notes.txt'
 const MOCK_FILE_TEXT = 'alpha\nbeta\ngamma\n'
@@ -76,6 +95,12 @@ const TURN_TOKENS = 2_000
 
 /** Where every `plan:` prompt says its plan file is; the file never exists (#82). */
 const MOCK_PLAN_FILE = '/mock/plans/plan.md'
+
+/** The guide's interview prompt, as the `interview` command sends it (#85). */
+const INTERVIEW_PROMPT =
+  /^I want to build (.+?)\. Interview me in detail using the AskUserQuestion tool\./s
+/** The guide's investigation prompt, as the `investigate` command sends it (#85). */
+const INVESTIGATE_PROMPT = 'Use subagents to investigate '
 
 /** The three options every `ask:` prompt offers; the spec answers with `2` (#63). */
 const MOCK_OPTIONS = [
@@ -293,6 +318,67 @@ class MockQuery implements AgentQueryHandle {
       return
     }
 
+    const interview = INTERVIEW_PROMPT.exec(prompt)
+    if (interview !== null) {
+      const goal = interview[1] ?? 'the feature'
+      const askId = `mock-tool-${this.turns}-ask`
+      const question = `What matters most for ${goal}?`
+      const askInput = {
+        questions: [
+          { question, header: 'Priority', options: [...MOCK_OPTIONS], multiSelect: false },
+        ],
+      }
+      yield this.assistant([
+        { type: 'tool_use', id: askId, name: 'AskUserQuestion', input: askInput },
+      ])
+      const asked = await this.ask('AskUserQuestion', askInput, askId)
+      const priority =
+        asked.behavior === 'allow'
+          ? (answerOf(asked.updatedInput, question) ?? 'undecided')
+          : 'undecided'
+      yield this.toolResult(
+        askId,
+        asked.behavior === 'allow' ? priority : asked.message,
+        asked.behavior !== 'allow',
+      )
+      // The spec goes to SPEC.md in the working directory, as the prompt asks.
+      const writeId = `mock-tool-${this.turns}`
+      const specPath = join(this.options.cwd ?? process.cwd(), 'SPEC.md')
+      const spec = `# Spec: ${goal}\n\n## Decisions\n\n- Priority: ${priority}\n\n## Out of scope\n\n- Everything not named above\n\n## Verification\n\n- Run the gate\n`
+      const writeInput = { file_path: specPath, content: spec }
+      yield this.assistant([{ type: 'tool_use', id: writeId, name: 'Write', input: writeInput }])
+      const written = await this.ask('Write', writeInput)
+      const wrote = written.behavior === 'allow'
+      yield this.toolResult(writeId, wrote ? `Wrote ${specPath}` : written.message, !wrote)
+      const reply = wrote ? 'Spec written to SPEC.md.' : 'Did not write SPEC.md.'
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
+      return
+    }
+
+    if (prompt.startsWith(INVESTIGATE_PROMPT)) {
+      const topic = prompt.slice(INVESTIGATE_PROMPT.length).trim() || 'the code'
+      const agentId = `mock-tool-${this.turns}`
+      const agentInput = { description: 'Investigate', prompt: topic, subagent_type: 'Explore' }
+      yield this.assistant([{ type: 'tool_use', id: agentId, name: 'Agent', input: agentInput }])
+      // Inside the subagent: every frame names the Agent call as its parent.
+      const readId = `${agentId}-read`
+      yield this.assistant(
+        [{ type: 'tool_use', id: readId, name: 'Read', input: { path: MOCK_FILE } }],
+        agentId,
+      )
+      yield this.toolResult(readId, MOCK_FILE_TEXT, false, agentId)
+      yield this.assistant(
+        [{ type: 'text', text: `Found 2 files about ${topic}.`, citations: null }],
+        agentId,
+      )
+      yield this.toolResult(agentId, `Summary: ${topic} is handled in notes.txt.`, false)
+      const reply = `Investigated: ${topic}`
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
+      return
+    }
+
     if (prompt.startsWith('plan:')) {
       const goal = prompt.slice(5).trim() || 'do the thing'
       const toolUseId = `mock-tool-${this.turns}`
@@ -328,12 +414,16 @@ class MockQuery implements AgentQueryHandle {
   }
 
   /** Routes through the session's permission handler, like the real SDK does. */
-  private async ask(name: string, input: Record<string, unknown>): Promise<PermissionResult> {
+  private async ask(
+    name: string,
+    input: Record<string, unknown>,
+    toolUseId = `mock-tool-${this.turns}`,
+  ): Promise<PermissionResult> {
     const canUseTool = this.options.canUseTool
     if (canUseTool === undefined) return { behavior: 'allow' }
     const decision = await canUseTool(name, input, {
       signal: this.turn.signal,
-      toolUseID: `mock-tool-${this.turns}`,
+      toolUseID: toolUseId,
       requestId: `mock-request-${this.turns}`,
     })
     // A handler that decides nothing has not said yes.
@@ -360,10 +450,14 @@ class MockQuery implements AgentQueryHandle {
     }
   }
 
-  private assistant(content: SDKAssistantMessage['message']['content']): SDKAssistantMessage {
+  /** A frame of the main thread, or, with `parent`, one produced inside the subagent that call started. */
+  private assistant(
+    content: SDKAssistantMessage['message']['content'],
+    parent: string | null = null,
+  ): SDKAssistantMessage {
     return {
       type: 'assistant',
-      parent_tool_use_id: null,
+      parent_tool_use_id: parent,
       uuid: mockUuid((this.counter += 1)),
       session_id: this.sessionId,
       message: {
@@ -393,10 +487,15 @@ class MockQuery implements AgentQueryHandle {
     }
   }
 
-  private toolResult(toolUseId: string, text: string, isError: boolean): SDKUserMessage {
+  private toolResult(
+    toolUseId: string,
+    text: string,
+    isError: boolean,
+    parent: string | null = null,
+  ): SDKUserMessage {
     return {
       type: 'user',
-      parent_tool_use_id: null,
+      parent_tool_use_id: parent,
       uuid: mockUuid((this.counter += 1)),
       session_id: this.sessionId,
       message: {

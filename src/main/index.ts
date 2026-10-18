@@ -39,6 +39,7 @@ import {
 import { PermissionPolicy } from './security/permissions'
 import { internalPagePreferences } from './security/web-preferences'
 import { SessionIndex } from './sessions'
+import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
@@ -249,11 +250,16 @@ void app.whenReady().then(() => {
   agent.onHistory((history) => {
     for (const event of history) diffs.observe(event)
   })
+  // The spec an interview ends with (#85): the agent's Write of SPEC.md,
+  // once it went through, opens as a spec buffer with the fresh-session key.
+  // Live events only: a resumed history reopens no spec.
+  const specs = new SpecBuffers(buffers)
+  agent.on((event) => specs.observe(event))
   const prompts = installSessionBridge({
     agent,
     permissions,
     recorder,
-    notices: mergeNotices(permissionPolicy, downloads, external, diffs, plans),
+    notices: mergeNotices(permissionPolicy, downloads, external, diffs, plans, specs),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
@@ -267,9 +273,17 @@ void app.whenReady().then(() => {
     transcripts,
     diffs,
     plans,
+    specs,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
-  installPaletteBridge({ prompter: deps.prompter, help: deps.help, transcripts, diffs, plans })
+  installPaletteBridge({
+    prompter: deps.prompter,
+    help: deps.help,
+    transcripts,
+    diffs,
+    plans,
+    specs,
+  })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher = createCockpitDispatcher(deps)
   installKeyBridge(dispatcher)

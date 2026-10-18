@@ -9,6 +9,7 @@ import { installPalette } from './palette'
 import { installPlanBuffer } from './plan-buffer'
 import { installPromptBuffer } from './prompt-buffer'
 import { installRequestBuffer } from './request-buffer'
+import { installSpecBuffer } from './spec-buffer'
 import { installTranscriptBuffer } from './transcript-buffer'
 
 document.title = APP_NAME
@@ -32,6 +33,8 @@ const help = installHelpBuffer()
 const diff = installDiffBuffer()
 // And the plan buffer: a plan the agent asks to leave plan mode with opens there (#82).
 const plan = installPlanBuffer()
+// And the spec buffer: the spec an interview ends with opens there (#85).
+const spec = installSpecBuffer()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 
@@ -47,6 +50,7 @@ void installPromptBuffer().then((prompt) => {
     help.onCommand(outcome, bufferType)
     diff.onCommand(outcome, bufferType)
     plan.onCommand(outcome, bufferType)
+    spec.onCommand(outcome, bufferType)
   }
   keys.onCommand = act
   palette.onRan = act

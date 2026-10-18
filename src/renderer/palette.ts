@@ -206,7 +206,8 @@ function activeBufferType(): BufferType | null {
     value === 'permission' ||
     value === 'help' ||
     value === 'diff' ||
-    value === 'plan'
+    value === 'plan' ||
+    value === 'spec'
     ? value
     : null
 }

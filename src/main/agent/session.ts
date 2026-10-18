@@ -245,19 +245,27 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
     ]
   }
 
+  // A frame produced inside a subagent names the main-thread tool call that
+  // started it; the events carry that id, so the transcript can nest them (#85).
+  const child =
+    message.type === 'assistant' || message.type === 'user'
+      ? parentOf(message.parent_tool_use_id)
+      : {}
+
   if (message.type === 'assistant') {
     const events: AgentEvent[] = []
     for (const block of message.message.content) {
       if (block.type === 'text') {
-        events.push({ type: 'assistant-text', text: block.text })
+        events.push({ type: 'assistant-text', text: block.text, ...child })
       } else if (block.type === 'thinking') {
-        events.push({ type: 'assistant-thinking', text: block.thinking })
+        events.push({ type: 'assistant-thinking', text: block.thinking, ...child })
       } else if (block.type === 'tool_use') {
         events.push({
           type: 'tool-use',
           toolUseId: block.id,
           name: block.name,
           input: isRecord(block.input) ? block.input : {},
+          ...child,
         })
       }
     }
@@ -275,6 +283,7 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
         toolUseId: block.tool_use_id,
         isError: block.is_error === true,
         text: textOf(block.content),
+        ...child,
       })
     }
     return events
@@ -304,6 +313,10 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
   }
 
   return []
+}
+
+function parentOf(id: string | null): { readonly parentToolUseId?: string } {
+  return id === null ? {} : { parentToolUseId: id }
 }
 
 function describe(error: unknown): string {
