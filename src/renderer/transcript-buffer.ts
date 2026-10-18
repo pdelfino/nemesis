@@ -11,6 +11,7 @@ import { EditorSelection, EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { BufferType, KeyOutcome } from '../shared/keys'
+import { followAppearance } from './theme'
 import { transactionFor, transcriptExtensions } from './transcript-doc'
 
 /**
@@ -59,7 +60,7 @@ export function installTranscriptBuffer(): TranscriptBuffer {
         transcriptExtensions(),
         foldGutter(),
         EditorView.lineWrapping,
-        EditorView.theme({}, { dark: matchMedia('(prefers-color-scheme: dark)').matches }),
+        followAppearance(),
         EditorView.updateListener.of((update) => {
           for (const tr of update.transactions) {
             for (const effect of tr.effects) {

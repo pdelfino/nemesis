@@ -4,6 +4,7 @@ import { emacs } from '@replit/codemirror-emacs'
 import type { BufferType, KeyOutcome } from '../shared/keys'
 import type { PaletteCandidate, PaletteRequest } from '../shared/palette'
 import { rankCandidates } from '../shared/palette'
+import { followAppearance } from './theme'
 
 /**
  * The palette (#65): the prompt buffer in command mode. When the main process
@@ -64,7 +65,7 @@ export function installPalette(): Palette {
         emacs(),
         // One line: a newline is a RET, never text.
         EditorState.transactionFilter.of((tr) => (tr.newDoc.lines > 1 ? [] : tr)),
-        EditorView.theme({}, { dark: matchMedia('(prefers-color-scheme: dark)').matches }),
+        followAppearance(),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) rank()
         }),

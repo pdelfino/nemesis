@@ -6,6 +6,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { PromptQueueState } from '../shared/agent'
 import type { BufferType, KeyOutcome } from '../shared/keys'
+import { followAppearance } from './theme'
 
 /**
  * The prompt buffer (#61): the front door of the cockpit, a CodeMirror 6
@@ -114,7 +115,7 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
         markdown(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         EditorView.lineWrapping,
-        EditorView.theme({}, { dark: matchMedia('(prefers-color-scheme: dark)').matches }),
+        followAppearance(),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return
           if (draftTimer !== null) clearTimeout(draftTimer)

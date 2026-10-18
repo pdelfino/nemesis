@@ -13,11 +13,12 @@ import {
 const defaults = defaultSettings('/Users/someone/Documents')
 
 describe('the settings schema', () => {
-  it('defaults to a sessions folder under Documents, the CLI model and the cockpit keyscheme', () => {
+  it('defaults to a sessions folder under Documents, the CLI model, the cockpit keyscheme and the system appearance', () => {
     expect(defaults).toEqual({
       sessionsDir: '/Users/someone/Documents/nemesis/sessions',
       model: null,
       keyscheme: 'cockpit',
+      theme: 'system',
     })
   })
 
@@ -30,6 +31,8 @@ describe('the settings schema', () => {
     expect(parseSettings({ sessionsDir: '/tmp/s', model: null }, defaults).sessionsDir).toBe(
       '/tmp/s',
     )
+    expect(parseSettings({ theme: 'dark' }, defaults)).toEqual({ ...defaults, theme: 'dark' })
+    expect(parseSettings({ theme: 'light' }, defaults).theme).toBe('light')
   })
 
   it('expands a leading ~ in the sessions folder', () => {
@@ -51,13 +54,21 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ model: '' }, defaults)).toThrow(/"model"/)
     expect(() => parseSettings({ model: 3 }, defaults)).toThrow(/"model"/)
     expect(() => parseSettings({ keyscheme: 'vim' }, defaults)).toThrow(/"keyscheme"/)
+    expect(() => parseSettings({ theme: 'auto' }, defaults)).toThrow(
+      /"theme" is not one of system, light, dark/,
+    )
+    expect(() => parseSettings({ theme: 'Dark' }, defaults)).toThrow(/"theme"/)
+    expect(() => parseSettings({ theme: true }, defaults)).toThrow(/"theme"/)
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit"\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system"\n}\n',
     )
+    expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
+      theme: 'dark',
+    })
     expect(JSON.parse(serializeSettings(defaults))).toMatchObject({
       sessionsDir: '/Users/someone/Documents/nemesis/sessions',
     })
@@ -89,6 +100,7 @@ describe('the settings file', () => {
       sessionsDir: '/Users/someone/Documents/nemesis/sessions',
       model: null,
       keyscheme: 'cockpit',
+      theme: 'system',
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

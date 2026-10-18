@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session } from 'electron'
+import { app, BrowserWindow, nativeTheme, session } from 'electron'
 import { join } from 'node:path'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
@@ -187,6 +187,10 @@ void app.whenReady().then(() => {
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
   const settings = readSettings()
+  // The appearance (#33): `system` follows the OS, `light` and `dark` pin it.
+  // Set before the window exists, so the renderer's prefers-color-scheme is
+  // right on its first paint and the renderer never reads the settings.
+  nativeTheme.themeSource = settings.theme
   // The buffer list is the spine: the keymap and, later, the palette act on
   // it, so it exists before the window that shows it (#60).
   const buffers = createCockpitBuffers()
