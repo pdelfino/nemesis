@@ -110,16 +110,17 @@ test('resume-session lists the sessions on disk, shows the older transcript agai
     await expect.poll(() => lines(page)).toContain(notice)
     const seen = await events(page)
     const at = seen.findIndex((event) => event.type === 'notice' && event.text === notice)
-    expect(seen.slice(at - 6, at).map((event) => event.type)).toEqual([
+    expect(seen.slice(at - 7, at).map((event) => event.type)).toEqual([
       'stopped',
       'user-text',
       'started',
       'assistant-text',
       'turn-end',
+      'context-usage',
       'stopped',
     ])
-    expect(seen[at - 5]).toEqual({ type: 'user-text', text: 'first one' })
-    expect(seen[at - 4]).toMatchObject({ type: 'started', sessionId: 'mock-session' })
+    expect(seen[at - 6]).toEqual({ type: 'user-text', text: 'first one' })
+    expect(seen[at - 5]).toMatchObject({ type: 'started', sessionId: 'mock-session' })
     // Four starts in the window: two live, the replayed one, and the resume.
     await expect
       .poll(async () =>

@@ -23,7 +23,7 @@ import { followAppearance } from './theme'
  */
 
 /** How many candidates are listed at once; the ranking puts the best first. */
-const MAX_SHOWN = 20
+const MAX_SHOWN = 40
 
 export interface Palette {
   readonly isOpen: boolean

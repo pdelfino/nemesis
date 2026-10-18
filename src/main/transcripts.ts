@@ -186,6 +186,11 @@ export class OrgTranscript {
           : note(describeOutcome(event.toolName, event.outcome))
       case 'notice':
         return note(event.text)
+      case 'nudge':
+        return note(event.text)
+      case 'context-usage':
+        // The log keeps the numbers; a person reading the Org file does not need them.
+        return ''
     }
   }
 }

@@ -82,6 +82,7 @@ test('launch, prompt, reply, permission, file on disk, quit', async () => {
     'started',
     'assistant-text',
     'turn-end',
+    'context-usage',
     'user-text',
     'tool-use',
     'permission-request',
@@ -89,6 +90,7 @@ test('launch, prompt, reply, permission, file on disk, quit', async () => {
     'tool-result',
     'assistant-text',
     'turn-end',
+    'context-usage',
     'stopped',
   ])
 })

@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKAssistantMessage, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { mockDriver } from '../../src/main/agent/mock'
 import type { AgentSession } from '../../src/main/agent/session'
-import { createAgentSession, denyEveryTool, eventsFromMessage } from '../../src/main/agent/session'
+import {
+  compactCommand,
+  contextWindowOf,
+  createAgentSession,
+  denyEveryTool,
+  eventsFromMessage,
+  isCompactCommand,
+  usedTokensOf,
+} from '../../src/main/agent/session'
 import type {
   AgentEvent,
   PermissionDecision,
@@ -70,7 +78,13 @@ describe('an agent session', () => {
     await agent.send('hello')
     const turn = await agent.waitForTurn()
 
-    expect(kinds(events)).toEqual(['user-text', 'started', 'assistant-text', 'turn-end'])
+    expect(kinds(events)).toEqual([
+      'user-text',
+      'started',
+      'assistant-text',
+      'turn-end',
+      'context-usage',
+    ])
     expect(events[2]).toEqual({ type: 'assistant-text', text: 'You said: hello' })
     expect(turn).toMatchObject({ type: 'turn-end', isError: false, result: 'You said: hello' })
     await agent.stop()
@@ -107,6 +121,7 @@ describe('an agent session', () => {
       'tool-result',
       'assistant-text',
       'turn-end',
+      'context-usage',
     ])
     expect(asked).toHaveLength(1)
     expect(asked[0]).toMatchObject({ toolName: 'Bash', input: { path: '/mock/notes.txt' } })
@@ -317,5 +332,114 @@ describe('the event mapping', () => {
     // Partial frames arrive only when the session asks for them, and it does not.
     const partial = { type: 'stream_event', session_id: 'mock-session' } as unknown as SDKMessage
     expect(eventsFromMessage(partial)).toEqual([])
+  })
+})
+
+// The context meter and the compaction (#80), over the mock's usage numbers:
+// a turn adds 2000 tokens, `usage: N` sets the context, `/compact` brings it
+// back down with a boundary frame the way the CLI does.
+describe('the context meter and compaction (#80)', () => {
+  it('reports the last request against the window once a turn, after the result', async () => {
+    const agent = session()
+    const events = collect(agent)
+    await agent.send('hello')
+    await agent.waitForTurn()
+    expect(events.at(-1)).toEqual({
+      type: 'context-usage',
+      usedTokens: 2000,
+      windowTokens: 200_000,
+    })
+    await agent.send('usage: 150000')
+    await agent.waitForTurn()
+    expect(kinds(events).slice(-3)).toEqual(['assistant-text', 'turn-end', 'context-usage'])
+    expect(events.at(-1)).toEqual({
+      type: 'context-usage',
+      usedTokens: 150_000,
+      windowTokens: 200_000,
+    })
+    await agent.stop()
+  })
+
+  it('compacts on /compact: a notice with the sizes, the context down, and no checkpoint', async () => {
+    const agent = session()
+    const events = collect(agent)
+    await agent.send('usage: 150000')
+    await agent.waitForTurn()
+    await agent.send('/compact keep the file list')
+    await agent.waitForTurn()
+    expect(kinds(events).slice(-4)).toEqual(['user-text', 'notice', 'turn-end', 'context-usage'])
+    expect(events.at(-3)).toEqual({
+      type: 'notice',
+      text: 'Compacted the conversation (manual): 152000 tokens before, 2000 after.',
+    })
+    expect(events.at(-1)).toMatchObject({ usedTokens: 2000 })
+    // The compaction is a command to the CLI, not a prompt: nothing to rewind to.
+    expect(agent.checkpoints().map((c) => c.text)).toEqual(['usage: 150000'])
+    await agent.stop()
+  })
+
+  it('spells the compact command and knows it when it sees it', () => {
+    expect(compactCommand('')).toBe('/compact')
+    expect(compactCommand('  \n ')).toBe('/compact')
+    expect(compactCommand(' focus on the API ')).toBe('/compact focus on the API')
+    expect(isCompactCommand('/compact')).toBe(true)
+    expect(isCompactCommand('  /compact now')).toBe(true)
+    expect(isCompactCommand('/compacted')).toBe(false)
+    expect(isCompactCommand('compact this')).toBe(false)
+  })
+
+  it('reads the window off the result and the used tokens off the reply', () => {
+    const reply = {
+      message: {
+        usage: { input_tokens: 100, cache_read_input_tokens: 50, cache_creation_input_tokens: 25 },
+      },
+    } as unknown as SDKAssistantMessage
+    expect(usedTokensOf(reply)).toBe(175)
+    const nulls = {
+      message: {
+        usage: {
+          input_tokens: 7,
+          cache_read_input_tokens: null,
+          cache_creation_input_tokens: null,
+        },
+      },
+    } as unknown as SDKAssistantMessage
+    expect(usedTokensOf(nulls)).toBe(7)
+
+    const usage = (tokens: number, contextWindow: number) => ({
+      inputTokens: tokens,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0,
+      contextWindow,
+      maxOutputTokens: 1,
+    })
+    // The session's own model first, then the model that carried the most.
+    expect(contextWindowOf({ main: usage(10, 200), helper: usage(900, 50) }, 'main')).toBe(200)
+    expect(contextWindowOf({ main: usage(10, 200), helper: usage(900, 50) }, 'other')).toBe(50)
+    expect(contextWindowOf({ main: usage(10, 200) }, null)).toBe(200)
+    expect(contextWindowOf({}, 'main')).toBeNull()
+    expect(contextWindowOf({ main: usage(10, 0) }, 'main')).toBeNull()
+  })
+
+  it('forks a resumed session under a new id, so a side question writes nowhere near it', async () => {
+    const driver = mockDriver()
+    const first = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    await first.send('one')
+    await first.waitForTurn()
+    const fork = createAgentSession({
+      cwd: '/tmp/nemesis-unit',
+      driver,
+      resume: 'mock-session',
+      fork: true,
+    })
+    await fork.send('aside')
+    await fork.waitForTurn()
+    expect(fork.sessionId).toBe('mock-session-2')
+    expect(first.sessionId).toBe('mock-session')
+    await fork.stop()
+    await first.stop()
   })
 })

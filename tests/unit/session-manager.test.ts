@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { nudgeText } from '../../src/main/agent/corrections'
 import type { AgentEvent } from '../../src/main/agent/events'
 import { mockDriver } from '../../src/main/agent/mock'
 import { PromptQueue } from '../../src/main/agent/prompt-queue'
@@ -50,7 +51,13 @@ describe('the session manager', () => {
     const turn = nextTurn(agent)
     await agent.send('hello')
     await turn
-    expect(kinds(events)).toEqual(['user-text', 'started', 'assistant-text', 'turn-end'])
+    expect(kinds(events)).toEqual([
+      'user-text',
+      'started',
+      'assistant-text',
+      'turn-end',
+      'context-usage',
+    ])
     expect(agent.sessionId).toBe('mock-session')
     await agent.stop()
   })
@@ -116,7 +123,7 @@ describe('the session manager', () => {
     turn = nextTurn(agent)
     await agent.send('three')
     await turn
-    expect(events.at(-2)).toEqual({ type: 'assistant-text', text: 'You said: three' })
+    expect(events.at(-3)).toEqual({ type: 'assistant-text', text: 'You said: three' })
     expect(agent.sessionId).toBe('mock-session')
     expect(agent.checkpoints().map((c) => [c.index, c.text])).toEqual([[1, 'three']])
     await agent.stop()
@@ -280,5 +287,74 @@ describe('the undo prompt', () => {
     expect(lines[4]?.length).toBe('Write '.length + 200)
     expect(lines[4]?.endsWith('...')).toBe(true)
     expect(lines[5]).toBe('```')
+  })
+})
+
+// The guide's context management (#80): the nudge at the second correction
+// in a row, and the side question that leaves the session's history alone.
+describe('the correction nudge and the side question (#80)', () => {
+  it('nudges at the second correction in a row, after the turn, and starts over with the session', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    for (const text of ['build it', 'no, the other way']) {
+      const turn = nextTurn(agent)
+      await agent.send(text)
+      await turn
+    }
+    expect(kinds(events)).not.toContain('nudge')
+    expect(agent.correctionStreak).toBe(1)
+    const turn = nextTurn(agent)
+    await agent.send('wrong file')
+    await turn
+    const at = events.findIndex((event) => event.type === 'nudge')
+    expect(events[at - 1]).toEqual({ type: 'user-text', text: 'wrong file' })
+    expect(events[at]).toEqual({ type: 'nudge', text: nudgeText(2) })
+    expect(kinds(events).filter((kind) => kind === 'nudge')).toHaveLength(1)
+
+    // A turn that is not a correction ends the streak; `correct` says one in
+    // advance, and the second one said that way nudges at once.
+    const plain = nextTurn(agent)
+    await agent.send('thanks')
+    await plain
+    expect(agent.correctionStreak).toBe(0)
+    agent.markCorrection()
+    expect(kinds(events).filter((kind) => kind === 'nudge')).toHaveLength(1)
+    agent.markCorrection()
+    expect(events.at(-1)).toEqual({ type: 'nudge', text: nudgeText(2) })
+
+    await agent.newTask()
+    expect(agent.correctionStreak).toBe(0)
+    await agent.stop()
+  })
+
+  it('answers a side question from a fork and leaves the session, its events and its checkpoints alone', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    let turn = nextTurn(agent)
+    await agent.send('one')
+    await turn
+    const before = events.length
+
+    const answer = await agent.sideQuestion('what is two')
+    expect(answer).toBe('You said: what is two')
+    expect(events).toHaveLength(before)
+    expect(agent.sessionId).toBe('mock-session')
+    expect(agent.checkpoints().map((c) => c.text)).toEqual(['one'])
+
+    // The next prompt continues the same session, not the fork.
+    turn = nextTurn(agent)
+    await agent.send('two')
+    await turn
+    expect(events.filter((event) => event.type === 'started')).toHaveLength(1)
+    expect(events.at(-3)).toEqual({ type: 'assistant-text', text: 'You said: two' })
+    await agent.stop()
+  })
+
+  it('answers a side question with no session running from a throwaway one', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    expect(await agent.sideQuestion('hi')).toBe('You said: hi')
+    expect(events).toEqual([])
+    expect(agent.sessionId).toBeNull()
   })
 })

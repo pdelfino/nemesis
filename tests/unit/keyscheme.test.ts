@@ -49,6 +49,9 @@ describe('the default Emacs keyscheme (#59)', () => {
     expect(GLOBAL_KEYMAP.commandFor('C-h k')).toBe('describe-key')
     // Search across transcripts (#69), on the free C-x s.
     expect(GLOBAL_KEYMAP.commandFor('C-x s')).toBe('search-transcripts')
+    // The guide's context keys (#80).
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-l')).toBe('clear')
+    expect(GLOBAL_KEYMAP.commandFor('C-c C-k')).toBe('compact')
   })
 
   it('registers every command a keymap names', () => {
@@ -199,5 +202,53 @@ describe('what the main process accepts from a page', () => {
     expect(() => parseKeyPress({ key: 'x', code: 'KeyX', bufferType: 'root' })).toThrow(
       /Unknown buffer type/,
     )
+  })
+})
+
+// The guide's context commands (#80): clear is a fresh session, correct
+// counts toward the nudge, side-question reads free text and answers in the
+// help buffer without a trace in the session's stream.
+describe('the context commands (#80)', () => {
+  it('clear drops the session, correct counts, side-question answers in the help buffer', async () => {
+    const deps = resolveCockpitDeps()
+    const registry = createCockpitRegistry(deps)
+    const events: string[] = []
+    deps.agent.on((event) => events.push(event.type))
+    const turn = new Promise<void>((resolve) => {
+      const off = deps.agent.on((event) => {
+        if (event.type === 'turn-end') {
+          off()
+          resolve()
+        }
+      })
+    })
+    await deps.agent.send('one')
+    await turn
+    expect(deps.agent.sessionId).toBe('mock-session')
+
+    await registry.run('correct', { source: 'test' })
+    await registry.run('correct', { source: 'test' })
+    expect(events.at(-1)).toBe('nudge')
+
+    const shown = vi.fn()
+    deps.help.on(shown)
+    await registry.run('side-question', { source: 'test' })
+    const read = deps.prompter.pending
+    expect(read).toMatchObject({ prompt: 'Side question:', freeText: true, candidates: [] })
+    if (read === null) throw new Error('No read')
+    const seen = events.length
+    await deps.prompter.answer({ id: read.id, choice: null, text: ' what is two ' })
+    expect(shown.mock.calls.map((call) => (call[0] as { text: string }).text)).toEqual([
+      'Side question: what is two\n\nAsking...',
+      'Side question: what is two\n\nYou said: what is two\n\nThis answer is not in the session history.',
+    ])
+    expect(events).toHaveLength(seen)
+    expect(deps.buffers.current?.kind).toBe('help')
+
+    await registry.run('clear', { source: 'test' })
+    await vi.waitFor(() => expect(events.slice(-2)).toEqual(['stopped', 'notice']))
+    expect(deps.agent.sessionId).toBeNull()
+    expect(registry.get('compact')?.doc).toMatch(/prompt buffer is the instruction/)
+    await deps.agent.stop()
   })
 })

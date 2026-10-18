@@ -43,6 +43,10 @@ import { CommandRegistry, defineCommand } from './registry'
  * picks it up through the manager. `search-transcripts` (#69) reads a query
  * as free text, lists the matches of every transcript on disk, and opens
  * the session a match belongs to with the transcript's point on that line.
+ * The guide's context management (#80): `clear` on `C-c C-l` is a fresh
+ * session, `compact` on `C-c C-k` sends the prompt buffer as the compaction
+ * instruction, `side-question` asks a throwaway fork and answers in the help
+ * buffer, and `correct` counts the next prompt as a correction.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -173,6 +177,52 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       doc: 'Start a fresh session in this window; the next prompt carries no context over.',
       run: () => {
         agent.newTask().catch(report('new-task'))
+      },
+    }),
+    defineCommand({
+      name: 'clear',
+      doc: 'Clear the context: a fresh session in this window, as /clear does between tasks.',
+      run: () => {
+        agent.newTask().catch(report('clear'))
+      },
+    }),
+    defineCommand({
+      name: 'compact',
+      doc: 'Compact the conversation; text in the prompt buffer is the instruction.',
+      run: () => {
+        // The instruction is the text in the prompt buffer, which lives in
+        // the renderer: when the dispatch answers with this name, the prompt
+        // buffer sends `/compact <text>` through the prompt bridge, and the
+        // CLI under the SDK runs it (#80). Running it from the palette takes
+        // the same path, like send-prompt.
+      },
+    }),
+    defineCommand({
+      name: 'side-question',
+      doc: 'Ask a question whose answer stays out of the session history.',
+      run: () => {
+        prompter.read(
+          { source: 'side-question', prompt: 'Side question:', freeText: true },
+          async (question) => {
+            help.show(`Side question: ${question.trim()}\n\nAsking...`)
+            let answer: string
+            try {
+              answer = await agent.sideQuestion(question.trim())
+            } catch (error) {
+              answer = `Not answered: ${error instanceof Error ? error.message : String(error)}`
+            }
+            help.show(
+              `Side question: ${question.trim()}\n\n${answer}\n\nThis answer is not in the session history.`,
+            )
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'correct',
+      doc: 'Count the next prompt as a correction of the last turn.',
+      run: () => {
+        agent.markCorrection()
       },
     }),
     defineCommand({
@@ -340,6 +390,10 @@ export function cockpitSources(
       candidates: () => [],
     },
     {
+      name: 'side-question',
+      candidates: () => [],
+    },
+    {
       name: 'matches',
       candidates: () =>
         transcripts.matches.map((match, index) => ({
@@ -366,6 +420,8 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'M-x': 'execute-command',
   'C-g': 'keyboard-quit',
   'C-c C-c': 'send-prompt',
+  'C-c C-l': 'clear',
+  'C-c C-k': 'compact',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',

@@ -50,6 +50,7 @@ test('a session leaves its folder on disk: the event log and an Org transcript w
       'started',
       'assistant-text',
       'turn-end',
+      'context-usage',
     ])
     expect(types[0]?.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 

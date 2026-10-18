@@ -3,6 +3,7 @@ import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
+import { installModeline } from './modeline'
 import { installPalette } from './palette'
 import { installPromptBuffer } from './prompt-buffer'
 import { installRequestBuffer } from './request-buffer'
@@ -14,6 +15,8 @@ if (version) version.textContent = `v${window.nemesis.version}`
 
 const keys = installKeyCapture()
 void installBufferList()
+// The context meter and the nudge follow the session from the first event (#80).
+installModeline()
 
 // The transcript listens from the first moment, so no event of the session is
 // missed while the prompt buffer loads its state (#62).

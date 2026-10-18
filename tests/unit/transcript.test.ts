@@ -118,6 +118,19 @@ describe('the transcript document', () => {
     expect(folds(state)).toEqual(['\nout loud', `\n${long.text}`])
   })
 
+  it('notes a nudge and shows nothing for the context meter, which the mode line draws (#80)', () => {
+    const state = append(
+      empty(),
+      user,
+      { type: 'context-usage', usedTokens: 2000, windowTokens: 200_000 },
+      { type: 'nudge', text: '2 corrections in a row' },
+    )
+    expect(state.doc.toString()).toBe(['You', 'hello', '', '2 corrections in a row'].join('\n'))
+    expect(
+      transactionFor(state, { type: 'context-usage', usedTokens: 1, windowTokens: 2 }),
+    ).toBeNull()
+  })
+
   it('notes the session and a failed turn, and nothing for a good one', () => {
     const started: AgentEvent = {
       type: 'started',

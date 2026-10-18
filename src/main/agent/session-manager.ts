@@ -1,7 +1,8 @@
 import type { RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentEvent, AgentEventListener, PermissionHandler } from './events'
+import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
 import type { AgentDriver, AgentSession, Checkpoint, ToolCall } from './session'
-import { createAgentSession, resolveDriver } from './session'
+import { AgentSessionError, createAgentSession, resolveDriver } from './session'
 
 /**
  * The session manager (#84): the one place that holds the cockpit's current
@@ -11,6 +12,9 @@ import { createAgentSession, resolveDriver } from './session'
  * files or the conversation back to a checkpoint through what the SDK
  * exposes, and `lastToolCalls` feeds the undo prompt. `resume` (#67) picks
  * a past session up by the SDK's id, with its recorded history shown first.
+ * `sideQuestion` (#80) asks a throwaway copy of the session, so the answer
+ * never enters its history, and the correction counter (#80) watches the
+ * user turns and nudges at the second correction in a row.
  *
  * Listeners subscribe once, here, and hear every session the manager runs in
  * turn: the prompt queue, the recorder and the window never learn that the
@@ -110,6 +114,7 @@ export class SessionManager {
   private driver: AgentDriver | null
   private session: AgentSession | null = null
   private offSession: (() => void) | null = null
+  private readonly corrections = new CorrectionCounter()
 
   constructor(options: SessionManagerOptions) {
     this.options = options
@@ -207,6 +212,51 @@ export class SessionManager {
     }
   }
 
+  /**
+   * The guide's `/btw` (#80): the question goes to a fork of the current
+   * session, which has the conversation so far but is a session of its own,
+   * and the fork is stopped once it has answered. Nothing of it reaches the
+   * listeners, the recorder or the window, so the history is as it was.
+   * With no session yet, a fresh throwaway session answers.
+   */
+  async sideQuestion(text: string): Promise<string> {
+    if (this.driver === null) this.driver = await resolveDriver()
+    const sessionId = this.session?.sessionId ?? null
+    const aside = createAgentSession({
+      cwd: this.options.cwd,
+      permissionHandler: this.options.permissionHandler,
+      driver: this.driver,
+      ...(this.options.model === null ? {} : { model: this.options.model }),
+      ...(sessionId === null ? {} : { resume: sessionId, fork: true }),
+    })
+    const parts: string[] = []
+    aside.on((event) => {
+      if (event.type === 'assistant-text') parts.push(event.text)
+    })
+    try {
+      const turn = aside.waitForTurn()
+      await aside.send(text)
+      const end = await turn
+      if (end.isError) throw new AgentSessionError(end.result)
+      return parts.join('\n')
+    } finally {
+      await aside.stop()
+    }
+  }
+
+  /**
+   * The `correct` command (#80): the next prompt is a correction, whatever
+   * its first word. Counts it now, so the nudge can come before it is typed.
+   */
+  markCorrection(): void {
+    this.nudgeAt(this.corrections.mark())
+  }
+
+  /** Consecutive corrections so far, for a test or a mode line. */
+  get correctionStreak(): number {
+    return this.corrections.streak
+  }
+
   checkpoints(): readonly Checkpoint[] {
     return this.session?.checkpoints() ?? []
   }
@@ -298,8 +348,26 @@ export class SessionManager {
       ...extra,
     })
     this.session = session
-    this.offSession = session.on((event) => this.emit(event))
+    this.offSession = session.on((event) => {
+      this.emit(event)
+      this.watch(event)
+    })
     return session
+  }
+
+  /**
+   * The correction counter reads the user turns as they go by (#80): a turn
+   * that opens with "no" or "wrong" is a correction, any other ends the
+   * streak, and a session that stops starts the count over. The nudge goes
+   * down the stream after the turn it answers.
+   */
+  private watch(event: AgentEvent): void {
+    if (event.type === 'user-text') this.nudgeAt(this.corrections.observe(event.text))
+    else if (event.type === 'stopped') this.corrections.reset()
+  }
+
+  private nudgeAt(streak: number): void {
+    if (streak >= NUDGE_AFTER) this.emit({ type: 'nudge', text: nudgeText(streak) })
   }
 
   /**

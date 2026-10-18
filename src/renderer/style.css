@@ -33,6 +33,32 @@ body {
   border-bottom: 1px solid var(--line);
   color: var(--muted);
 }
+/* The context meter (#80): muted until the guide's step, then it says so. */
+#context-meter {
+  white-space: nowrap;
+  margin-left: auto;
+}
+#context-meter[data-level='high'] {
+  color: #a86a00;
+}
+#context-meter[data-level='full'] {
+  color: #b32424;
+}
+#modeline-hint:empty {
+  display: none;
+}
+#modeline-hint {
+  color: #a86a00;
+}
+@media (prefers-color-scheme: dark) {
+  #context-meter[data-level='high'],
+  #modeline-hint {
+    color: #e0a06a;
+  }
+  #context-meter[data-level='full'] {
+    color: #f08a8a;
+  }
+}
 main {
   flex: 1;
   display: flex;

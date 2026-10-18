@@ -206,7 +206,11 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
         ? null
         : appendBlock(state, 'note', describeOutcome(event.toolName, event.outcome), '')
     case 'notice':
+    case 'nudge':
       return appendBlock(state, 'note', event.text, '')
+    case 'context-usage':
+      // The mode line shows the meter; the document has nothing to add.
+      return null
   }
 }
 

@@ -66,6 +66,22 @@ describe('the Org rendering', () => {
     )
   })
 
+  it('notes a nudge and writes nothing for the context meter, which the log keeps (#80)', () => {
+    const text = render([
+      { type: 'nudge', text: '2 corrections in a row' },
+      { type: 'context-usage', usedTokens: 1, windowTokens: 2 },
+    ])
+    expect(text).toBe(
+      [
+        '#+title: Nemesis session mock-session',
+        '#+date: [2026-10-17 Sat 12:30]',
+        '',
+        '- 2 corrections in a row',
+        '',
+      ].join('\n'),
+    )
+  })
+
   it('joins consecutive assistant text into one Claude block until the turn ends', () => {
     const text = render([
       { type: 'user-text', text: 'go' },

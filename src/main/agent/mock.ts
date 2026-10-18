@@ -1,9 +1,11 @@
 import type {
+  ModelUsage,
   NonNullableUsage,
   Options,
   PermissionResult,
   RewindFilesResult,
   SDKAssistantMessage,
+  SDKCompactBoundaryMessage,
   SDKMessage,
   SDKResultError,
   SDKResultMessage,
@@ -27,7 +29,16 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *   `stream: ...` text frames `... 1`, `... 2`, one every few ms, until the
  *                 turn is interrupted; the turn then ends as the CLI ends an
  *                 interrupted one, with an error result (#84)
+ *   `usage: N`    the reply, with N tokens in the context from here on (#80)
+ *   `/compact ...` a compact boundary, then a result, the context back to
+ *                 the size of a fresh session, as the CLI does (#80)
  *   anything else the reply `You said: <prompt>`
+ *
+ * Every reply carries usage the way the API reports it: the input tokens of
+ * the request, which grow by TURN_TOKENS a turn, and every result the
+ * per-model totals with the window, so the meter has numbers to show (#80).
+ * A query that resumes with `forkSession` gets a fresh id, as the CLI gives
+ * a fork, so a side question never writes under the session it copied.
  *
  * The frames are the SDK's own types, not a loose imitation, so a spec that
  * passes here is reading the same shapes the real session reads.
@@ -48,6 +59,10 @@ const STREAM_INTERVAL_MS = 20
 /** A `stream:` turn nobody interrupts still ends, so a spec cannot hang on it. */
 const STREAM_LIMIT = 500
 const INTERRUPTED = 'Interrupted by the user'
+/** The window every mock model has. */
+const MOCK_CONTEXT_WINDOW = 200_000
+/** What a turn adds to the context, and what a fresh or compacted one holds. */
+const TURN_TOKENS = 2_000
 
 /** The three options every `ask:` prompt offers; the spec answers with `2` (#63). */
 const MOCK_OPTIONS = [
@@ -56,19 +71,34 @@ const MOCK_OPTIONS = [
   { label: 'gamma', description: 'The third option.' },
 ] as const
 
-const MOCK_USAGE: NonNullableUsage = {
-  cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
-  cache_creation_input_tokens: 0,
-  cache_read_input_tokens: 0,
-  fallback_credit: null,
-  inference_geo: 'mock',
-  input_tokens: 0,
-  iterations: [],
-  output_tokens: 0,
-  output_tokens_details: { thinking_tokens: 0 },
-  server_tool_use: { web_fetch_requests: 0, web_search_requests: 0 },
-  service_tier: 'standard',
-  speed: 'standard',
+function usageOf(inputTokens: number): NonNullableUsage {
+  return {
+    cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    fallback_credit: null,
+    inference_geo: 'mock',
+    input_tokens: inputTokens,
+    iterations: [],
+    output_tokens: 0,
+    output_tokens_details: { thinking_tokens: 0 },
+    server_tool_use: { web_fetch_requests: 0, web_search_requests: 0 },
+    service_tier: 'standard',
+    speed: 'standard',
+  }
+}
+
+function modelUsageOf(inputTokens: number): ModelUsage {
+  return {
+    inputTokens,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    webSearchRequests: 0,
+    costUSD: 0,
+    contextWindow: MOCK_CONTEXT_WINDOW,
+    maxOutputTokens: 32_000,
+  }
 }
 
 /** Counter-based, so two runs of a spec produce the same transcript. */
@@ -114,11 +144,14 @@ class MockQuery implements AgentQueryHandle {
   private model: string
   private permissionMode: NonNullable<Options['permissionMode']>
   private closed = false
+  /** What the next request carries into the model. */
+  private contextTokens = 0
 
   constructor(prompt: AsyncIterable<SDKUserMessage>, options: Options, sessionId: string) {
     this.prompt = prompt
     this.options = options
-    this.sessionId = options.resume ?? sessionId
+    this.sessionId =
+      options.resume !== undefined && options.forkSession !== true ? options.resume : sessionId
     this.model = options.model ?? MOCK_MODEL
     this.permissionMode = options.permissionMode ?? 'default'
   }
@@ -159,6 +192,24 @@ class MockQuery implements AgentQueryHandle {
 
   private async *answer(prompt: string): AsyncGenerator<SDKMessage> {
     this.turns += 1
+    this.contextTokens += TURN_TOKENS
+
+    if (/^\/compact(\s|$)/.test(prompt)) {
+      const before = this.contextTokens
+      this.contextTokens = TURN_TOKENS
+      yield this.compactBoundary(before, this.contextTokens)
+      yield this.result('Compacted.')
+      return
+    }
+
+    if (prompt.startsWith('usage:')) {
+      const tokens = Number.parseInt(prompt.slice(6).trim(), 10)
+      if (Number.isFinite(tokens) && tokens >= 0) this.contextTokens = tokens
+      const reply = `Context is now ${this.contextTokens} tokens.`
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
+      return
+    }
 
     if (prompt.startsWith('stream:')) {
       const word = prompt.slice(7).trim() || 'chunk'
@@ -267,8 +318,18 @@ class MockQuery implements AgentQueryHandle {
         stop_reason: 'end_turn',
         stop_sequence: null,
         type: 'message',
-        usage: MOCK_USAGE,
+        usage: usageOf(this.contextTokens),
       },
+    }
+  }
+
+  private compactBoundary(preTokens: number, postTokens: number): SDKCompactBoundaryMessage {
+    return {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: preTokens, post_tokens: postTokens },
+      uuid: mockUuid((this.counter += 1)),
+      session_id: this.sessionId,
     }
   }
 
@@ -298,8 +359,8 @@ class MockQuery implements AgentQueryHandle {
       result: text,
       stop_reason: 'end_turn',
       total_cost_usd: 0,
-      usage: MOCK_USAGE,
-      modelUsage: {},
+      usage: usageOf(this.contextTokens),
+      modelUsage: { [this.model]: modelUsageOf(this.contextTokens) },
       permission_denials: [],
       uuid: mockUuid((this.counter += 1)),
       session_id: this.sessionId,
@@ -317,8 +378,8 @@ class MockQuery implements AgentQueryHandle {
       num_turns: this.turns,
       stop_reason: null,
       total_cost_usd: 0,
-      usage: MOCK_USAGE,
-      modelUsage: {},
+      usage: usageOf(this.contextTokens),
+      modelUsage: { [this.model]: modelUsageOf(this.contextTokens) },
       permission_denials: [],
       errors: [INTERRUPTED],
       uuid: mockUuid((this.counter += 1)),

@@ -146,6 +146,28 @@ export interface AgentNoticeEvent {
   readonly text: string
 }
 
+/**
+ * How full the context window is (#80): the tokens the last request to the
+ * model carried, against the window the SDK reports for that model. The
+ * mode line draws the meter from this; the recorder keeps it, so a resumed
+ * session shows where it left off.
+ */
+export interface AgentContextUsageEvent {
+  readonly type: 'context-usage'
+  readonly usedTokens: number
+  readonly windowTokens: number
+}
+
+/**
+ * A suggestion from the cockpit, not from the agent (#80): the guide's
+ * advice at the moment it applies, two corrections in a row for one. The
+ * mode line shows it until the next prompt; the transcript notes it.
+ */
+export interface AgentNudgeEvent {
+  readonly type: 'nudge'
+  readonly text: string
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -160,6 +182,8 @@ export type AgentEvent =
   | AgentQuestionAnsweredEvent
   | AgentPermissionAnsweredEvent
   | AgentNoticeEvent
+  | AgentContextUsageEvent
+  | AgentNudgeEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 
