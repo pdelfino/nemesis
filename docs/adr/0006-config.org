@@ -1,0 +1,450 @@
+#+TITLE: ADR 0006: configuration as a TypeScript init file with live reload
+#+OPTIONS: toc:nil
+
+- Status: proposed (flips to accepted when Pedro picks an option on #71; the
+  pick is recorded on that issue and in this line)
+- Date: 2026-OCTOBER-18
+- Threat or Pillar: README.org pillar 2, text-driven, for a configuration
+  that is a file the user edits in their editor and reloads from the
+  palette; SECURITY.org T5, supply chain, for the dependency the options
+  differ on; the trust statement below for what the file may do
+- Issue: #24 (study #17; the pick #71; consumers #72 eval and journal, #86
+  environment panel; ADR 0001 dependencies, ADR 0002 keymaps, ADR 0004
+  modes, ADR 0005 hooks)
+
+* Context
+
+** What the study found
+
+=docs/nyxt-study/06-config.org= (#17) read Nyxt's configuration lifecycle:
+find, load, apply. Two files with two authors: the user's config, free-form
+code that the app never rewrites, and the app's auto-config, regular enough
+to round-trip, loaded first so the hand-written file wins. The config runs
+before the browser exists and only declares; it takes effect lazily, when an
+instance is made, so a reload never reaches a live object. Reload resets the
+one thing the loader knows about (the class customization handlers) and runs
+the file again on top of everything else it did, so methods, globals and
+directly added hooks stack. A load error opens a window with the condition
+and the backtrace and the app starts anyway, half-configured, and the reload
+command echoes "loaded" even after an error. There is a safe mode,
+=--no-config=, reached from the crash handler. The file is trusted code with
+the process's privileges, no sandbox and no prompt; the trust boundary is the
+home directory's permissions.
+
+The study's findings for Nemesis, in short: a reload must drop exactly what
+the previous load registered (a source tag), a failed reload must leave no
+half-applied config (stage, then swap), the app-written file stays separate
+from the user's code, the lazy-apply model is not copied, the reload reports
+truthfully, unknown names are rejected, and there is a safe mode. It left
+three things to this ADR: the pick on #71, the path of the file against the
+=userData= folder where the settings live, and whether =settings.json= folds
+into the init file.
+
+** What Nemesis has today
+
+=src/main/settings.ts= is the whole configuration: =settings.json= in the
+Electron profile's =userData= folder, written with its defaults on the first
+run, five keys (=sessionsDir=, =model=, =keyscheme=, =theme=, =verify=),
+each checked by hand in =parseSettings=, an unknown key rejected by name.
+=readSettings= in =src/main/index.ts= reads it once inside =app.whenReady=
+and hands the values to the parts that need them: =nativeTheme.themeSource=
+takes the theme at once, the recorder, the index and the search take the
+sessions folder, the session manager takes the model, the verifier takes the
+check. There is no reload; the e2e harness (=tests/e2e/_launch.ts=) writes a
+=settings.json= into a throwaway profile per run and points the main process
+at it with =NEMESIS_USER_DATA=.
+
+Everything the file cannot do is the extension door. Commands are
+=defineCommand= objects in =src/main/commands/registry.ts= (a kebab-case
+name, a doc line, a =run=), registered once in =createCockpitRegistry=
+(=src/main/commands/keyscheme.ts=). Keymaps are =defineKeymap(name, spec)=
+in =src/main/commands/keymap.ts=, with =GLOBAL_KEYMAP= and =BUFFER_KEYMAPS=
+as the cockpit's layers, checked at startup by
+=assertBindingsAreRegistered=, and published to the renderer at load, which
+is why ADR 0002 says a keymap changed at runtime must be republished and
+that #71 owns that push. The palette's sources are added to the prompter in
+=createCockpitRegistry=; the =commands= source reads =registry.list()= on
+every open and writes each chord from =cockpitKeymapLayers()=. The menu is
+built once in =installMenu= (=src/main/menu.ts=), whose comment says the
+reload of #71 must call it again so the labels follow the keymaps. Hooks are
+ADR 0005's registry with a =config= source and a =dropSource=; modes are ADR
+0004's =defineMode= with the same source tag. Both ADRs leave to this one the
+name of the API object the file sees and whether a reload re-runs init-time
+handlers.
+
+** The dependency policy
+
+ADR 0001 (#56): every dependency justified in one line, no installed package
+with a =preinstall=, =install= or =postinstall= script, =scripts/check-deps.mjs=
+first in =npm run gate=, Electron the single allowlisted name because it
+downloads its own binary. esbuild declares a =postinstall= script, so option
+B below cannot land without a second allowlist entry, which is the visible
+diff ADR 0001 wants such a widening to be.
+
+Two facts about the runtime decide what is possible without a dependency.
+The Node inside Electron 44.9.0 is 24.22.0, the same major as =.nvmrc=, and
+=node:module= exposes =stripTypeScriptTypes= in both (checked on this branch
+with =ELECTRON_RUN_AS_NODE=). =scripts/agent-smoke.mts= already runs the
+agent code through Node's own type stripping with no build step, and
+=src/main/agent/session.ts= already keeps to the erasable syntax that makes
+that possible: no enum, no namespace, no constructor parameter property.
+
+** The trust statement
+
+The config file runs in the main process with the app's privileges, the way
+=init.el= runs with Emacs's. #71 says so in its body and names it as the
+thing to document plainly; ADR 0004 repeats it for a config mode. SECURITY.org
+does not carry the sentence yet: it goes in when #71 lands, as part of the
+interactive review every SECURITY.org change gets. Nothing in this ADR
+claims a sandbox. What it does claim is narrower and checkable: the file is
+handed one object, that object never reaches the permission bridge, the SDK
+session or the renderer, and the file never runs anywhere but the main
+process.
+
+* Decision
+
+Proposed: option A of the next section, with the rules below. They become
+the decision when the status flips; if Pedro picks B, the rules on the
+file, the order, the reload, the errors and the trust stay as written and
+only the loader paragraph changes.
+
+** The file is one erasable TypeScript module at a known path
+
+The config is =~/.config/nemesis/init.ts=, one file, in the erasable subset
+of TypeScript that Node strips without a compiler: interfaces, type aliases,
+annotations, =import type=, =as=, =satisfies=; no enum, no namespace, no
+parameter property, no decorator. The same subset ADR 0004 and ADR 0005
+write their sketches in, so a shape from those files pastes into the config
+unchanged. A runtime =import= or =require= is not available in version 1 and
+the loader says so by name when it finds one.
+
+The path is the user's, not the profile's. =settings.json= stays in
+=userData=, because the profile is what the e2e harness replaces per run and
+what the app may one day write; =init.ts= sits in =~/.config/nemesis/=
+beside the =journal.org= of #72, because it is the user's code, kept in
+their dotfiles, and the app never rewrites it. Two locations for one person's
+configuration is the cost, paid on purpose: one file is data the app owns,
+the other is code the user owns. The main process reads the path from
+=NEMESIS_CONFIG= when the variable is set, which is how the harness points a
+spec at a temporary file, and skips the file altogether under =--no-config=,
+the safe mode study 06 asked for. A missing file is silent; a file named
+explicitly and missing is an error.
+
+** The loader strips types and evaluates in a vm context that holds the API
+
+Load is: read the file, =stripTypeScriptTypes(source, { mode: 'strip' })=,
+compile with =new vm.Script(js, { filename })=, run with
+=runInContext= on a context created by =vm.createContext= whose only
+addition to the JavaScript standard globals is =nemesis=, the config API
+object. Strip mode replaces types with whitespace and moves nothing, so a
+line and column in an error are the line and column in the user's file, with
+no source map. The context has no =require=, no =process=, no Electron and
+no Node module; the top-level evaluation runs under a timeout of a few
+seconds so a loop in the file ends in an error buffer, not a hung cockpit.
+The loader lives in a new =src/main/config/= directory and is unit-tested
+under Vitest with the real =node:vm= and the real stripper, since the Node
+of the gate and the Node of Electron agree on both.
+
+** The settings file loads first; the init file overrides in memory
+
+=settings.json= is read as today, then =init.ts= runs. =nemesis.settings.set=
+takes a key and a value, checks them with the same rules as =parseSettings=
+(an unknown key is a =SettingsError=, a bad value is the same error the file
+would get) and overrides the value for this run. Nothing is written back:
+the init file may read and override the data file, never the reverse, which
+is Nyxt's order with the hazard removed (a reload re-reads both, so the UI
+file is never lost). Whether the app starts writing =settings.json= from a
+command is a later question; this ADR fixes only that it would be that file.
+
+** A load is staged and committed whole
+
+The =nemesis= object handed to the file is a staging API: =defineCommand=,
+=defineKeymap=, =defineMode=, =hooks.on= and =settings.set= record what the
+file asked for, validated as they are called (a name that is not kebab-case,
+a chord that does not parse, a duplicate name, an unknown setting), and the
+file's body runs to its end or throws. On success the loader commits in one
+step: drop everything with the source =config= (commands from the registry,
+the =user= keymap layer, the prompter sources, hook handlers through
+=dropSource('config')=, modes through disable and drop), apply the new set,
+check the new bindings against the new registry with
+=assertBindingsAreRegistered=, republish the bindings to the renderer, and
+call =installMenu= again. On failure nothing is committed: the previous
+config, or the cockpit's defaults on the first load, stays live. There is no
+half-applied config, which is the one thing Nyxt's =load= cannot promise.
+
+** Reload rebuilds four things and re-runs the file's body
+
+=reload-config= is a command on the palette. It runs the load above and, on
+success, reports one line with the counts: commands, bindings, hooks, modes,
+settings overridden, and the settings that need a restart. What a reload
+rebuilds, by name:
+
+- the command registry: the =config= commands are replaced; the cockpit's
+  stay, and a config command cannot take a cockpit command's name;
+- the keymaps: the =user= layer is replaced, the resolver takes the new
+  layers, the renderer gets the new shape through the push ADR 0002 names;
+- the palette sources: the =commands= source reads the registry lazily and
+  follows on its own; sources the config added are dropped and re-added;
+  =bindingNote= shows the new chords on the next open;
+- the menu: =installMenu= again, so the =Commands= labels carry the new
+  chords and the new commands, as the note in =src/main/menu.ts= requires.
+
+The file's body is the init-time code and runs on every load, so =after-init=
+is not fired again on a reload: a config that needs to do something at load
+does it at top level, and ADR 0005's open question is answered that way.
+Settings read at use time (=model= on the next session, =verify= on the next
+check, =theme= at once through =nativeTheme=) apply on the reload; settings
+read once at start (=sessionsDir=, =keyscheme=) are reported as needing a
+restart, by name, in the reload's one line. A hook handler or a command body
+registered by the previous load that is still running finishes on its own;
+the registry no longer lists it.
+
+** Errors are shown in a buffer and never stop the app
+
+A load error (a syntax error from the stripper or the compiler, a thrown
+error from the file, a validation error from the API) is kept as data: the
+file, the line, the column when the engine has one, and the message. It is
+shown in a help buffer titled =Config errors= through =HelpBuffers=
+(=src/main/help.ts=), the way =describe-command= answers, and announced as a
+=notice= down the agent event stream, so the transcript shows the line and
+the session folder keeps it. At startup the window does not exist yet when
+the file runs, so the loader keeps the error and the buffer opens once the
+window is up, which is Nyxt's startup reporter; the app starts with whatever
+was live before, the defaults. =reload-config= reports the error buffer or
+the success line, never both. No prompt text, assistant text or page content
+can be in the file's error, since the API passes none of them to the file;
+the message and the file's own source line are the only things printed.
+
+** The file is trusted code; the API is the whole surface
+
+The file runs with the app's privileges and =node:vm= is not a security
+boundary; the documentation says both in one sentence next to the path.
+What the design holds by construction: the only object in the file's scope
+is =nemesis=; that object exposes the command registry, the keymap builder,
+the mode registry, ADR 0005's hook registry bound to the source =config=,
+the settings, a read of the buffer list, =commands.run= and =notice=, and
+nothing of =src/main/agent/=, =src/main/security/= or =src/preload/=. The
+loader has no runtime import from those directories, pinned by the same
+kind of unit test ADR 0005 uses, and no channel in =src/shared/ipc.ts=
+loads, reloads or evaluates a config, so the renderer and a page buffer
+cannot reach it. A =before-command= veto is the one way a config touches a
+cockpit action, and it cannot touch a permission decision at all.
+
+** Unknown names fail at load, by name
+
+A binding to a command that does not exist, a setting nobody knows, a hook
+point outside ADR 0005's union, a mode name that is not kebab-case: each is
+an error in the =Config errors= buffer naming the thing, not a warning and
+not an accept. This is =parseSettings='s rule carried to the whole API, and
+the opposite of Nyxt's =define-configuration= on an unknown slot.
+
+* Alternatives considered
+
+The three options of #71, each with the files it touches, its cost, its
+risk and what it rules out, then one table across the questions the issue
+asks the comparison to cover.
+
+** A. init.ts type-stripped by node:module and evaluated in a node:vm context (Recommended)
+
+What the Decision describes: no compiler, no dependency, one file, erasable
+syntax, =import type= allowed because the stripper erases it, no runtime
+import. Files touched: new =src/main/config/= (the loader and the API
+object), =src/main/index.ts= for the load at start and the reload command,
+the push of the bindings in the key bridge, =installMenu= called again, a
+new =tests/unit/config-loader.test.ts= and =tests/e2e/config.spec.ts=, a
+=docs/config.org= with the worked example. Cost: medium; the staging API is
+the real work and every option needs it. Risk: the no-imports rule is the
+limit a user hits first when their config grows past one file; the day it
+matters, a resolver for relative imports under =~/.config/nemesis/= through
+the same stripper is one issue here, not a new dependency. Rules out: a
+config that pulls an npm package, and non-erasable syntax (an enum in the
+config is a load error with a line). Recommended because the runtime
+already has the stripper, because ADR 0001 stays intact with its single
+allowlist entry, because the error path is one (the engine's line and
+column, on the user's own text), and because a packaged app grows by
+nothing.
+
+** B. init.ts bundled by esbuild at load, with an allowlist entry in check-deps
+
+esbuild compiles the file and its imports to one script at load, which then
+runs in the same vm context. Files touched: the same as A, plus
+=package.json= and the lockfile, =scripts/check-deps.mjs= (esbuild in
+=ALLOWED=), its test in =tests/unit/check-deps.test.ts=, and ADR 0001's
+Consequences, which say the allowlist is one name. Cost: medium for the
+loader, plus the allowlist change and its review, plus about 10 MB in the
+packaged app for the platform binary (the Approach comment on #71). Risk:
+esbuild's =postinstall= only checks the platform binary, but the allowlist
+grows from one name to two and the rule's exception is no longer the one
+package that cannot avoid it; imports pull npm code into the trusted file,
+which widens what "trusted code" means to every package the config names;
+and errors arrive on two paths, esbuild's own with its source map and the
+engine's. Rules out: nothing a config author wants. It lost because it buys
+imports, which no one has asked for yet, at the price of the one policy ADR
+0001 holds by construction, and because A can add relative imports later
+without the dependency.
+
+** C. A data-only settings file, commands and keymaps as data
+
+=settings.json= grows keys for keymaps and for commands as data (a name, a
+doc, a command to run), no code runs. Files touched: =src/main/settings.ts=
+and its test, the docs. Cost: small. Risk: none to the gate or the policy.
+Rules out: a hook (a handler is code), a computed binding, a mode's
+=enable=, a command that does anything a cockpit command does not already
+do, and the eval of #72 (there is no scope to evaluate in), which is the
+study's definition of not an extension door. It lost because the project's
+pillar is that the configuration is code the way =init.el= is, and a data
+file is the thing the app already has.
+
+** The three against the questions the issue asks
+
+| Question               | A: strip types + =node:vm=                                      | B: esbuild                                                       | C: data only                                        |
+|------------------------+-----------------------------------------------------------------+------------------------------------------------------------------+-----------------------------------------------------|
+| Imports                | =import type= only; no runtime import in version 1; relative imports a later issue, no dependency | runtime imports, including npm packages, bundled at load | none; nothing to import                   |
+| Reload semantics       | stage and swap; source =config= dropped; body re-runs; no =after-init= refire | the same loader rules; one more build step before the body runs | re-read and re-validate the JSON; no code to re-run |
+| Error display          | engine error on the user's own line and column, in =Config errors= plus a notice | esbuild errors (own format, source map) and engine errors, same buffer | =SettingsError= naming the key, same buffer |
+| Live reload rebuilds   | the registry, the =user= keymap layer, the palette sources, the menu | the same four                                                | the keymap layer and the menu; the registry only if commands are data |
+| Packaging size         | nothing added                                                   | about 10 MB for the platform binary                              | nothing added                                       |
+| The gate               | =check-deps= unchanged; a unit test with the real stripper and vm; one e2e | a second allowlist name, its test, ADR 0001 amended; the same tests | the settings test grows                           |
+
+* Sketch of the recommended option
+
+The worked example, in erasable TypeScript. The =nemesis= object is in
+scope; a user who wants completion points their editor at the declaration
+file the app ships (a Consequence below) and the =import type= on the first
+line is erased before the file runs.
+
+#+begin_src typescript
+// ~/.config/nemesis/init.ts
+// Trusted code: this file runs in the main process with the app's
+// privileges, like init.el. Erasable TypeScript, no runtime imports.
+import type { TurnEndedEvent } from 'nemesis'
+
+const LONG_TURN_MS: number = 60_000
+
+// One setting: pin the appearance instead of following the OS. Checked
+// like settings.json would be; a typo in the key is an error with a line.
+nemesis.settings.set('theme', 'dark')
+
+// One command, the shape of src/main/commands/registry.ts: a kebab-case
+// name, a doc line the palette shows, a body.
+nemesis.defineCommand({
+  name: 'count-buffers',
+  doc: 'Says how many buffers are open.',
+  run() {
+    nemesis.notice(`${nemesis.buffers.list().length} buffers open`)
+  },
+})
+
+// One keymap, the shape of ADR 0002: the user layer sits above the global
+// map, so C-s now searches every transcript and C-x s searches this buffer,
+// the reverse of the cockpit's defaults; the new command gets a key too.
+nemesis.defineKeymap('user', {
+  'C-s': 'search-transcripts',
+  'C-x s': 'search-buffer',
+  'C-c n': 'count-buffers',
+})
+
+// One hook, the shape of ADR 0005: a named handler at a declared point,
+// registered under the source `config`, dropped by reload-config.
+nemesis.hooks.on('turn-ended', {
+  name: 'say-when-a-long-turn-ends',
+  doc: 'A notice when a turn took more than a minute.',
+  run(event: TurnEndedEvent) {
+    if (event.durationMs > LONG_TURN_MS) {
+      nemesis.notice(`Turn done in ${Math.round(event.durationMs / 1000)} s`)
+    }
+    return undefined
+  },
+})
+#+end_src
+
+What each line costs the loader: =settings.set= validates against the five
+known keys; =defineCommand= is the registry's own =defineCommand= with the
+duplicate check deferred to the commit; =defineKeymap= parses every chord
+with =parseChord= now and checks every command name at the commit, against
+the cockpit's commands plus the file's; =hooks.on= is ADR 0005's =on= bound
+to =config=. A thrown error anywhere, or a validation error, leaves the
+previous config live and opens =Config errors= with the line.
+
+** Order of steps to land it
+
+Each step is one issue and keeps =npm run gate= green on its own.
+
+1. The loader and the API object in =src/main/config/=, with the staging
+   and the commit for commands, keymaps and settings only, the =user=
+   keymap layer in the resolver and the push to the renderer, =installMenu=
+   called again, =NEMESIS_CONFIG= and =--no-config=, the =Config errors=
+   buffer; =tests/unit/config-loader.test.ts= pinning: a file that defines a
+   command and a binding; a syntax error reported with line and column and
+   nothing committed; a runtime =import= reported by name; a binding to an
+   unknown command reported and nothing committed; a second load dropping
+   the first load's commands and bindings; an unknown setting rejected; the
+   import rules. =tests/e2e/config.spec.ts= as #71 writes it: a temp config
+   adds a command, =M-x= finds it, the file changes, =reload-config= picks
+   it up. This is #71. M3.
+2. =hooks= on the API object once ADR 0005's registry lands (its step 4),
+   =dropSource('config')= in the commit. M3.
+3. =defineMode= and =defaultModes= on the API object once ADR 0004's
+   registry lands (its step 5). M3.
+4. The REPL door of #72: the same context, the API bound to =repl=, the
+   journal. M3.
+5. The config file's line in the environment panel of #86. M3.
+
+* Consequences
+
+- *The API object is named.* ADR 0004 and ADR 0005 used =nemesis= as a
+  placeholder; it is the name. One object, in scope, no import. Its members
+  are =defineCommand=, =defineKeymap=, =defineMode=, =defaultModes=,
+  =hooks=, =settings=, =buffers=, =commands=, =notice=; a member is added
+  here, by amendment, not in a landing issue.
+- *The journal of #72 is the auto-config of Nemesis.* The REPL evaluates
+  in the same kind of context with the API bound to the source =repl=, so
+  an eval'd =defineCommand= or =hooks.on= lands in the running image the
+  way a config one does, tagged =repl=. Each such form is appended to
+  =~/.config/nemesis/journal.org= with a timestamp; =journal-promote=
+  appends the form to the end of =init.ts= under a comment line with the
+  date, never rewriting an existing line, and drops the =repl= entry so the
+  next =reload-config= registers the =config= copy without a duplicate name;
+  =journal-discard= drops the entry and the registration. =reload-config=
+  drops =config= and leaves =repl= alone, as ADR 0005 says, so an unpromoted
+  definition survives a reload. Because the journal is Org and the init file
+  is TypeScript, a promoted entry is the form as typed, inside the file's
+  syntax, which is why the file has no sections the app owns: an appended
+  form is the whole contract.
+- *The environment panel shows the config file.* The =environment= buffer
+  of #86 gets a Nemesis section: the path of =init.ts= and whether it was
+  found, when it last loaded, what it contributed (the counts of the reload
+  line), the last error if the last load failed, and the path of
+  =settings.json= with the keys the init file overrides. =RET= on the
+  =init.ts= line opens it through the open door of #68, the confirm and
+  =shell.openPath=, so the one editor the user already has is the config
+  editor; =edit-config= is that line at a key.
+- *A declaration file for the editor.* The app ships =nemesis.d.ts=, the
+  types of the API object and of every hook event, and the docs say where to
+  point a =tsconfig.json= in =~/.config/nemesis/= so that an editor checks
+  the file before the loader does. The runtime never reads it.
+- *What becomes easier.* A command, a binding, a hook and a mode are each
+  one call in one file; the same shapes the cockpit's own code uses, so the
+  cockpit's tests are the config's tests. An error is a line in the user's
+  file. A reload is a palette command with a truthful one-line report.
+- *What becomes harder.* One file: a config that wants to be two files waits
+  for the relative-imports issue. Erasable syntax only, which an editor
+  pointed at =erasableSyntaxOnly= in its =tsconfig.json= reports before the
+  loader does. A config command cannot take a cockpit command's name, so
+  overriding a cockpit command is rebinding its keys to a new name, not
+  replacing it. Two settings need a restart, and the reload line says
+  which. Every load costs a strip and a compile of one file, a few
+  milliseconds, and a reload costs a menu rebuild.
+- *Out of reach, on purpose.* No runtime =import= and no =require=. No
+  sandbox claim, and no feature that depends on one. No config in the
+  renderer or in a page; no IPC channel that loads or evaluates. No reach
+  from the file to =src/main/agent/=, =src/main/security/=, =src/preload/=,
+  the permission bridge or the SDK's =hooks= option, which are the same walls
+  ADR 0005 builds for hooks. No app-written edit to =init.ts= beyond the
+  journal's append. No =after-init= refire on reload.
+- *Follow-up work.* The five steps above as issues; the SECURITY.org
+  sentence on the trust statement, added in #71's interactive review; the
+  =docs/config.org= page with the example above and the editor setup; the
+  relative-imports resolver as a question in this file when a user asks for
+  it; and the first app-written setting, if one comes, as the question of
+  whether the app writes =settings.json= at all.
