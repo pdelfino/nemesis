@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, session } from 'electron'
 import { join } from 'node:path'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge } from './agent/session-bridge'
@@ -9,6 +9,14 @@ import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyschem
 import { installPaletteBridge } from './commands/palette-bridge'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { applyNavigationPolicy } from './security/navigation-policy'
+import {
+  applyWebRTCPolicy,
+  createPartitions,
+  EPHEMERAL_PARTITION,
+  PERSISTENT_PARTITION,
+  recordRequests,
+  type RequestRecord,
+} from './security/partitions'
 import { PermissionPolicy } from './security/permissions'
 import { internalPagePreferences } from './security/web-preferences'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
@@ -36,6 +44,9 @@ app.on('web-contents-created', (_event, contents) => {
   // cannot miss them. Electron grants everything on a session without them.
   permissionPolicy.apply(contents.session)
   permissionPolicy.watch(contents)
+  // T7 (#54): WebRTC uses the public interface only. Electron keeps the
+  // setting per WebContents, so it is applied here, to every one.
+  applyWebRTCPolicy(contents)
   // T1 and T3 (#48): every WebContents gets the page policy the moment it
   // exists, whoever created it, so no creation site can forget it. The one
   // internal page corrects its kind in createWindow below. The buffer manager
@@ -100,7 +111,28 @@ function readSettings(): Settings {
   }
 }
 
+/**
+ * The no-network spec (#54) reads every request the sessions made since
+ * launch from here, through `app.evaluate`. Main process only, under test
+ * only: the renderer has no path to it.
+ */
+const REQUEST_LOG = '__nemesisRequests'
+
 void app.whenReady().then(() => {
+  // T7 (#54): DNS over HTTPS off, the two partitions with the permission
+  // handlers and the WebRTC policy, before any WebContents exists. The page
+  // buffer (#73) names its partition from this module.
+  const partitions = createPartitions(permissionPolicy)
+  if (process.env['NODE_ENV'] === 'test') {
+    // Installed before the cockpit window loads, so the first request the
+    // app makes is already in the log the spec reads.
+    const log = recordRequests({
+      default: session.defaultSession,
+      [PERSISTENT_PARTITION]: partitions.persistent,
+      [EPHEMERAL_PARTITION]: partitions.ephemeral,
+    })
+    ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
+  }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
   const settings = readSettings()

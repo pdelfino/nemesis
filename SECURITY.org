@@ -43,7 +43,7 @@ Controls: =package-lock.json= committed; =npm ci --ignore-scripts= with Electron
 Controls: =setPermissionRequestHandler= and =setPermissionCheckHandler= deny camera, microphone, geolocation, notifications, clipboard read, MIDI, USB, HID, serial and Bluetooth by default. Allow is per site and per session, never persisted in version 1. =setDevicePermissionHandler= denies all devices.
 
 ** T7. Privacy baseline
-Controls: a persistent default session partition for your own browsing and an ephemeral partition wiped on close; WebRTC IP handling set to the public interface only; DNS over HTTPS stays off inside the app so the system hosts blocklist applies; blocker mode on by default; no telemetry, no crash reports leaving the machine, no analytics of any kind.
+Controls: a persistent default session partition for your own browsing and an ephemeral partition wiped on close; WebRTC IP handling set to the public interface only; DNS over HTTPS stays off inside the app so the system hosts blocklist applies; blocker mode on by default; no telemetry, no crash reports leaving the machine, no analytics of any kind. The partitions, the WebRTC policy and the host resolver live in =src/main/security/partitions.ts= (#54). No telemetry is not a promise but a spec: =tests/e2e/security/startup-no-network.spec.ts= logs every request each session makes from launch to idle and finds only the app's own files.
 
 * Non-negotiables, each with a test
 
@@ -64,6 +64,7 @@ Every rule below has a test under =tests/e2e/security/= that fails when the rule
 | Page text reaches the agent only as labeled data                  | the wrapped block is present and instruction text is not executed   |
 | Side-effect tools need confirmation on untrusted pages            | the hook denies without a user decision                             |
 | Fuses set at packaging                                            | =@electron/fuses= read-back on the built binary                      |
+| No network traffic the user did not ask for                       | from launch to idle, no session requests anything but the app's own files |
 
 * Rules for the agent that builds Nemesis
 
