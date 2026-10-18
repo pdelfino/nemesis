@@ -8,6 +8,8 @@ Electron (current stable, pinned), TypeScript strict, CodeMirror 6 with the Repl
 
 ## Layout (created by the M1 scaffold issue; keep it)
 
+The zones are enforced by lint: `eslint.config.mjs` restricts what each directory under `src/` may import (#103).
+
 ```
 src/main/            Electron main process: app lifecycle, windows, sessions
 src/main/security/   hardening: window options, handlers, CSP, downloads, partitions, fuses config
