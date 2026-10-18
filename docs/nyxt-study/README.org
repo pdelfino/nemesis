@@ -1,0 +1,16 @@
+#+TITLE: Nyxt studies
+#+OPTIONS: toc:nil
+
+Each study reads one part of Nyxt (=~/projects/nyxt=, Common Lisp) that
+Nemesis modelled itself on, describes the mechanism in words with the Lisp
+file and function cited by name, sets it against what Nemesis has on main
+with the TypeScript file cited, and ends with a list of what to file next
+and what is deliberately not wanted. Nothing is ported: the studies feed the
+ADRs under =docs/adr/= and the issues Pedro picks from the list.
+
+The numbers follow the plan's order of subjects, so a study may land before
+a lower number does.
+
+| Study                            | Subject                                                       | Feeds    | Issue |
+|----------------------------------+---------------------------------------------------------------+----------+-------|
+| [[file:02-prompt-buffer.org][02-prompt-buffer.org]] | Nyxt's prompt buffer and prompter against the Nemesis palette | ADR 0003 | #13   |
