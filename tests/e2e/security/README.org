@@ -41,6 +41,7 @@ the same ground:
 | =download.html=     | a link, a scripted click and a navigation to =download.bin= (1 KB) |
 | =injection.html=    | prompt-injection text, visible, hidden and in a comment         |
 | =permissions.html=  | one button per device or data permission, outcome per =li=      |
+| =pwned.js=          | a remote script the internal page's CSP must refuse to fetch    |
 
 The fixtures are hostile on purpose and harmless in fact: no fixture reaches the
 network, and nothing outside this directory is served.

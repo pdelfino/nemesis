@@ -1,5 +1,6 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import type { InvokeAnswer, InvokeChannel, InvokePayload } from '../shared/ipc'
+import { INTERNAL_ORIGIN } from './security/internal-scheme'
 
 /**
  * The one door from a page into privileged code (#53, SECURITY.org T1).
@@ -12,14 +13,10 @@ import type { InvokeAnswer, InvokeChannel, InvokePayload } from '../shared/ipc'
  */
 
 /**
- * Where internal pages are served from. file:// until #50 moves them to
- * nemesis://app, which is a change to this list and nothing else. A file URL
- * counts only when it is the cockpit page itself (INTERNAL_PAGE_PATH), since
- * any file on disk shares that origin.
+ * Where internal pages are served from: the privileged nemesis://app origin
+ * (#50). Nothing on file:// is internal any more, the cockpit included.
  */
-export const INTERNAL_ORIGINS: readonly string[] = Object.freeze(['file://'])
-
-const INTERNAL_PAGE_PATH = '/renderer/index.html'
+export const INTERNAL_ORIGINS: readonly string[] = Object.freeze([INTERNAL_ORIGIN])
 
 /** A payload parser: shape only, no trust. Throws on anything but the shape. */
 export type Parser<T> = (payload: unknown) => T
@@ -45,8 +42,7 @@ export function isInternalPage(url: string, devServerUrl?: string): boolean {
   if (devServerUrl !== undefined && devServerUrl.length > 0 && url.startsWith(devServerUrl)) {
     return true
   }
-  if (!INTERNAL_ORIGINS.includes(originOf(parsed))) return false
-  return parsed.protocol !== 'file:' || parsed.pathname.endsWith(INTERNAL_PAGE_PATH)
+  return INTERNAL_ORIGINS.includes(originOf(parsed))
 }
 
 /**

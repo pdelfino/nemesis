@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { COCKPIT_URL } from '../../../src/main/security/internal-scheme'
 import { INTERNAL_SCHEME } from '../../../src/main/security/navigation-policy'
 import { HARDENED_WEB_PREFERENCES } from '../../../src/main/security/web-preferences'
 import { fixtureServer, launchNemesis } from './_harness'
@@ -15,10 +16,13 @@ import { fixtureServer, launchNemesis } from './_harness'
  * installed and deciding on that WebContents is a fourth URL the renderer does
  * hand over, one on the internal scheme, which a page may never reach.
  *
- * The cockpit is an internal page on file:// until #50, and file:// may read
- * any file: that is the navigation Chromium would allow on its own, and the
- * policy is what stops it. The main process logs every refusal by scheme and
- * kind, never by URL.
+ * The cockpit is an internal page on nemesis://app (#50), a standard and
+ * secure origin, so Chromium's renderer refuses file:///etc/hosts from it
+ * the way it does from an http page, before the main process hears of it;
+ * the spec reads the renderer's own refusal from the console. An https:
+ * navigation does reach the main process, and the policy refuses it as
+ * `internal`. The main process logs every refusal by scheme and kind, never
+ * by URL.
  */
 
 interface NavigationWindow {
@@ -122,20 +126,29 @@ test('a page cannot navigate itself or the app to file:, javascript: or a top-le
       appName: null,
     })
 
-    // The internal page: file:// to file:///etc/hosts is the navigation
-    // Chromium would not stop on its own, and https: is a page's place, not
-    // the cockpit's. Both are refused by the policy as `internal`.
+    // The internal page: file:///etc/hosts is refused by the renderer, which
+    // says so on the console, and https: is a page's place, not the
+    // cockpit's, so the policy refuses it as `internal`. Neither commits.
     const cockpitUrl = nemesis.window.url()
-    expect(cockpitUrl).toMatch(/^file:\/\/.*\/renderer\/index\.html$/)
-    for (const [target, scheme] of [
-      ['file:///etc/hosts', 'file:'],
-      ['https://example.test/', 'https:'],
+    expect(cockpitUrl).toBe(COCKPIT_URL)
+    const rendererConsole: string[] = []
+    nemesis.window.on('console', (message) => rendererConsole.push(message.text()))
+    for (const [target, refusal] of [
+      ['file:///etc/hosts', 'renderer'],
+      ['https://example.test/', 'policy'],
     ] as const) {
       await nemesis.window.evaluate((href) => {
         const page = globalThis as NavigationWindow
         if (page.location) page.location.href = href
       }, target)
-      await expect.poll(blocked).toContainEqual(['navigation', scheme, 'internal'])
+      if (refusal === 'policy') {
+        await expect.poll(blocked).toContainEqual(['navigation', 'https:', 'internal'])
+      } else {
+        await expect
+          .poll(() => rendererConsole)
+          .toContain(`Not allowed to load local resource: ${target}`)
+        expect(blocked()).not.toContainEqual(['navigation', 'file:', 'internal'])
+      }
       expect(nemesis.window.url()).toBe(cockpitUrl)
       expect(await readState(nemesis.window)).toMatchObject({
         title: 'Nemesis',

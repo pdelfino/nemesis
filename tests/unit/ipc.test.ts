@@ -15,7 +15,7 @@ const { BUFFERS_CHANNEL } = await import('../../src/shared/buffers')
 const { KEY_CHANNEL } = await import('../../src/shared/keys')
 const { parseKeyPress } = await import('../../src/main/commands/dispatcher')
 
-const COCKPIT = 'file:///app/out/renderer/index.html'
+const COCKPIT = 'nemesis://app/'
 
 /** A sender frame as `handle()` sees it: the URL and whether it is the top frame. */
 function frame(url: string, parent: unknown = null) {
@@ -23,15 +23,17 @@ function frame(url: string, parent: unknown = null) {
 }
 
 describe('what counts as an internal page (SECURITY.org, T1)', () => {
-  it('accepts the cockpit page served from file://', () => {
+  it('accepts a page on the internal origin nemesis://app (#50)', () => {
     expect(isInternalPage(COCKPIT)).toBe(true)
-    expect(isInternalPage('file:///elsewhere/out/renderer/index.html')).toBe(true)
+    expect(isInternalPage('nemesis://app/help.html')).toBe(true)
     expect(isInternalPage(`${COCKPIT}#transcript`)).toBe(true)
   })
 
-  it('rejects any other file, any web origin and anything unparseable', () => {
-    expect(isInternalPage('file:///app/out/renderer/other.html')).toBe(false)
-    expect(isInternalPage('file:///Users/pedro/Downloads/renderer/index.html.html')).toBe(false)
+  it('rejects any file, another host on the scheme, any web origin and anything unparseable', () => {
+    expect(isInternalPage('file:///app/out/renderer/index.html')).toBe(false)
+    expect(isInternalPage('file:///Users/pedro/Downloads/renderer/index.html')).toBe(false)
+    expect(isInternalPage('nemesis://evil/')).toBe(false)
+    expect(isInternalPage('nemesis://app.evil.test/')).toBe(false)
     expect(isInternalPage('https://example.com/renderer/index.html')).toBe(false)
     expect(isInternalPage('http://127.0.0.1:4000/node-probe.html')).toBe(false)
     expect(isInternalPage('about:blank')).toBe(false)
@@ -65,7 +67,7 @@ describe('what counts as an internal page (SECURITY.org, T1)', () => {
     expect(describeOrigin('http://127.0.0.1:4000/node-probe.html?secret=1')).toBe(
       'http://127.0.0.1:4000',
     )
-    expect(describeOrigin(COCKPIT)).toBe('file://')
+    expect(describeOrigin(`${COCKPIT}?secret=1`)).toBe('nemesis://app')
     expect(describeOrigin(null)).toBe('no top frame')
     expect(describeOrigin('nonsense')).toBe('an unparseable URL')
   })
@@ -124,7 +126,9 @@ describe('the guarded handler', () => {
     const listener = guard(KEY_CHANNEL, parseKeyPress, run)
     await expect(listener(frame(COCKPIT), { secret: 'do-not-log' })).rejects.toThrow(/usable key/)
     expect(run).not.toHaveBeenCalled()
-    expect(warnings).toHaveBeenCalledWith('ipc: dropped nemesis:key from file://: payload rejected')
+    expect(warnings).toHaveBeenCalledWith(
+      'ipc: dropped nemesis:key from nemesis://app: payload rejected',
+    )
     expect(JSON.stringify(warnings.mock.calls)).not.toContain('do-not-log')
   })
 

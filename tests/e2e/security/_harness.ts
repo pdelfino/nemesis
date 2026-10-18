@@ -30,6 +30,7 @@ type FixtureListener = HttpServer | HttpsServer
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
   '.bin': 'application/octet-stream',
 }
 

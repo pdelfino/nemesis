@@ -28,7 +28,7 @@ interface RequestRecord {
   readonly origin: string
 }
 
-/** The cockpit is served from file:// until #50 moves it to the internal scheme. */
+/** The cockpit is served from nemesis://app (#50); its files come off disk through file:. */
 const OWN_SCHEMES = /^(file|nemesis|devtools):/
 
 const NETWORK_SCHEMES = /^(https?|wss?):/

@@ -3,9 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      Interim policy as a meta tag; #50 serves internal pages from nemesis://
-      with the same policy as a response header. ws://localhost:* exists only
-      for the Vite dev server's hot reload.
+      The policy the built page gets as a response header on nemesis://app
+      (src/main/security/internal-scheme.ts, #50), repeated here for the Vite
+      dev server, which serves this file over http://localhost without it.
+      ws://localhost:* exists only for that server's hot reload.
     -->
     <meta
       http-equiv="Content-Security-Policy"

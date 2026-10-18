@@ -8,6 +8,7 @@ import { installKeyBridge } from './commands/key-bridge'
 import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
+import { COCKPIT_URL, registerInternalScheme, serveInternalPages } from './security/internal-scheme'
 import { applyNavigationPolicy } from './security/navigation-policy'
 import {
   applyWebRTCPolicy,
@@ -25,6 +26,11 @@ import { SessionRecorder } from './transcripts'
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
 if (userData) app.setPath('userData', userData)
+
+// T3 (#50): internal pages live on nemesis://app, a privileged scheme that
+// Electron only accepts before the app is ready. The handler that serves it
+// is installed in whenReady below.
+registerInternalScheme()
 
 // The mark (#91). A development run is the stock Electron binary, which shows
 // the Electron logo in the Dock and the app switcher unless the app sets its
@@ -90,8 +96,8 @@ function createWindow(): BrowserWindow {
   if (!app.isPackaged && devServer) {
     void win.loadURL(devServer)
   } else {
-    // Served from file:// until #50 moves internal pages to the nemesis:// scheme.
-    void win.loadFile(join(__dirname, '../renderer/index.html'))
+    // The built renderer, on the internal origin with the CSP header (#50).
+    void win.loadURL(COCKPIT_URL)
   }
   return win
 }
@@ -119,6 +125,9 @@ function readSettings(): Settings {
 const REQUEST_LOG = '__nemesisRequests'
 
 void app.whenReady().then(() => {
+  // T3 (#50): the built renderer is served on nemesis://app before the
+  // cockpit window asks for it. The dev server path above skips this origin.
+  serveInternalPages(join(__dirname, '../renderer'))
   // T7 (#54): DNS over HTTPS off, the two partitions with the permission
   // handlers and the WebRTC policy, before any WebContents exists. The page
   // buffer (#73) names its partition from this module.
