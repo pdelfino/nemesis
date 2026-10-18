@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { KeyPress } from '../../src/shared/keys'
 import {
   assertBindingsAreRegistered,
-  isInternalSender,
   KeyDispatcher,
   parseKeyPress,
 } from '../../src/main/commands/dispatcher'
@@ -198,20 +197,5 @@ describe('what the main process accepts from a page', () => {
     expect(() => parseKeyPress({ key: 'x', code: 'KeyX', bufferType: 'root' })).toThrow(
       /Unknown buffer type/,
     )
-  })
-
-  it('accepts only the top frame of an internal page (SECURITY.org)', () => {
-    expect(isInternalSender({ url: 'file:///app/out/renderer/index.html', parent: null })).toBe(
-      true,
-    )
-    expect(isInternalSender({ url: 'file:///app/out/renderer/index.html', parent: {} })).toBe(false)
-    expect(isInternalSender({ url: 'https://example.com/', parent: null })).toBe(false)
-    expect(isInternalSender(null)).toBe(false)
-    expect(
-      isInternalSender(
-        { url: 'http://localhost:5173/index.html', parent: null },
-        'http://localhost:5173',
-      ),
-    ).toBe(true)
   })
 })

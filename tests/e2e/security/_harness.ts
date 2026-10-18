@@ -148,14 +148,23 @@ export interface PageBuffer {
   close(): Promise<void>
 }
 
+export interface PageBufferOptions {
+  readonly withPreload?: boolean
+}
+
 export interface Nemesis {
   readonly app: ElectronApplication
   /** The cockpit window, the one internal page with the preload bridge. */
   readonly window: Page
   /** The throwaway profile, deleted by `close`. */
   readonly userData: string
-  /** Opens a URL in a hardened, preload-free WebContents, as a page buffer. */
-  openPageBuffer(url: string): Promise<PageBuffer>
+  /**
+   * Opens a URL in a hardened, preload-free WebContents, as a page buffer.
+   * `withPreload` attaches the cockpit's preload to the hostile page instead,
+   * which no page buffer ever gets: it is how the IPC spec reaches a
+   * privileged channel from a web origin (#53).
+   */
+  openPageBuffer(url: string, options?: PageBufferOptions): Promise<PageBuffer>
   close(): Promise<void>
 }
 
@@ -171,17 +180,25 @@ export async function launchNemesis(): Promise<Nemesis> {
 
   const buffers: PageBuffer[] = []
 
-  const openPageBuffer = async (url: string): Promise<PageBuffer> => {
+  const openPageBuffer = async (
+    url: string,
+    options: PageBufferOptions = {},
+  ): Promise<PageBuffer> => {
     const opened = app.waitForEvent('window')
     const created = await app.evaluate(
-      async ({ BrowserWindow }, options) => {
+      async ({ app: main, BrowserWindow }, options) => {
+        // A web page gets the hardened defaults and no preload: the bridge
+        // belongs to internal pages only (SECURITY.org, T1). The one spec
+        // that asks for the preload gets the built one, from the app path
+        // the main process already knows.
+        const preload = options.withPreload
+          ? { preload: `${main.getAppPath()}/out/preload/index.js` }
+          : {}
         const view = new BrowserWindow({
           show: false,
           width: 1000,
           height: 700,
-          // A web page gets the hardened defaults and no preload: the bridge
-          // belongs to internal pages only (SECURITY.org, T1).
-          webPreferences: { ...options.webPreferences },
+          webPreferences: { ...options.webPreferences, ...preload },
         })
         try {
           await view.loadURL(options.url)
@@ -190,7 +207,11 @@ export async function launchNemesis(): Promise<Nemesis> {
           return { id: view.id, loadError: error instanceof Error ? error.message : String(error) }
         }
       },
-      { url, webPreferences: { ...HARDENED_WEB_PREFERENCES } },
+      {
+        url,
+        webPreferences: { ...HARDENED_WEB_PREFERENCES },
+        withPreload: options.withPreload === true,
+      },
     )
 
     const page = await opened

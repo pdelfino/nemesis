@@ -46,29 +46,6 @@ export function parseKeyPress(payload: unknown): KeyPress {
   }
 }
 
-export interface SenderFrame {
-  readonly url: string
-  readonly parent: unknown
-}
-
-/**
- * SECURITY.org: an IPC handler validates the sender before doing anything.
- * Only the top frame of an internal page may drive the keymap. Internal pages
- * are served from file:// until #50 moves them to nemesis://; the Vite dev
- * server counts only when electron-vite set ELECTRON_RENDERER_URL.
- */
-export function isInternalSender(
-  frame: SenderFrame | null | undefined,
-  devServerUrl?: string,
-): boolean {
-  if (frame === null || frame === undefined) return false
-  if (frame.parent !== null) return false
-  if (devServerUrl !== undefined && devServerUrl.length > 0 && frame.url.startsWith(devServerUrl)) {
-    return true
-  }
-  return frame.url.startsWith('file://') && frame.url.endsWith('/renderer/index.html')
-}
-
 /** Fails at startup, not on a keypress, when a binding names an unknown command. */
 export function assertBindingsAreRegistered(
   registry: CommandRegistry,

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import {
   AGENT_EVENT_CHANNEL,
   PROMPT_DRAFT_CHANNEL,
@@ -6,7 +6,7 @@ import {
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
 } from '../../shared/agent'
-import { isInternalSender } from '../commands/dispatcher'
+import { handle, parseNothing } from '../ipc'
 import type { SessionRecorder } from '../transcripts'
 import type { PermissionBridge } from './permission-bridge'
 import { parseDraft, parsePromptText, PromptQueue } from './prompt-queue'
@@ -14,10 +14,10 @@ import { createAgentSession } from './session'
 
 /**
  * The cockpit's agent session meets the window here (#61). One session, one
- * queue; the renderer sends prompts and parks its draft through sender- and
- * shape-validated invoke handlers (SECURITY.org, T1), and every agent event
- * is pushed to the window unchanged, for the transcript (#62) and the
- * permission prompt (#63) to read.
+ * queue; the renderer sends prompts and parks its draft through `handle()`,
+ * so the sender and the shape are validated first (SECURITY.org, T1; #53),
+ * and every agent event is pushed to the window unchanged, for the
+ * transcript (#62) and the permission prompt (#63) to read.
  *
  * The permission bridge (#63) is the session's handler: a tool the policy
  * asks about waits on a key, and what the bridge announces goes to the
@@ -56,23 +56,15 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   })
   queue.subscribe((state) => broadcast(PROMPT_QUEUE_CHANNEL, state))
 
-  ipcMain.handle(PROMPT_SEND_CHANNEL, (event: IpcMainInvokeEvent, payload: unknown) => {
-    assertInternal(event, PROMPT_SEND_CHANNEL)
-    const text = parsePromptText(payload)
+  handle(PROMPT_SEND_CHANNEL, parsePromptText, (text) => {
     const question = permissions.pending[0]
     if (question !== undefined && permissions.reply(text)) {
       return { id: question.id, status: 'answered', position: 0 }
     }
     return queue.submit(text)
   })
-  ipcMain.handle(PROMPT_DRAFT_CHANNEL, (event: IpcMainInvokeEvent, payload: unknown) => {
-    assertInternal(event, PROMPT_DRAFT_CHANNEL)
-    queue.saveDraft(parseDraft(payload))
-  })
-  ipcMain.handle(PROMPT_STATE_CHANNEL, (event: IpcMainInvokeEvent) => {
-    assertInternal(event, PROMPT_STATE_CHANNEL)
-    return queue.promptState()
-  })
+  handle(PROMPT_DRAFT_CHANNEL, parseDraft, (draft) => queue.saveDraft(draft))
+  handle(PROMPT_STATE_CHANNEL, parseNothing, () => queue.promptState())
 
   // The CLI under the SDK is a child process; it must not outlive the app.
   // Stopping emits the final event, which the recorder writes and closes on.
@@ -86,11 +78,5 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload)
-  }
-}
-
-function assertInternal(event: IpcMainInvokeEvent, channel: string): void {
-  if (!isInternalSender(event.senderFrame, process.env['ELECTRON_RENDERER_URL'])) {
-    throw new Error(`Rejected ${channel} from a frame that is not an internal page`)
   }
 }

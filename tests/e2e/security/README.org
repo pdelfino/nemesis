@@ -15,7 +15,10 @@ the same ground:
   cockpit window, and deletes the profile on =close()=.
 - =openPageBuffer(url)= loads a URL in its own hardened, preload-free
   =WebContents=, the way a page buffer will hold one, and reports Chromium's
-  refusal in =loadError= when the load never commits.
+  refusal in =loadError= when the load never commits. =openPageBuffer(url,
+  { withPreload: true })= attaches the cockpit's preload to that hostile page
+  instead, which is how =ipc-sender-validated.spec.ts= reaches a privileged
+  channel from a web origin; no page buffer in the app ever gets it.
 - =fixtureServer()= serves =fixtures/= on a random loopback port over plain HTTP
   and on another over HTTPS, with a self-signed certificate issued at test time
   by =_certificate.ts= (=node:crypto= signs but does not issue, so that file
