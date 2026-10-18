@@ -8,6 +8,10 @@
 
 /Albrecht Dürer, *Nemesis (The Great Fortune)*, c. 1502. Public domain via Wikimedia Commons./
 
+[[file:resources/icon-256.png]]
+
+/The mark: the winged M-x key standing on Fortuna's sphere, drawn from the engraving's attributes. BSD-3-Clause like the code, not derived from Nyxt's logo. Source is =resources/logo.svg=; =node scripts/icon.mjs= regenerates every PNG size and =resources/icon.icns= from it./
+
 * What
 
 A desktop app for talking to Claude Code the way an Emacs user wants to: a prompt buffer with Emacs keys, a transcript that is a real text document you can search and copy from, every action a named command bound to a key, and nothing drawn through a terminal emulator. Built on Electron and TypeScript. Written for one user first, mostly by Claude Code, under rules that keep it safe.
@@ -57,7 +61,7 @@ What this rules out, knowingly: the deepest macOS integration (Swift with AppKit
 | Language        | TypeScript, strict                                         |
 | Text surfaces   | CodeMirror 6 with the Replit Emacs keymap                  |
 | Agent           | Claude Agent SDK (TypeScript) in the main process          |
-| Storage         | Markdown transcripts on disk, SQLite via better-sqlite3    |
+| Storage         | Org transcripts on disk, SQLite via better-sqlite3         |
 | Tests           | Vitest for units, Playwright for Electron end to end       |
 | Build           | electron-vite, electron-builder for the =.app=             |
 | Agent door      | MCP server over stdio exposing the command table           |

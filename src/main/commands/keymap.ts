@@ -1,4 +1,5 @@
-import type { BufferType, KeyPress } from '../../shared/keys'
+import type { BufferType, KeyBindings, KeymapShape, KeyStroke } from '../../shared/keys'
+import { formatStroke, NAMED_KEYS, strokeFromKeyPress } from '../../shared/keys'
 
 /**
  * Emacs key notation, parsed once at load (#59).
@@ -7,47 +8,14 @@ import type { BufferType, KeyPress } from '../../shared/keys'
  * `C-c C-c`. A stroke is zero or more modifier prefixes followed by a key:
  * `C-` control, `M-` meta (Alt/Option), `S-` shift, `s-` super (Command).
  *
- * Shift is a modifier only on named keys (`S-TAB`, `S-<up>`). On a printable
- * character the character itself carries it, as in Emacs: `A`, never `S-a`.
+ * The stroke itself (its shape, its printing and its reading off a key press)
+ * is defined in src/shared/keys.ts since #61, because the renderer spells keys
+ * the same way to know which ones to hand over. This module keeps the chord
+ * parser, the keymaps and the resolver, which stay in the main process.
  */
 
-export interface KeyStroke {
-  /** `x`, `A`, or a named key: `RET`, `SPC`, `TAB`, `ESC`, `DEL`, `<up>`, `<f1>`. */
-  readonly key: string
-  readonly control: boolean
-  readonly meta: boolean
-  readonly shift: boolean
-  readonly super: boolean
-}
-
-/** Emacs name to DOM `KeyboardEvent.key`. */
-const NAMED_KEYS = new Map<string, string>([
-  ['RET', 'Enter'],
-  ['SPC', ' '],
-  ['TAB', 'Tab'],
-  ['ESC', 'Escape'],
-  ['DEL', 'Backspace'],
-  ['<up>', 'ArrowUp'],
-  ['<down>', 'ArrowDown'],
-  ['<left>', 'ArrowLeft'],
-  ['<right>', 'ArrowRight'],
-  ['<home>', 'Home'],
-  ['<end>', 'End'],
-  ['<prior>', 'PageUp'],
-  ['<next>', 'PageDown'],
-  ['<delete>', 'Delete'],
-  ['<insert>', 'Insert'],
-  ...Array.from({ length: 12 }, (_unused, index): [string, string] => [
-    `<f${index + 1}>`,
-    `F${index + 1}`,
-  ]),
-])
-
-/** DOM `KeyboardEvent.key` to Emacs name. */
-const DOM_KEYS = new Map(Array.from(NAMED_KEYS, ([name, dom]) => [dom, name]))
-
-/** Keys that are only a modifier; they never start or finish a stroke. */
-const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph'])
+export type { KeyStroke }
+export { formatStroke, strokeFromKeyPress }
 
 const MODIFIER_PREFIXES = [
   { prefix: 'C-', field: 'control' },
@@ -103,16 +71,6 @@ export function parseChord(chord: string): KeyStroke[] {
   return tokens.map(parseStroke)
 }
 
-export function formatStroke(stroke: KeyStroke): string {
-  return [
-    stroke.control ? 'C-' : '',
-    stroke.meta ? 'M-' : '',
-    stroke.shift ? 'S-' : '',
-    stroke.super ? 's-' : '',
-    stroke.key,
-  ].join('')
-}
-
 export function formatChord(strokes: readonly KeyStroke[]): string {
   return strokes.map(formatStroke).join(' ')
 }
@@ -120,46 +78,6 @@ export function formatChord(strokes: readonly KeyStroke[]): string {
 /** Parses and reprints a chord, so two spellings of the same chord compare equal. */
 export function normalizeChord(chord: string): string {
   return formatChord(parseChord(chord))
-}
-
-/**
- * The stroke a key press stands for, or null for a bare modifier key.
- *
- * On macOS, Option plus a letter produces a different character (Option-x is
- * `≈`), so when meta or super is down the layout-independent `code` decides.
- */
-export function strokeFromKeyPress(press: KeyPress): KeyStroke | null {
-  if (MODIFIER_KEYS.has(press.key)) return null
-
-  const named = DOM_KEYS.get(press.key)
-  if (named !== undefined) {
-    return {
-      key: named,
-      control: press.ctrlKey,
-      meta: press.altKey,
-      shift: press.shiftKey,
-      super: press.metaKey,
-    }
-  }
-
-  const key = printableKey(press)
-  if (key === null) return null
-  // A printable character already carries its shift, as in Emacs.
-  return { key, control: press.ctrlKey, meta: press.altKey, shift: false, super: press.metaKey }
-}
-
-function printableKey(press: KeyPress): string | null {
-  const altered = press.altKey || press.metaKey
-  if (!altered && Array.from(press.key).length === 1) return press.key
-
-  const letter = /^Key([A-Z])$/.exec(press.code)
-  if (letter?.[1] !== undefined) {
-    return press.shiftKey ? letter[1] : letter[1].toLowerCase()
-  }
-  const digit = /^Digit(\d)$/.exec(press.code)
-  if (digit?.[1] !== undefined && !press.shiftKey) return digit[1]
-
-  return Array.from(press.key).length === 1 ? press.key : null
 }
 
 export interface KeymapEntry {
@@ -250,6 +168,22 @@ export class Keymap {
       a.chord.localeCompare(b.chord),
     )
   }
+
+  /**
+   * The chords and their proper prefixes, without the command names: what the
+   * renderer needs to know which keys are the cockpit's (#61).
+   */
+  shape(): KeymapShape {
+    const chords = this.entries().map((entry) => entry.chord)
+    const prefixes = new Set<string>()
+    for (const chord of chords) {
+      const strokes = chord.split(' ')
+      for (let length = 1; length < strokes.length; length += 1) {
+        prefixes.add(strokes.slice(0, length).join(' '))
+      }
+    }
+    return { chords, prefixes: [...prefixes].sort((a, b) => a.localeCompare(b)) }
+  }
 }
 
 export function defineKeymap(name: string, spec: KeymapSpec): Keymap {
@@ -300,6 +234,15 @@ export class KeyResolver {
   reset(): void {
     this.path = []
     this.layers = []
+  }
+
+  /** The shape of every layer, published to the renderer at load (#61). */
+  bindings(): KeyBindings {
+    const byBufferType: Partial<Record<BufferType, KeymapShape>> = {}
+    for (const [type, keymap] of Object.entries(this.byBufferType) as [BufferType, Keymap][]) {
+      byBufferType[type] = keymap.shape()
+    }
+    return { global: this.global.shape(), byBufferType }
   }
 
   resolve(stroke: KeyStroke, bufferType: BufferType | null = null): Resolution {

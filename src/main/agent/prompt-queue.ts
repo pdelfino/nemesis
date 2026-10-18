@@ -1,0 +1,165 @@
+import type { PromptQueueState, PromptReceipt, PromptState, QueuedPrompt } from '../../shared/agent'
+import { MAX_PROMPT_LENGTH } from '../../shared/agent'
+import type { AgentSession } from './session'
+
+/**
+ * The main-process half of the prompt buffer (#61): the prompts waiting for
+ * the agent, the history of the prompts sent, and the draft being typed. All
+ * of it lives here, per session, so a reload of the window or a failed send
+ * loses no text; the prompt buffer in the renderer is a view of this state.
+ *
+ * One prompt goes to the agent at a time. The SDK would take a second user
+ * message mid-turn, but the cockpit wants to show what waits and in what
+ * order, so the queue is held here and advanced when a turn ends.
+ *
+ * Plain data, no Electron types, like src/main/buffers.ts: the unit tests
+ * drive it with a fake session and the bridge wires it to the window.
+ */
+
+/** How many sent prompts `M-p` can walk back through. */
+const HISTORY_LIMIT = 100
+
+export type PromptQueueListener = (state: PromptQueueState) => void
+
+/** What the queue needs from a session: send, and say when a turn is over. */
+export type PromptTarget = Pick<AgentSession, 'send' | 'on'>
+
+export class PromptQueue {
+  private readonly session: PromptTarget
+  private readonly listeners = new Set<PromptQueueListener>()
+  private readonly queued: QueuedPrompt[] = []
+  private readonly sent: string[] = []
+  private draftText = ''
+  private busy = false
+  private counter = 0
+
+  constructor(session: PromptTarget) {
+    this.session = session
+    session.on((event) => {
+      if (event.type === 'turn-end' || event.type === 'error' || event.type === 'stopped') {
+        this.advance().catch((error: unknown) => {
+          // The name of the failure is safe to print; the prompt text is not.
+          console.error('Could not send the next queued prompt:', describe(error))
+        })
+      }
+    })
+  }
+
+  /** The text being typed, as the renderer last parked it. */
+  get draft(): string {
+    return this.draftText
+  }
+
+  saveDraft(text: string): void {
+    this.draftText = text
+  }
+
+  /** Sent prompts, oldest first, without consecutive repeats. */
+  history(): readonly string[] {
+    return [...this.sent]
+  }
+
+  state(): PromptQueueState {
+    return { busy: this.busy, queued: [...this.queued] }
+  }
+
+  promptState(): PromptState {
+    return { draft: this.draftText, history: this.history(), queue: this.state() }
+  }
+
+  /**
+   * Sends the prompt now when the agent is idle, otherwise queues it. Rejects
+   * when the send itself fails, with the prompt dropped from the queue, so the
+   * renderer keeps the text and nothing is lost.
+   */
+  async submit(text: string): Promise<PromptReceipt> {
+    this.counter += 1
+    const prompt: QueuedPrompt = { id: `p${this.counter}`, text }
+    this.queued.push(prompt)
+    this.remember(text)
+    if (this.busy) {
+      this.announce()
+    } else {
+      try {
+        await this.advance()
+      } catch (error) {
+        this.forget(prompt.id)
+        this.announce()
+        throw error
+      }
+    }
+    const position = this.queued.findIndex((entry) => entry.id === prompt.id) + 1
+    return position === 0
+      ? { id: prompt.id, status: 'sent', position: 0 }
+      : { id: prompt.id, status: 'queued', position }
+  }
+
+  /** The IPC bridge subscribes, so the renderer shows what waits. */
+  subscribe(listener: PromptQueueListener): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  /**
+   * Sends the oldest queued prompt, or goes idle when nothing waits. A prompt
+   * whose send fails stays at the head of the queue, so it is not lost and the
+   * next submit tries it again, in order.
+   */
+  private async advance(): Promise<void> {
+    const next = this.queued[0]
+    if (next === undefined) {
+      this.setBusy(false)
+      return
+    }
+    this.setBusy(true)
+    try {
+      await this.session.send(next.text)
+    } catch (error) {
+      this.setBusy(false)
+      throw error
+    }
+    this.queued.shift()
+    this.announce()
+  }
+
+  private remember(text: string): void {
+    if (this.sent[this.sent.length - 1] === text) return
+    this.sent.push(text)
+    if (this.sent.length > HISTORY_LIMIT) this.sent.shift()
+  }
+
+  private forget(id: string): void {
+    const index = this.queued.findIndex((entry) => entry.id === id)
+    if (index !== -1) this.queued.splice(index, 1)
+  }
+
+  private setBusy(busy: boolean): void {
+    this.busy = busy
+    this.announce()
+  }
+
+  private announce(): void {
+    const snapshot = this.state()
+    for (const listener of this.listeners) listener(snapshot)
+  }
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** Validates a prompt that came over IPC. Shape only, no trust. */
+export function parsePromptText(payload: unknown): string {
+  const text = parseDraft(payload)
+  if (text.trim().length === 0) throw new TypeError('Prompt is empty')
+  return text
+}
+
+/** Validates a draft that came over IPC. A draft may be empty; a prompt may not. */
+export function parseDraft(payload: unknown): string {
+  if (typeof payload !== 'string') throw new TypeError('Prompt is not a string')
+  if (payload.length > MAX_PROMPT_LENGTH) throw new TypeError('Prompt is too long')
+  return payload
+}

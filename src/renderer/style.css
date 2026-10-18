@@ -41,13 +41,115 @@ main {
 }
 #transcript {
   flex: 1;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: 0.8rem;
 }
 #prompt {
   border-top: 1px solid var(--line);
   padding: 0.8rem;
   min-height: 6rem;
+}
+/* The pending request sits between the transcript and the prompt (#63). */
+#request {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+}
+#request:focus {
+  outline: none;
+}
+#request-title {
+  margin: 0;
+  font-weight: bold;
+}
+#request-options {
+  margin: 0.3rem 0 0;
+  padding-left: 1.6rem;
+}
+#request-options:empty {
+  display: none;
+}
+#request-keys {
+  margin: 0.3rem 0 0;
+}
+/* The help buffer is a read-only document under the transcript (#65). */
+#help {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
+}
+#help[hidden] {
+  display: none;
+}
+#help .cm-editor {
+  min-height: 0;
+}
+#help .cm-editor.cm-focused {
+  outline: none;
+}
+#help .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+/* The palette takes the prompt section's place while a choice is read (#65). */
+#prompt.palette-open {
+  display: none;
+}
+#palette {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  box-shadow: inset 2px 0 0 var(--ink);
+}
+#palette[hidden] {
+  display: none;
+}
+#palette-line {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+#palette-prompt {
+  font-weight: bold;
+  white-space: nowrap;
+}
+#palette-input {
+  flex: 1;
+}
+#palette .cm-editor.cm-focused {
+  outline: none;
+}
+#palette .cm-scroller {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#palette .cm-content {
+  padding: 0;
+}
+#palette-candidates {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 30vh;
+  overflow: auto;
+}
+#palette-candidates li {
+  padding: 0 0.4rem;
+}
+#palette-candidates li[aria-selected='true'] {
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.palette-detail {
+  color: var(--muted);
+}
+#palette-doc {
+  margin: 0.4rem 0 0;
 }
 /* The current buffer carries the point, so it says so (#60). */
 [data-buffer-type][data-current] {
@@ -59,4 +161,107 @@ main {
 .placeholder {
   color: var(--muted);
   margin: 0;
+}
+/* The prompt buffer is a CodeMirror editor (#61); it wraps and grows to a cap. */
+#prompt .cm-editor {
+  max-height: 40vh;
+}
+#prompt .cm-editor.cm-focused {
+  outline: none;
+}
+#prompt .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#prompt .cm-content {
+  min-height: 4.5rem;
+  padding: 0;
+}
+#prompt-status {
+  margin: 0.4rem 0 0;
+  display: flex;
+  gap: 1rem;
+}
+#prompt-status:empty {
+  display: none;
+}
+#prompt-queued {
+  margin: 0.2rem 0 0;
+  padding-left: 1.4rem;
+  color: var(--muted);
+}
+#prompt-queued:empty {
+  display: none;
+}
+/* The transcript is a read-only CodeMirror document (#62); it fills its section and scrolls. */
+#transcript-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#transcript .cm-editor {
+  flex: 1;
+  min-height: 0;
+}
+#transcript .cm-editor.cm-focused {
+  outline: none;
+}
+#transcript .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#transcript .cm-gutters {
+  background: transparent;
+  border-right: none;
+  color: var(--muted);
+}
+/* Roles are decorations over plain text: a header line and its body lines. */
+#transcript .tr-header {
+  font-weight: bold;
+  margin-top: 0.3rem;
+}
+#transcript .tr-header[data-role='user'] {
+  color: #1d5fa8;
+}
+#transcript .tr-header[data-role='assistant'] {
+  color: #8a3f0d;
+}
+#transcript .tr-header[data-role='thinking'],
+#transcript .tr-body[data-role='thinking'] {
+  color: var(--muted);
+  font-style: italic;
+}
+#transcript .tr-header[data-role='tool-use'],
+#transcript .tr-header[data-role='tool-result'] {
+  color: var(--muted);
+}
+#transcript .tr-body[data-role='tool-use'],
+#transcript .tr-body[data-role='tool-result'] {
+  background: color-mix(in srgb, var(--line) 35%, transparent);
+}
+#transcript .tr-header[data-role='note'] {
+  color: var(--muted);
+  font-weight: normal;
+}
+#transcript .tr-header[data-role='request'] {
+  color: #8a1d1d;
+}
+#transcript .tr-body[data-role='request'] {
+  background: color-mix(in srgb, #8a1d1d 10%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  #transcript .tr-header[data-role='user'] {
+    color: #7fb2f0;
+  }
+  #transcript .tr-header[data-role='assistant'] {
+    color: #e0a06a;
+  }
+  #transcript .tr-header[data-role='request'] {
+    color: #f08a8a;
+  }
 }

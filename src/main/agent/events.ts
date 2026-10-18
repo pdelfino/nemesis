@@ -20,6 +20,16 @@ export interface AgentStartedEvent {
   readonly tools: readonly string[]
 }
 
+/**
+ * A message the user sent to the agent, emitted by the session as it takes
+ * the text, before anything the agent answers. The transcript (#62) shows the
+ * conversation in order from this one stream.
+ */
+export interface AgentUserTextEvent {
+  readonly type: 'user-text'
+  readonly text: string
+}
+
 /** One finished text block from the assistant. */
 export interface AgentTextEvent {
   readonly type: 'assistant-text'
@@ -69,8 +79,65 @@ export interface AgentStoppedEvent {
   readonly reason: 'interrupted' | 'ended'
 }
 
+/** One option of an AskUserQuestion question, as the tool's input spells it. */
+export interface AgentQuestionOption {
+  readonly label: string
+  readonly description: string
+}
+
+/** One AskUserQuestion question. The cockpit numbers the options; a digit picks one (#63). */
+export interface AgentQuestion {
+  readonly question: string
+  /** The tool's short tag for the question, shown in the mode line. */
+  readonly header: string
+  readonly options: readonly AgentQuestionOption[]
+  readonly multiSelect: boolean
+}
+
+/**
+ * The permission bridge is waiting on the user (#63). A request is a block in
+ * the transcript and a buffer in the mode line until it is answered. When the
+ * tool is AskUserQuestion, `questions` carries what it asks, parsed from the
+ * input; the input itself is still data, never instructions.
+ */
+export interface AgentPermissionRequestEvent {
+  readonly type: 'permission-request'
+  /** The bridge's own id, so an answer names the request it closes. */
+  readonly requestId: string
+  readonly toolUseId: string
+  readonly toolName: string
+  readonly input: Record<string, unknown>
+  /** The SDK's own prompt sentence, when it supplied one. */
+  readonly title?: string | undefined
+  readonly questions?: readonly AgentQuestion[] | undefined
+}
+
+/** One question of a pending AskUserQuestion was answered; more may remain. */
+export interface AgentQuestionAnsweredEvent {
+  readonly type: 'question-answered'
+  readonly requestId: string
+  /** Position of the question in the request, 0 first. */
+  readonly index: number
+  readonly header: string
+  readonly answer: string
+}
+
+/**
+ * How a request was closed. `allow` once, `allow-session` for the rest of the
+ * session, `deny` with the message the agent got, `answered` for a question
+ * whose answers went back, `aborted` when the SDK withdrew the request.
+ */
+export interface AgentPermissionAnsweredEvent {
+  readonly type: 'permission-answered'
+  readonly requestId: string
+  readonly toolName: string
+  readonly outcome: 'allow' | 'allow-session' | 'deny' | 'answered' | 'aborted'
+  readonly message?: string | undefined
+}
+
 export type AgentEvent =
   | AgentStartedEvent
+  | AgentUserTextEvent
   | AgentTextEvent
   | AgentThinkingEvent
   | AgentToolUseEvent
@@ -78,6 +145,9 @@ export type AgentEvent =
   | AgentTurnEndEvent
   | AgentErrorEvent
   | AgentStoppedEvent
+  | AgentPermissionRequestEvent
+  | AgentQuestionAnsweredEvent
+  | AgentPermissionAnsweredEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

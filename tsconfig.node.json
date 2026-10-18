@@ -13,6 +13,7 @@
     "scripts/**/*.mts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
+    "src/renderer/transcript-doc.ts",
     "src/shared/**/*.ts",
     "tests/**/*.ts"
   ]

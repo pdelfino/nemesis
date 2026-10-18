@@ -24,11 +24,50 @@
     </header>
     <main>
       <section id="transcript" aria-label="transcript" data-buffer-type="transcript">
-        <p class="placeholder">The transcript buffer arrives in #62.</p>
+        <!-- A read-only CodeMirror document of the session (#62). -->
+        <div id="transcript-editor"></div>
+      </section>
+      <!-- The help buffer (#65): a read-only document, shown while a help buffer exists. -->
+      <section id="help" aria-label="help" data-buffer-type="help" hidden>
+        <div id="help-editor"></div>
+      </section>
+      <!--
+        A pending permission request or question (#63). Shown while a request
+        buffer exists; it holds the point so y, n, a and a digit are answers.
+      -->
+      <section
+        id="request"
+        aria-label="pending request"
+        data-buffer-type="permission"
+        tabindex="-1"
+        hidden
+      >
+        <p id="request-title"></p>
+        <ol id="request-options" aria-label="options"></ol>
+        <p id="request-keys" class="placeholder"></p>
       </section>
       <section id="prompt" aria-label="prompt buffer" data-buffer-type="prompt">
-        <p class="placeholder">The prompt buffer arrives in #61.</p>
+        <!-- CodeMirror mounts here (#61). -->
+        <div id="prompt-editor"></div>
+        <p id="prompt-status" class="placeholder">
+          <span id="prompt-note"></span>
+          <span id="prompt-agent"></span>
+        </p>
+        <!-- One line per prompt waiting for the agent. -->
+        <ol id="prompt-queued" aria-label="queued prompts"></ol>
       </section>
+      <!--
+        The palette (#65): the prompt buffer in command mode. Takes the prompt
+        section's place while the main process reads a choice.
+      -->
+      <div id="palette" aria-label="palette" hidden>
+        <div id="palette-line">
+          <span id="palette-prompt"></span>
+          <div id="palette-input"></div>
+        </div>
+        <ol id="palette-candidates" aria-label="candidates"></ol>
+        <p id="palette-doc" class="placeholder"></p>
+      </div>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>

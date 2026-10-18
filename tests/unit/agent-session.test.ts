@@ -48,7 +48,9 @@ describe('an agent session', () => {
     await agent.send('hello')
     await agent.waitForTurn()
 
-    const started = events[0]
+    // The user's turn is in the stream first; the session answers after it.
+    expect(events[0]).toEqual({ type: 'user-text', text: 'hello' })
+    const started = events[1]
     expect(started).toMatchObject({
       type: 'started',
       sessionId: 'mock-session',
@@ -68,8 +70,8 @@ describe('an agent session', () => {
     await agent.send('hello')
     const turn = await agent.waitForTurn()
 
-    expect(kinds(events)).toEqual(['started', 'assistant-text', 'turn-end'])
-    expect(events[1]).toEqual({ type: 'assistant-text', text: 'You said: hello' })
+    expect(kinds(events)).toEqual(['user-text', 'started', 'assistant-text', 'turn-end'])
+    expect(events[2]).toEqual({ type: 'assistant-text', text: 'You said: hello' })
     expect(turn).toMatchObject({ type: 'turn-end', isError: false, result: 'You said: hello' })
     await agent.stop()
   })
@@ -80,7 +82,7 @@ describe('an agent session', () => {
     await agent.send('think: out loud')
     await agent.waitForTurn()
 
-    expect(events[1]).toEqual({ type: 'assistant-thinking', text: 'out loud' })
+    expect(events[2]).toEqual({ type: 'assistant-thinking', text: 'out loud' })
     await agent.stop()
   })
 
@@ -99,6 +101,7 @@ describe('an agent session', () => {
     await agent.waitForTurn()
 
     expect(kinds(events)).toEqual([
+      'user-text',
       'started',
       'tool-use',
       'tool-result',
@@ -107,8 +110,8 @@ describe('an agent session', () => {
     ])
     expect(asked).toHaveLength(1)
     expect(asked[0]).toMatchObject({ toolName: 'Bash', input: { path: '/mock/notes.txt' } })
-    expect(events[1]).toMatchObject({ type: 'tool-use', name: 'Bash' })
-    expect(events[2]).toMatchObject({ type: 'tool-result', isError: false, text: 'Bash ran' })
+    expect(events[2]).toMatchObject({ type: 'tool-use', name: 'Bash' })
+    expect(events[3]).toMatchObject({ type: 'tool-result', isError: false, text: 'Bash ran' })
     await agent.stop()
   })
 
@@ -118,8 +121,8 @@ describe('an agent session', () => {
     await agent.send('tool: Bash')
     await agent.waitForTurn()
 
-    expect(events[2]).toMatchObject({ type: 'tool-result', isError: true })
-    expect(events[3]).toEqual({ type: 'assistant-text', text: 'Did not run Bash.' })
+    expect(events[3]).toMatchObject({ type: 'tool-result', isError: true })
+    expect(events[4]).toEqual({ type: 'assistant-text', text: 'Did not run Bash.' })
     await agent.stop()
   })
 
@@ -135,12 +138,53 @@ describe('an agent session', () => {
     await agent.send('tool: Write')
     await agent.waitForTurn()
 
-    expect(events[2]).toEqual({
+    expect(events[3]).toEqual({
       type: 'tool-result',
       toolUseId: 'mock-tool-1',
       isError: true,
       text: 'not on a page buffer',
     })
+    await agent.stop()
+  })
+
+  it('asks a question through the handler and reads the answer off the updated input', async () => {
+    const asked: PermissionRequest[] = []
+    const agent = session({
+      permissionHandler: {
+        requestPermission(request): Promise<PermissionDecision> {
+          asked.push(request)
+          const answers: Record<string, string> = {}
+          const questions = request.input['questions'] as { question: string }[]
+          for (const question of questions) answers[question.question] = 'beta'
+          return Promise.resolve({
+            behavior: 'allow',
+            updatedInput: { ...request.input, answers },
+          })
+        },
+      },
+    })
+    const events = collect(agent)
+    await agent.send('ask: Which one?')
+    await agent.waitForTurn()
+
+    expect(asked[0]).toMatchObject({ toolName: 'AskUserQuestion' })
+    expect(asked[0]?.input).toMatchObject({
+      questions: [{ question: 'Which one?', header: 'Choice', multiSelect: false }],
+    })
+    expect(events[2]).toMatchObject({ type: 'tool-use', name: 'AskUserQuestion' })
+    expect(events[3]).toMatchObject({ type: 'tool-result', isError: false, text: 'beta' })
+    expect(events[4]).toEqual({ type: 'assistant-text', text: 'You chose: beta' })
+    await agent.stop()
+  })
+
+  it('reports a declined question as an error result', async () => {
+    const agent = session()
+    const events = collect(agent)
+    await agent.send('ask: Which one?')
+    await agent.waitForTurn()
+
+    expect(events[3]).toMatchObject({ type: 'tool-result', isError: true })
+    expect(events[4]).toEqual({ type: 'assistant-text', text: 'No answer.' })
     await agent.stop()
   })
 
@@ -151,7 +195,7 @@ describe('an agent session', () => {
     await agent.send('hello again')
     await agent.waitForTurn()
 
-    expect(events[0]).toMatchObject({ type: 'started', sessionId: 'earlier-session' })
+    expect(events[1]).toMatchObject({ type: 'started', sessionId: 'earlier-session' })
     await agent.stop()
   })
 

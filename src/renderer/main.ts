@@ -1,10 +1,48 @@
 import { APP_NAME } from '../shared/api'
+import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
+import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
+import { installPalette } from './palette'
+import { installPromptBuffer } from './prompt-buffer'
+import { installRequestBuffer } from './request-buffer'
+import { installTranscriptBuffer } from './transcript-buffer'
 
 document.title = APP_NAME
 const version = document.getElementById('app-version')
 if (version) version.textContent = `v${window.nemesis.version}`
 
-installKeyCapture()
+const keys = installKeyCapture()
 void installBufferList()
+
+// The transcript listens from the first moment, so no event of the session is
+// missed while the prompt buffer loads its state (#62).
+const transcript = installTranscriptBuffer()
+// So does the request section: a permission request may be the first event
+// of the session after the user's own text (#63).
+installRequestBuffer()
+// And the help buffer: describe-command answers there (#65).
+const help = installHelpBuffer()
+// The palette opens when the main process reads a choice (#65).
+const palette = installPalette()
+
+// The buffers act on the commands the keys dispatched (#61, #62), and on the
+// commands the palette ran (#65). The shape of the keymaps arrives alongside;
+// until it does, every chord is reported.
+void installPromptBuffer().then((prompt) => {
+  const act = (outcome: KeyOutcome, bufferType: BufferType | null): void => {
+    // C-g closes an open palette before anything else sees it.
+    if (palette.onCommand(outcome)) return
+    prompt.onCommand(outcome, bufferType)
+    transcript.onCommand(outcome, bufferType)
+    help.onCommand(outcome, bufferType)
+  }
+  keys.onCommand = act
+  palette.onRan = act
+})
+void window.nemesis.bindings().then(
+  (bindings) => {
+    keys.bindings = bindings
+  },
+  (error: unknown) => console.error('Could not read the key bindings:', error),
+)
