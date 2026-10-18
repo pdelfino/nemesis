@@ -60,3 +60,4 @@ fields as a plain list. Dates in prose use the month name, for example
 | [[file:0001-dependencies.org][0001]]   | Dependency policy        | accepted | #56   |
 | [[file:0002-keymaps.org][0002]]   | Keymaps as data, chords, the renderer's share | accepted | #59, #61 |
 | [[file:0003-prompt-buffer.org][0003]]   | The prompt buffer and the palette as the text-driven surface | accepted | #61, #65 |
+| [[file:0004-modes.org][0004]]   | Modes as sets of bindings and hooks | proposed | #22 |

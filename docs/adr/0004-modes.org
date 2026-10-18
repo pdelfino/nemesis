@@ -1,0 +1,443 @@
+#+TITLE: ADR 0004: modes as sets of bindings and hooks
+#+OPTIONS: toc:nil
+
+- Status: proposed (flips to accepted when Pedro picks an option on #22; the
+  pick is recorded on that issue and in this line)
+- Date: 2026-OCTOBER-18
+- Threat or Pillar: README.org pillar 1, keyboard-driven; pillar 4, safe by
+  construction, for the rule on who may switch a mode (SECURITY.org T4)
+- Issue: #22 (study #14; consumers #73 and #71)
+
+* Context
+
+** What the study found
+
+=docs/nyxt-study/03-modes.org= (#14) read Nyxt's =source/mode.lisp= and the
+modes that matter for a browser cockpit. A Nyxt mode is a CLOS class, one
+instance per buffer, holding a keymap per keyscheme, an enable hook and a
+disable hook, a status glyph and whatever state the mode needs (the hint
+alphabet, the blocker's host table). =enable= and =disable= are the
+transaction: the blocker adds its request handler on enable and removes it on
+disable. A buffer keeps an ordered list of mode instances, and the keymaps of
+the enabled ones, in list order and then the scheme's parents, are the layers
+a key is looked up in; the first that answers wins. Each buffer class
+contributes a =default-modes= list, the user extends it in the config, and
+defining a mode class also defines a toggle command of the same name.
+
+The study also named what Nemesis should not copy: the metaclass that
+generates the toggler, the flag-based "enabled" that every walk has to
+filter, the one-instance-per-class invariant enforced after the fact in an
+=:around= method, the keyscheme modes (Emacs everywhere is pinned in
+CLAUDE.md), and modes enabled from page events (=vi-insert-on-input-fields=
+reads the focused element). Page content is data; which mode a buffer is in
+is the user's decision or the user's rule, never the page's.
+
+** What the keyscheme layers do today
+
+Nemesis has no mode object. Two things stand in for one part of it each.
+
+- =KeyResolver.layersFor= in =src/main/commands/keymap.ts= returns the
+  buffer type's keymap followed by the global one, or the global one alone,
+  and =resolve= walks that list once per sequence. A prefix in an earlier
+  layer returns =pending= before a later layer's command is consulted, so
+  the plan buffer's =C-c C-c= shadows the global one without hiding the
+  global =C-c C-l=. The tables are =GLOBAL_KEYMAP= and =BUFFER_KEYMAPS= in
+  =src/main/commands/keyscheme.ts=, keyed by =BufferType= from
+  =src/shared/keys.ts= (=prompt=, =transcript=, =permission=, =help=,
+  =diff=, =plan=, =spec=), of which =permission=, =diff=, =plan= and =spec=
+  have an entry. =cockpitKeymapLayers= in the same file hands the layers to
+  =describe-key= and =describe-command= (=src/main/commands/describe.ts=) as
+  =KeymapLayer= records, each tagged with its buffer type or null.
+- =MODAL_BUFFER_TYPES= in =src/shared/keys.ts=, a one-element list, is the
+  only per-type behaviour besides bindings: it tells the renderer
+  (=src/renderer/keys.ts=) that an unmodified key in a permission buffer is
+  a command, not text. Everywhere else the renderer reads the published
+  =KeyBindings= shape with =startsCockpitChord= and keeps unbound keys for
+  the editor (ADR 0002).
+
+A buffer is a frozen =BufferInfo= (=src/shared/buffers.ts=) with an =id=, a
+=kind= (the same =BufferType=), a =title= and an =elementId=, created by
+=BufferRegistry.create= in =src/main/buffers.ts= and pushed to the renderer
+as a list snapshot on every change. The kind is fixed for the life of the
+buffer and carries no state, no hooks, no settings. Every action is a named
+=Command= in =CommandRegistry= (=src/main/commands/registry.ts=), which
+refuses duplicate names and is the one route to an action from a key, the
+palette or a later extension.
+
+Three seams are already open. =layersFor= is one function, so "type then
+global" can become "each enabled mode, then the base layer" in one place.
+=BufferInfo.kind= is a closed union, so =page= is one more member and a
+buffer's modes are a field next to it. And the keymaps study
+(=docs/nyxt-study/04-keymaps.org=, item 3 of what to file next) asked for
+exactly this list computed per buffer, with the published shape per buffer
+rather than per type.
+
+** What M4 needs, and what M3 needs first
+
+The M4 epic (#73) files its children when M3 closes, and five of them are
+modes on a page buffer: =document= (scroll, zoom, find, copy, the default of
+a page), =hint= (follow and copy by typed hint, with the alphabet and the
+selector as settings), =blocker= (a hostlist and a request handler on the
+page's session, installed on enable and removed on disable), =passthrough=
+(every key to the page except an exit chord) and a reader view. A page
+buffer is in several of these at once, the user turns some of them on and
+off while the buffer lives, and two of them own per-buffer state and a hook
+handler. None of that fits a kind that never changes.
+
+Before M4, the extension door (#71, ADR 0006) wants a way for =init.ts= to
+add a keymap layer to a buffer kind without editing the kind's own table,
+and the hooks ADR (0005, study =docs/nyxt-study/05-hooks.org=) wants an
+owner for handlers that come and go with a buffer's state. Both are what a
+mode is. The shape has to be decided before #73's children are filed, since
+each of them would otherwise invent its own.
+
+* Decision
+
+Proposed: option A below, a mode as a registered object. The rules that
+follow describe A; they become the decision when the status flips.
+
+** A mode is a registered definition, instantiated per buffer
+
+A mode is defined once with =defineMode(spec)= in a new module,
+=src/main/commands/modes.ts=, and held in a =ModeRegistry= keyed by name,
+which refuses a duplicate the way =CommandRegistry.register= does. The
+definition names a keymap layer (the same =KeymapSpec= shape as
+=defineKeymap=, so the chord parser, the conflict check and
+=assertBindingsAreRegistered= apply unchanged), the hooks it attaches, its
+settings and their defaults, whether it shows in the mode line, whether an
+unmodified key is a command while it is on, and =enable= and =disable=
+functions that run at the transaction boundary. Per-buffer state lives in a
+=ModeState= record created on enable and dropped on disable, keyed by mode
+name in a map per buffer, so one instance per mode per buffer is true by
+construction and "enabled" is membership, not a flag.
+
+** The layer list is the buffer's mode list, then the base layer
+
+=KeyResolver.layersFor= takes the buffer's enabled modes in priority order
+and appends the base layer. =GLOBAL_KEYMAP= becomes the keymap of a =base=
+mode that every buffer has, is hidden from the mode line and cannot be
+disabled. The four =BUFFER_KEYMAPS= entries become the modes =permission=,
+=diff=, =plan= and =spec=, each the sole default mode of its kind, so the
+first landing changes no binding and =tests/unit/keyscheme.test.ts= stays
+green. Priority is stated once: a buffer's list is in priority order, first
+wins; =DEFAULT_MODES= per kind is written in that order and the list is
+built from it directly, with no reverse trick; a mode enabled at runtime
+goes to the front, because a mode the user just turned on (hint,
+passthrough) must win.
+
+** A mode is switched by a command, the config or a user rule, never by a page
+
+The only callers of =enableMode= and =disableMode= are commands in the
+registry (every mode with =toggler= true gets a =toggle-<name>= command
+registered with it, plus =enable-mode= and =disable-mode= that prompt
+through the palette), the config file (#71) and rules the user wrote there.
+Nothing in =src/preload/= or on an IPC channel can switch a mode, and a
+page event never enables one. A unit test pins that the modes module has no
+import from the IPC layer and that no channel in =src/shared/= carries a
+mode switch. This is the T4 boundary applied to modes.
+
+** The renderer learns modes by name, from the buffer list
+
+=BufferInfo= gains =modes=, the names in priority order, and the dispatcher
+publishes a =KeymapShape= per mode name next to the global one. The
+renderer composes =startsCockpitChord= from the current buffer's mode names,
+and the =modal= flag of any enabled mode replaces =MODAL_BUFFER_TYPES=. A
+toggle therefore reaches the renderer through the buffer-list push that
+already exists, with no second channel; only a new or changed mode
+definition (a config reload) republishes shapes.
+
+* Alternatives considered
+
+Each option lists the files it touches, its cost, its risk and what it rules
+out, so the pick can be made from this file alone.
+
+** A. A mode as a registered object (Recommended)
+
+Recommended because it is the only option that gives M4 a page buffer that is
+in several states at once, toggled while it lives, with per-buffer settings
+and a hook transaction, without putting classes on a frozen data record.
+
+A =ModeSpec= with a name, a keymap layer, hooks to attach, settings with
+defaults, =enable= and =disable=, a mode-line flag and a modal flag;
+=defineMode= validates and freezes it; a registry holds definitions; a map
+per buffer holds live state; =DEFAULT_MODES= per kind; a =toggle-<name>=
+command per mode. Files touched: new =src/main/commands/modes.ts= and
+=tests/unit/modes.test.ts=; =src/main/commands/keymap.ts= (=layersFor= and
+=bindings=); =src/main/commands/keyscheme.ts= (the four maps become modes,
+=cockpitKeymapLayers= walks modes); =src/main/commands/describe.ts=
+(=KeymapLayer= names a mode); =src/shared/keys.ts= (=KeyBindings= keyed by
+mode, =MODAL_BUFFER_TYPES= retired); =src/shared/buffers.ts= and
+=src/main/buffers.ts= (=modes= on =BufferInfo=); =src/renderer/keys.ts=
+(compose the shape from the buffer's modes); the tests
+=tests/unit/keymap.test.ts=, =tests/unit/keyscheme.test.ts=,
+=tests/unit/describe.test.ts= and =tests/unit/key-bindings.test.ts=.
+
+Cost: one new module of a few hundred lines and a behaviour-preserving pass
+over seven existing files, in two or three issues before any M4 code. Risk:
+the renderer and the main process must agree on the mode vocabulary the way
+they agree on strokes today, so the published shape is one more contract to
+pin in =tests/unit/key-bindings.test.ts=; and a mode that forgets to undo in =disable=
+what it did in =enable= leaks, which is the price of hooks owned by state
+and is caught per mode by a unit test that enables, disables and checks the
+hook list is back to empty. Rules out: nothing M4 asked for; it rules out
+inheritance between modes (a =visual= over =hint=) unless a mode later
+takes an explicit =parent= name, which the sketch leaves room for and does
+not implement.
+
+** B. Static tables only
+
+Extend =BUFFER_KEYMAPS= so a kind maps to a fixed list of keymaps instead of
+one, and =layersFor= walks the list. No mode object, no runtime toggle, no
+per-buffer state. Files touched: =src/main/commands/keymap.ts=,
+=src/main/commands/keyscheme.ts=, =tests/unit/keymap.test.ts=.
+
+Cost: an afternoon. Risk: none for M1 to M3, which is its appeal. Rules out:
+everything on a page buffer that changes while the buffer lives. Hint mode
+on and off would need two kinds (=page= and a hinting =page=) and the buffer
+would change kind under the renderer; the blocker would have no owner for
+its handler and would hang it on the kind, so no buffer could be unblocked;
+passthrough has no exit transaction; the config file could add a layer to a
+kind but never a behaviour. It lost because the first M4 child reopens the
+question, and the two-layer version of this option is what exists today.
+
+** C. Nyxt-style class mixins on the buffer object
+
+Make the buffer a class and each mode a mixin function
+(=Hint(Document(Buffer))=), with =enable= and =disable= as methods the
+subclass overrides. Files touched: =src/shared/buffers.ts= (=BufferInfo=
+stops being plain data), =src/main/buffers.ts=, =src/main/commands/keymap.ts=,
+=src/main/commands/keyscheme.ts=, the renderer's buffer snapshot, and
+every test that builds a =BufferInfo= literal.
+
+Cost: the largest of the three, because the buffer record is today a frozen
+plain object shared with the renderer over IPC and read by the specs, and a
+class does not cross the bridge. Risk: TypeScript mixins give neither
+method combination nor =find-submode=, so the cascade that makes Nyxt's
+version safe (a parent's setup cannot be forgotten) has to be re-done with
+explicit super calls, which is the thing the study said a port should not
+need; and the mixin stack is fixed when the object is built, so toggling a
+mode at runtime still needs a flag per mode, which is option A hidden
+inside a class. Rules out: user-defined modes from the config without
+giving =init.ts= a class to subclass, and a plain-data snapshot of a buffer
+for the renderer and the session file. It lost because it pays for
+inheritance the inventory does not need (one case, =visual= over =hint=,
+and that one is M4 or later) and breaks the data-only buffer that ADR 0002
+and #60 built on.
+
+* Sketch of the recommended option
+
+Erasable TypeScript, so the same shape runs under a stripped-types loader
+and in the compiled =init.ts= of #71: interfaces and type aliases only, no
+enums, no parameter properties, no namespaces. Names are proposals; the
+landing issue may rename, not reshape.
+
+#+begin_src typescript
+import type { BufferInfo } from '../../shared/buffers'
+import type { BufferType } from '../../shared/keys'
+import type { KeymapSpec } from './keymap'
+
+/** A handler a mode attaches on enable and detaches on disable. The hook
+ *  names and handler types are ADR 0005's; this field only owns the
+ *  transaction. */
+export interface ModeHook {
+  readonly hook: string
+  readonly handler: (...args: never[]) => unknown
+}
+
+export interface ModeSpec<Settings extends object = Record<string, never>> {
+  /** Kebab-case, same rule as a command name: `hint`, `blocker`. */
+  readonly name: string
+  /** One line, shown by the palette and in describe-mode. */
+  readonly doc: string
+  /** This mode's keymap layer. Same spec shape as defineKeymap. */
+  readonly keymap?: KeymapSpec
+  readonly hooks?: readonly ModeHook[]
+  /** Defaults; the config file and the enable call may override. */
+  readonly settings?: Settings
+  /** Shown in the mode line. `base` is the one false. Default true. */
+  readonly visible?: boolean
+  /** While on, an unmodified key is a command, not text. Default false. */
+  readonly modal?: boolean
+  /** Register `toggle-<name>` with the mode. Default true; `base` opts out. */
+  readonly toggler?: boolean
+  /** Buffer kinds this mode may be enabled in. Absent means any. */
+  readonly kinds?: readonly BufferType[]
+  enable?(buffer: BufferInfo, state: ModeState<Settings>): void | Promise<void>
+  disable?(buffer: BufferInfo, state: ModeState<Settings>): void | Promise<void>
+}
+
+/** Live state of one mode in one buffer. Created on enable, dropped on disable. */
+export interface ModeState<Settings extends object = Record<string, never>> {
+  readonly mode: string
+  readonly bufferId: string
+  readonly settings: Settings
+}
+
+export function defineMode<Settings extends object>(spec: ModeSpec<Settings>): ModeSpec<Settings> {
+  // Same checks as defineCommand: kebab-case name, non-empty doc,
+  // keymap built once here so a bad chord fails at startup.
+  return Object.freeze({ ...spec })
+}
+
+/** Which modes a new buffer of each kind starts in, first wins. */
+export type DefaultModes = Readonly<Partial<Record<BufferType, readonly string[]>>>
+
+export const DEFAULT_MODES: DefaultModes = {
+  permission: ['permission'],
+  diff: ['diff'],
+  plan: ['plan'],
+  spec: ['spec'],
+}
+
+export class ModeRegistry {
+  private readonly modes = new Map<string, ModeSpec<object>>()
+  private readonly states = new Map<string, Map<string, ModeState<object>>>()
+
+  register(spec: ModeSpec<object>): void {
+    // Refuses a duplicate name, like CommandRegistry.register.
+  }
+
+  /** The mode's keymap layer, if it has one. Feeds layersFor and describe-key. */
+  layerOf(name: string): KeymapSpec | undefined { return this.modes.get(name)?.keymap }
+
+  /** Enabled modes of a buffer in priority order, first wins. */
+  enabled(bufferId: string): readonly string[] {
+    return [...(this.states.get(bufferId)?.keys() ?? [])]
+  }
+
+  async enableMode(buffer: BufferInfo, name: string, settings?: object): Promise<void> {
+    const spec = this.modes.get(name)
+    if (spec === undefined) throw new ModeError(`No mode named "${name}"`)
+    const live = this.states.get(buffer.id) ?? new Map<string, ModeState<object>>()
+    if (live.has(name)) return // one instance per mode per buffer, by construction
+    const state: ModeState<object> = Object.freeze({
+      mode: name,
+      bufferId: buffer.id,
+      settings: { ...(spec.settings ?? {}), ...(settings ?? {}) },
+    })
+    // Attach spec.hooks for this buffer, then the mode's own enable.
+    await spec.enable?.(buffer, state)
+    // A mode enabled at runtime goes to the front: rebuild the map with
+    // this entry first, then the previous ones in their order.
+    this.states.set(buffer.id, new Map([[name, state], ...live]))
+    // The buffer registry re-announces, so the renderer learns the new list.
+  }
+
+  async disableMode(buffer: BufferInfo, name: string): Promise<void> {
+    const live = this.states.get(buffer.id)
+    const state = live?.get(name)
+    if (live === undefined || state === undefined) return
+    const spec = this.modes.get(name)
+    await spec?.disable?.(buffer, state)
+    // Detach spec.hooks for this buffer.
+    live.delete(name)
+  }
+
+  /** On buffer kill: disable every mode, so hooks are detached. */
+  async dropBuffer(buffer: BufferInfo): Promise<void> {
+    for (const name of this.enabled(buffer.id)) await this.disableMode(buffer, name)
+    this.states.delete(buffer.id)
+  }
+}
+
+export class ModeError extends Error {
+  override readonly name = 'ModeError'
+}
+#+end_src
+
+The resolver then reads one list:
+
+#+begin_src typescript
+// in KeyResolver, replacing the type lookup
+private layersFor(modes: readonly string[]): Keymap[] {
+  const layers = modes.flatMap((name) => this.byMode[name] ?? [])
+  return [...layers, this.base]
+}
+#+end_src
+
+** Order of steps to land it
+
+Each step is one issue, behaviour-preserving until step 5, and each keeps
+=npm run gate= green on its own.
+
+1. =src/main/commands/modes.ts= with =defineMode=, =ModeRegistry=,
+   =ModeState=, =DEFAULT_MODES= and =tests/unit/modes.test.ts=. No wiring;
+   the registry is built and tested in isolation. M3.
+2. The four =BUFFER_KEYMAPS= entries become modes and =GLOBAL_KEYMAP= the
+   =base= mode; =KeyResolver.layersFor= takes the mode list; the dispatcher
+   passes the current buffer's modes instead of its type;
+   =cockpitKeymapLayers= walks modes so =describe-key= names the mode that
+   answered. Same chords, same commands; =tests/unit/keyscheme.test.ts= and
+   =tests/unit/describe.test.ts= pin that. M3.
+3. =BufferInfo.modes= filled from =DEFAULT_MODES= in =BufferRegistry.create=;
+   =KeyBindings= published per mode name; =src/renderer/keys.ts= composes the
+   shape from the buffer's modes and reads =modal= from them;
+   =MODAL_BUFFER_TYPES= retired; =tests/unit/key-bindings.test.ts= pins the contract.
+   M3.
+4. =toggle-<name>= registered with each mode, =enable-mode= and
+   =disable-mode= on the palette, visible modes in the mode line. The first
+   user-visible change. M3.
+5. The config door: =defineMode= and =defaultModes= on the config API object
+   of #71, with the source tag that =reload-config= uses to drop and
+   re-register (study 06). Hooks attach and detach once ADR 0005 names the
+   hook points. M3.
+6. The M4 modes, one issue each under #73: =document=, =hint=, =blocker=,
+   =passthrough= (with the renderer rule from the keymaps study, item 6),
+   then the reader view. M4.
+
+* Consequences
+
+- *A buffer kind becomes a default-mode list.* Adding a page kind is still
+  the =BufferType= union plus the validation lists in
+  =src/main/commands/dispatcher.ts= and =src/main/buffers.ts=, but its keys
+  and behaviour are modes in =DEFAULT_MODES=, not a table entry per kind.
+  The three-places rule of ADR 0002 shrinks by one and gains a list.
+- *The config file defines a mode the way it defines a command.* In the
+  =init.ts= of #71 (ADR 0006 names the API object; =nemesis= below is a
+  placeholder) a mode is one call, and extending a kind's defaults is a
+  second:
+
+  #+begin_src typescript
+  nemesis.defineMode({
+    name: 'focus',
+    doc: 'Hide the transcript chrome and bind n and p to the next and previous turn.',
+    keymap: { n: 'next-turn', p: 'previous-turn' },
+    modal: true,
+    settings: { dim: true },
+    enable(buffer, state) { /* read state.settings.dim */ },
+    disable(buffer, state) { /* undo it */ },
+  })
+  nemesis.defaultModes('transcript', (modes) => [...modes, 'focus'])
+  #+end_src
+
+  The mode's name, keymap and settings are validated by the same code as the
+  cockpit's, a bad chord or an unknown command lands in the config error
+  buffer, and a mode registered by the config carries the source tag so
+  =reload-config= disables it in every live buffer, drops it, re-registers
+  and re-enables, or says a restart is needed when =enable= cannot be
+  re-run. A config mode is trusted code with the app's privileges, as #71
+  says of the whole file.
+- *The mode line and describe-key gain a vocabulary.* The layer that answered
+  a chord has a name, and =bindingNote= can say =n (focus)= instead of a
+  buffer type. The shadow-aware note of the keymaps study (item 2) becomes
+  per mode.
+- *Hooks get an owner.* ADR 0005 can assume that a handler tied to a buffer's
+  state is attached by a mode's enable and detached by its disable, and
+  needs no separate per-buffer removal path. Until ADR 0005 lands, the
+  =hooks= field is a declared seam with no caller.
+- *What becomes harder.* Every toggle rebuilds a frozen =BufferInfo= and
+  re-announces the list, so a mode that flips often (passthrough on a
+  terminal) costs a push per flip; acceptable, and measured when it lands. A
+  mode must undo in =disable= exactly what =enable= did, and the per-mode
+  unit test is the only guard. State per buffer must be dropped on kill
+  (=dropBuffer=), one more thing =kill-buffer= calls.
+- *Out of reach, on purpose.* No inheritance between modes, no keyscheme
+  modes, no mode enabled by a page event, no second instance of a mode in a
+  buffer, no mode state in the session file until the on-disk format has
+  its own ADR. A =parent= name for a mode that extends another is left as a
+  field this ADR does not add; the first mode that needs it reopens the
+  question here, not in its own issue.
+- *Follow-up work.* The six steps above as issues; the renderer contract in
+  =tests/unit/key-bindings.test.ts=; a test that no IPC channel and nothing under
+  =src/preload/= can reach =enableMode=; and ADR 0005 and ADR 0006 each
+  name this ADR for the hook and config halves of a mode.
