@@ -72,7 +72,7 @@ Nemesis is not an anonymity browser and will never claim to be one. Its promise 
 
 * Status
 
-Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/43][#43]]. The same day, two claude-queue stacks landed M1, the cockpit MVP: a prompt buffer with Emacs keys, the transcript as a document, permission prompts answered from the keyboard, the M-x palette, transcripts on disk and an end-to-end smoke. The M0 agent-shell week (#44) runs alongside. Next: the security baseline (#48 to #54), then M2.
+Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/43][#43]]. M1 landed the same day (PR #89, PR #93): a prompt buffer with Emacs keys, the transcript as a document, permission prompts answered from the keyboard, the M-x palette, transcripts on disk and an end-to-end smoke. The night of 2026-OCTOBER-18 landed the security baseline (#48 to #54; HTTPS-only, #52, waits on a pick) and M2 (PR #95): sessions and resume, diff buffers, search across transcripts, the context meter with clear and compact, rewind, plan mode as a buffer, interview and verify commands, the menu bar and the system theme. The M0 agent-shell week (#44) runs alongside. Next: the follow-ups from the PR 95 review, rich prompts and the environment panel, then the M3 studies and ADRs; multiple windows (#70) and the user config (#71) wait on picks.
 
 * Development setup
 
