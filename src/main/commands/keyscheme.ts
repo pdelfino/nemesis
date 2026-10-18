@@ -11,6 +11,7 @@ import {
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { HelpBuffers } from '../help'
+import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -37,6 +38,8 @@ import { CommandRegistry, defineCommand } from './registry'
  * `C-g` interrupts the turn, `rewind` lists the checkpoints in the help
  * buffer and reads one and what to restore, `undo` sends the guide's "undo
  * that" with the last tool calls quoted, and `new-task` drops the session.
+ * `resume-session` (#67) reads a past session off the sessions folder and
+ * picks it up through the manager.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -54,6 +57,8 @@ export interface CockpitDeps {
   readonly agent: SessionManager
   /** Where a prompt a command composes goes, like one the user typed (#84). */
   readonly prompts: Pick<PromptQueue, 'submit'>
+  /** The sessions folder, as `resume-session` lists and reads it (#67). */
+  readonly sessions: SessionSource
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -70,6 +75,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     keys: partial.keys ?? new KeyReader(),
     agent,
     prompts: partial.prompts ?? new PromptQueue(agent),
+    sessions: partial.sessions ?? NO_SESSIONS,
   }
 }
 
@@ -83,7 +89,7 @@ function report(name: string): (error: unknown) => void {
 }
 
 export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): readonly Command[] {
-  const { buffers, permissions, prompter, help, keys, agent, prompts } = deps
+  const { buffers, permissions, prompter, help, keys, agent, prompts, sessions } = deps
   return [
     defineCommand({
       name: 'execute-command',
@@ -164,6 +170,15 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'resume-session',
+      doc: 'Resume a past session: its transcript is shown and the next prompt continues it.',
+      run: () => {
+        prompter.read({ source: 'sessions', prompt: 'Resume session:' }, async (id) => {
+          await agent.resume(id, sessions.history(id))
+        })
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -233,12 +248,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
 
 /**
  * The palette sources of M1 (#65): the commands, with their keys, and the
- * buffers; and the rewind reads of #84, the checkpoints and what to restore.
+ * buffers; the rewind reads of #84, the checkpoints and what to restore; and
+ * the sessions on disk (#67), newest first, titled by their first prompt.
  */
 export function cockpitSources(
   registry: CommandRegistry,
   buffers: BufferRegistry,
   agent: SessionManager,
+  sessions: SessionSource,
 ): readonly PaletteSource[] {
   return [
     {
@@ -273,6 +290,16 @@ export function cockpitSources(
       name: 'rewind-targets',
       candidates: () =>
         REWIND_TARGETS.map((target) => ({ id: target, label: target, doc: REWIND_DOCS[target] })),
+    },
+    {
+      name: 'sessions',
+      candidates: () =>
+        sessions.list().map((session) => ({
+          id: session.id,
+          label: session.title,
+          detail: formatSessionDate(session.startedAt),
+          doc: `${session.id} in ${session.cwd}${session.id === agent.sessionId ? ', current' : ''}`,
+        })),
     },
   ]
 }
@@ -331,7 +358,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
   const deps = resolveCockpitDeps(partial)
   const registry = new CommandRegistry()
   registry.registerAll(cockpitCommands(deps, registry))
-  for (const source of cockpitSources(registry, deps.buffers, deps.agent)) {
+  for (const source of cockpitSources(registry, deps.buffers, deps.agent, deps.sessions)) {
     deps.prompter.addSource(source)
   }
   return registry

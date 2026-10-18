@@ -32,7 +32,9 @@ import type { SessionManager } from './session-manager'
  *
  * The session itself is the manager's (#84): it replaces the session on
  * new-task and on a conversation rewind, and the queue, the recorder and the
- * window follow through the one subscription taken here.
+ * window follow through the one subscription taken here. A resumed session's
+ * recorded history (#67) goes to the window alone: the recorder already has
+ * it, in the file it was read from.
  */
 
 /** Anything that emits agent events the window and the recorder should see. */
@@ -56,6 +58,9 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   agent.on((event) => {
     recorder.record(event)
     broadcast(AGENT_EVENT_CHANNEL, event)
+  })
+  agent.onHistory((history) => {
+    for (const event of history) broadcast(AGENT_EVENT_CHANNEL, event)
   })
   permissions.on((event) => {
     recorder.record(event)

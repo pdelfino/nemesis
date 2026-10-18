@@ -82,6 +82,73 @@ describe('the session manager', () => {
     await agent.stop()
   })
 
+  it('resumes a past session: the history goes to the window stream only and the old id continues', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    const shown: (readonly AgentEvent[])[] = []
+    agent.onHistory((history) => shown.push(history))
+    let turn = nextTurn(agent)
+    await agent.send('one')
+    await turn
+    await agent.newTask()
+    turn = nextTurn(agent)
+    await agent.send('two')
+    await turn
+    expect(agent.sessionId).toBe('mock-session-2')
+
+    // What the first session's folder holds, as the index reads it back (#67).
+    const history: AgentEvent[] = events.slice(0, 4)
+    expect(kinds(history)).toEqual(['user-text', 'started', 'assistant-text', 'turn-end'])
+    const before = events.length
+    await agent.resume('mock-session', history)
+    expect(shown).toEqual([history])
+    await vi.waitFor(() =>
+      expect(kinds(events.slice(before))).toEqual(['stopped', 'notice', 'started']),
+    )
+    expect(events.at(-2)).toEqual({
+      type: 'notice',
+      text: 'Resumed session mock-session: 1 earlier turn shown above; the next prompt continues it.',
+    })
+    expect(events.at(-1)).toMatchObject({ type: 'started', sessionId: 'mock-session' })
+    expect(agent.sessionId).toBe('mock-session')
+    expect(agent.checkpoints()).toEqual([])
+
+    turn = nextTurn(agent)
+    await agent.send('three')
+    await turn
+    expect(events.at(-2)).toEqual({ type: 'assistant-text', text: 'You said: three' })
+    expect(agent.sessionId).toBe('mock-session')
+    expect(agent.checkpoints().map((c) => [c.index, c.text])).toEqual([[1, 'three']])
+    await agent.stop()
+  })
+
+  it('resumes with no session running, so nothing stops first', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    await agent.resume('mock-session', [])
+    await vi.waitFor(() => expect(kinds(events)).toEqual(['notice', 'started']))
+    expect(events[0]).toMatchObject({ type: 'notice', text: /0 earlier turns shown above/ })
+    expect(agent.sessionId).toBe('mock-session')
+    await agent.stop()
+  })
+
+  it('resuming the current session is a notice and nothing else', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    const shown: (readonly AgentEvent[])[] = []
+    agent.onHistory((history) => shown.push(history))
+    const turn = nextTurn(agent)
+    await agent.send('one')
+    await turn
+    const before = events.length
+    await agent.resume('mock-session', [])
+    expect(shown).toEqual([])
+    expect(events.slice(before)).toEqual([
+      { type: 'notice', text: 'Resume: mock-session is already the current session.' },
+    ])
+    await agent.stop()
+  })
+
   it('new-task with no session is a no-op', async () => {
     const agent = manager()
     const events = collect(agent)

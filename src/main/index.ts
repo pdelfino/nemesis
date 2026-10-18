@@ -30,6 +30,7 @@ import {
 } from './security/partitions'
 import { PermissionPolicy } from './security/permissions'
 import { internalPagePreferences } from './security/web-preferences'
+import { SessionIndex } from './sessions'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { SessionRecorder } from './transcripts'
 
@@ -209,6 +210,8 @@ void app.whenReady().then(() => {
   // folder as it arrives (#64).
   const permissions = new PermissionBridge(buffers)
   const recorder = new SessionRecorder({ sessionsDir: settings.sessionsDir })
+  // The same folder, read back: what resume-session lists and replays (#67).
+  const sessions = new SessionIndex({ sessionsDir: settings.sessionsDir })
   // The manager holds that session and swaps it on new-task or a rewind (#84).
   const agent = new SessionManager({
     cwd: process.cwd(),
@@ -223,7 +226,7 @@ void app.whenReady().then(() => {
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
-  const deps = resolveCockpitDeps({ buffers, permissions, prompter, agent, prompts })
+  const deps = resolveCockpitDeps({ buffers, permissions, prompter, agent, prompts, sessions })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({ prompter: deps.prompter, help: deps.help })
   // Keys mean nothing until the registry and the keymaps are up (#59).

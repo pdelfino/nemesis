@@ -9,7 +9,8 @@ import { createAgentSession, resolveDriver } from './session'
  * methods: `interrupt` stops the running turn and keeps the context, `newTask`
  * drops the session for a fresh one in the same window, `rewind` takes the
  * files or the conversation back to a checkpoint through what the SDK
- * exposes, and `lastToolCalls` feeds the undo prompt.
+ * exposes, and `lastToolCalls` feeds the undo prompt. `resume` (#67) picks
+ * a past session up by the SDK's id, with its recorded history shown first.
  *
  * Listeners subscribe once, here, and hear every session the manager runs in
  * turn: the prompt queue, the recorder and the window never learn that the
@@ -31,6 +32,9 @@ export interface SessionManagerOptions {
 
 /** What a rewind restores. `summarize` is not among them: the SDK exposes no such call. */
 export type RewindTarget = 'conversation' | 'code' | 'both'
+
+/** Hears the recorded events of a session being resumed, oldest first (#67). */
+export type SessionHistoryListener = (history: readonly AgentEvent[]) => void
 
 export const REWIND_TARGETS: readonly RewindTarget[] = ['conversation', 'code', 'both']
 
@@ -102,6 +106,7 @@ function describe(error: unknown): string {
 export class SessionManager {
   private readonly options: SessionManagerOptions
   private readonly listeners = new Set<AgentEventListener>()
+  private readonly historyListeners = new Set<SessionHistoryListener>()
   private driver: AgentDriver | null
   private session: AgentSession | null = null
   private offSession: (() => void) | null = null
@@ -116,6 +121,19 @@ export class SessionManager {
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)
+    }
+  }
+
+  /**
+   * The second stream (#67): the recorded events of a session being resumed,
+   * read back from its folder. The window shows them ahead of the session's
+   * own events; the recorder never hears them, since they came from the file
+   * it would write them to.
+   */
+  onHistory(listener: SessionHistoryListener): () => void {
+    this.historyListeners.add(listener)
+    return () => {
+      this.historyListeners.delete(listener)
     }
   }
 
@@ -152,6 +170,41 @@ export class SessionManager {
     await old.stop()
     off()
     this.emit({ type: 'notice', text: 'New task: the next prompt starts a fresh session.' })
+  }
+
+  /**
+   * Picks a past session up where its folder left off (#67), as `claude
+   * --resume` does: the current session, if any, is stopped and dropped, the
+   * recorded history goes to the history listeners, and a session under the
+   * old SDK id starts, so the next prompt continues that conversation and
+   * the recorder appends to that folder. The old prompts opened no
+   * checkpoints here, so rewind reaches only the turns sent from now on.
+   * Resuming the current session changes nothing and says so.
+   */
+  async resume(sessionId: string, history: readonly AgentEvent[]): Promise<void> {
+    if (this.session !== null && this.session.sessionId === sessionId) {
+      this.emit({ type: 'notice', text: `Resume: ${sessionId} is already the current session.` })
+      return
+    }
+    const old = this.session
+    if (old !== null) {
+      const off = this.detach()
+      await old.stop()
+      off()
+    }
+    if (this.driver === null) this.driver = await resolveDriver()
+    for (const listener of [...this.historyListeners]) listener(history)
+    const turns = history.filter((event) => event.type === 'user-text').length
+    this.emit({
+      type: 'notice',
+      text: `Resumed session ${sessionId}: ${turns} earlier turn${turns === 1 ? '' : 's'} shown above; the next prompt continues it.`,
+    })
+    const next = this.create({ resume: sessionId })
+    try {
+      await next.start()
+    } catch (error) {
+      this.emit({ type: 'error', message: describe(error) })
+    }
   }
 
   checkpoints(): readonly Checkpoint[] {
