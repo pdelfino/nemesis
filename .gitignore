@@ -25,3 +25,5 @@ test-results/
 
 # Claude Code per-project state (CLAUDE.md at the root is tracked)
 .claude/
+# The environment panel's fixture tree carries .claude folders on purpose (#86)
+!tests/fixtures/environment/**/.claude/

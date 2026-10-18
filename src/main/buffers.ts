@@ -20,6 +20,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'diff',
   'plan',
   'spec',
+  'environment',
 ]
 
 const MAX_TITLE = 200

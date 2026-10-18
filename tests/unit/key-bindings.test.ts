@@ -21,6 +21,7 @@ describe('the shape of a keymap', () => {
     const bindings = createCockpitDispatcher().bindings
     expect(bindings.global.chords).toEqual([
       'C-c C-c',
+      'C-c C-e',
       'C-c C-i',
       'C-c C-k',
       'C-c C-l',

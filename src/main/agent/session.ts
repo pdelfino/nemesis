@@ -258,6 +258,17 @@ export function eventsFromMessage(message: SDKMessage): readonly AgentEvent[] {
         permissionMode: message.permissionMode,
         cwd: message.cwd,
         tools: message.tools,
+        // What the session can reach, for the environment panel (#86). The
+        // names are the frame's own, data to show and never to run.
+        claudeCodeVersion: message.claude_code_version,
+        mcpServers: message.mcp_servers.map(({ name, status }) => ({ name, status })),
+        skills: [...message.skills],
+        ...(message.agents === undefined ? {} : { agents: [...message.agents] }),
+        slashCommands: [...message.slash_commands],
+        plugins: message.plugins.map(({ name, version }) => ({
+          name,
+          ...(version === undefined ? {} : { version }),
+        })),
       },
     ]
   }

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { PermissionBridge } from '../agent/permission-bridge'
 import { PromptQueue } from '../agent/prompt-queue'
 import {
@@ -17,6 +18,7 @@ import type { ClipboardReader } from '../agent/images'
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
+import { EnvironmentBuffers } from '../environment'
 import { UrlFetcher } from '../fetch-url'
 import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
@@ -97,7 +99,13 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * `fetch-url` on `C-c C-u` reads an https URL, the ones in the prompt as
  * candidates, and puts the page's text in the prompt wrapped as untrusted
  * content from its origin; `template-symptom` and `template-pattern` drop
- * the guide's two prompt shapes in to fill.
+ * the guide's two prompt shapes in to fill. The guide's environment (#86):
+ * `environment` on `C-c C-e` shows the CLAUDE.md files, permission rules,
+ * hooks, skills, MCP servers and subagents of the working directory in one
+ * read-only buffer, where `RET` is `open-environment-file`, a listed file
+ * through the open door of #68; `edit-claude-md` takes the nearest CLAUDE.md
+ * through the same door with the guide's reminder, and `doctor` lists the
+ * CLAUDE.md files over the length threshold.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -141,6 +149,8 @@ export interface CockpitDeps {
   readonly clipboard: ClipboardReader
   /** The one fetch fetch-url makes, within its limits (#83). */
   readonly fetcher: UrlFetcher
+  /** The environment of the working directory, as one buffer (#86). */
+  readonly environment: EnvironmentBuffers
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -206,6 +216,17 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.files ?? new WorkingFiles({ cwd: process.cwd(), list: () => Promise.resolve([]) }),
     clipboard: partial.clipboard ?? { readImage: () => Promise.resolve(null) },
     fetcher: partial.fetcher ?? new UrlFetcher(),
+    // Without the window there is nobody to ask and nothing to open; the
+    // files are read where the process runs, as in the app.
+    environment:
+      partial.environment ??
+      new EnvironmentBuffers(buffers, {
+        cwd: process.cwd(),
+        home: homedir(),
+        started: () => agent.started,
+        confirm: () => Promise.resolve(false),
+        open: () => Promise.resolve('No file opener is installed'),
+      }),
   }
 }
 
@@ -238,6 +259,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     files,
     clipboard,
     fetcher,
+    environment,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -688,6 +710,43 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'environment',
+      doc: 'Show the environment of the working directory: CLAUDE.md files, permission rules, hooks, skills, MCP servers, subagents, plugins.',
+      run: () => {
+        environment.show()
+      },
+    }),
+    defineCommand({
+      name: 'open-environment-file',
+      doc: 'Open a file the environment panel lists with the default application, after a yes.',
+      run: () => {
+        // The renderer holds the point and the preload gains no channel for
+        // it, so the file is read off the palette over the panel's own list,
+        // which is the allowlist the open checks again (#86).
+        if (environment.files().length === 0) {
+          help.show('No file to open: the environment panel lists none.')
+          return
+        }
+        prompter.read({ source: 'environment-files', prompt: 'Open file:' }, async (path) => {
+          await environment.open(path)
+        })
+      },
+    }),
+    defineCommand({
+      name: 'edit-claude-md',
+      doc: "Open the nearest CLAUDE.md with the default application, after a yes, with the guide's reminder to keep it short.",
+      run: () => {
+        environment.editClaudeMd().catch(report('edit-claude-md'))
+      },
+    }),
+    defineCommand({
+      name: 'doctor',
+      doc: 'Check every CLAUDE.md that applies against the length threshold; the files over it are listed.',
+      run: () => {
+        help.show(environment.doctor())
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -768,7 +827,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * candidate, and the windows on the screen as of the last refresh; and the
  * two reads of #83: the files of the working directory as of the last
  * refresh, and the https URLs in the prompt draft, the last typed first,
- * for a free-text read that takes any other.
+ * for a free-text read that takes any other; and the files the environment
+ * panel lists (#86), in the panel's order, for `RET` there.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -781,6 +841,7 @@ export function cockpitSources(
   screenshots: Screenshots,
   files: WorkingFiles,
   prompts: Pick<PromptQueue, 'draft'>,
+  environment: EnvironmentBuffers,
 ): readonly PaletteSource[] {
   return [
     {
@@ -900,6 +961,15 @@ export function cockpitSources(
           doc: 'In the prompt. Type another https URL to fetch it instead.',
         })),
     },
+    {
+      name: 'environment-files',
+      candidates: () =>
+        environment.files().map((path) => ({
+          id: path,
+          label: environment.label(path),
+          doc: path,
+        })),
+    },
   ]
 }
 
@@ -935,6 +1005,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-v': 'verify',
   'C-c C-i': 'attach-image',
   'C-c C-u': 'fetch-url',
+  'C-c C-e': 'environment',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
@@ -973,6 +1044,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   spec: defineKeymap('spec', {
     'C-c C-c': 'start-fresh-session-from-spec',
   }),
+  // In the environment buffer RET opens a listed file through the open door (#86).
+  environment: defineKeymap('environment', {
+    RET: 'open-environment-file',
+  }),
 }
 
 /** The chord that abandons a half-typed sequence. */
@@ -1004,6 +1079,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.screenshots,
     deps.files,
     deps.prompts,
+    deps.environment,
   )) {
     deps.prompter.addSource(source)
   }

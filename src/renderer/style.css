@@ -162,6 +162,32 @@ main {
   font-size: inherit;
   line-height: 1.45;
 }
+/* The environment buffer is a read-only document under the transcript (#86). */
+#environment {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+#environment[hidden] {
+  display: none;
+}
+#environment-keys {
+  margin: 0.3rem 0 0;
+}
+#environment .cm-editor {
+  min-height: 0;
+}
+#environment .cm-editor.cm-focused {
+  outline: none;
+}
+#environment .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
 /* The help buffer is a read-only document under the transcript (#65). */
 #help {
   border-top: 1px solid var(--line);

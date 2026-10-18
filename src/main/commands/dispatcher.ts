@@ -22,6 +22,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'diff',
   'plan',
   'spec',
+  'environment',
 ]
 
 /** How many dispatches are kept in memory for describe and for the tests. */

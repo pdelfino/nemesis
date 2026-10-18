@@ -2,6 +2,7 @@ import { APP_NAME } from '../shared/api'
 import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
 import { installDiffBuffer } from './diff-buffer'
+import { installEnvironmentBuffer } from './environment-buffer'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
 import { installModeline } from './modeline'
@@ -35,6 +36,8 @@ const diff = installDiffBuffer()
 const plan = installPlanBuffer()
 // And the spec buffer: the spec an interview ends with opens there (#85).
 const spec = installSpecBuffer()
+// And the environment buffer: C-c C-e lists the session's environment there (#86).
+const environment = installEnvironmentBuffer()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 
@@ -51,6 +54,7 @@ void installPromptBuffer().then((prompt) => {
     diff.onCommand(outcome, bufferType)
     plan.onCommand(outcome, bufferType)
     spec.onCommand(outcome, bufferType)
+    environment.onCommand(outcome, bufferType)
   }
   keys.onCommand = act
   palette.onRan = act

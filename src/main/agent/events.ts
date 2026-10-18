@@ -10,7 +10,23 @@ import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 /** The SDK's permission modes, under the name the cockpit uses for them. */
 export type AgentPermissionMode = PermissionMode
 
-/** The session is up: the SDK has answered with its init frame. */
+/** One MCP server as the init frame reports it (#86): its config name and its connection status. */
+export interface AgentMcpServer {
+  readonly name: string
+  readonly status: string
+}
+
+/** One plugin as the init frame reports it (#86); the version only when its manifest declares one. */
+export interface AgentPlugin {
+  readonly name: string
+  readonly version?: string | undefined
+}
+
+/**
+ * The session is up: the SDK has answered with its init frame. The frame's
+ * lists of what the session can reach (#86) ride along for the environment
+ * panel; a history recorded before they were kept carries none of them.
+ */
 export interface AgentStartedEvent {
   readonly type: 'started'
   readonly sessionId: string
@@ -18,6 +34,12 @@ export interface AgentStartedEvent {
   readonly permissionMode: AgentPermissionMode
   readonly cwd: string
   readonly tools: readonly string[]
+  readonly claudeCodeVersion?: string | undefined
+  readonly mcpServers?: readonly AgentMcpServer[] | undefined
+  readonly skills?: readonly string[] | undefined
+  readonly agents?: readonly string[] | undefined
+  readonly slashCommands?: readonly string[] | undefined
+  readonly plugins?: readonly AgentPlugin[] | undefined
 }
 
 /**

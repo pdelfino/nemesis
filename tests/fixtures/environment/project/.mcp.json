@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "docs": {
+      "command": "node",
+      "args": ["docs-server.js"],
+      "env": { "DOCS_TOKEN": "FIXTURE-NOT-A-REAL-TOKEN" }
+    },
+    "github": {
+      "type": "http",
+      "url": "https://example.invalid/mcp"
+    }
+  }
+}

@@ -32,6 +32,7 @@ import {
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import { DiffBuffers } from './diffs'
+import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
@@ -313,7 +314,8 @@ void app.whenReady().then(() => {
   // buffers (#68). The collector reads the live events and a resumed
   // session's history before the bridge pushes them, so list-diffs is never
   // behind the window; `C-c C-o` asks in the prompt buffer, then hands the
-  // file to the system through the one `shell.openPath` call site.
+  // file to the system through `shell.openPath`, a door the environment
+  // panel below shares.
   const diffs = new DiffBuffers(buffers, {
     confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
     open: (path) => shell.openPath(path),
@@ -327,6 +329,24 @@ void app.whenReady().then(() => {
   // Live events only: a resumed history reopens no spec.
   const specs = new SpecBuffers(buffers)
   agent.on((event) => specs.observe(event))
+  // The environment of the working directory as one buffer (#86): the
+  // CLAUDE.md files, rules, hooks, skills, servers and subagents off disk
+  // and off the session's init frame. A listed file opens through the same
+  // door as a diff's: the question in the prompt buffer, then shell.openPath.
+  // Under test a home named by NEMESIS_HOME stands in for the user's, so a
+  // spec reads a fixture and never the developer's own ~/.claude.
+  const testHome = process.env['NEMESIS_HOME']
+  const home =
+    process.env['NODE_ENV'] === 'test' && testHome !== undefined && testHome.length > 0
+      ? testHome
+      : app.getPath('home')
+  const environment = new EnvironmentBuffers(buffers, {
+    cwd: process.cwd(),
+    home,
+    started: () => agent.started,
+    confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
+    open: (path) => shell.openPath(path),
+  })
   // The verify key (#81): the check of the attached issue, else the settings'
   // verify entry, else npm run gate, run as a child of the cockpit with the
   // user's permissions in the folder it was started in, never through the
@@ -383,6 +403,7 @@ void app.whenReady().then(() => {
       verifier,
       screenshots,
       fetcher,
+      environment,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -404,6 +425,7 @@ void app.whenReady().then(() => {
     files,
     clipboard: { readImage: readClipboardImage },
     fetcher,
+    environment,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
@@ -413,6 +435,7 @@ void app.whenReady().then(() => {
     diffs,
     plans,
     specs,
+    environment,
   })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher = createCockpitDispatcher(deps)

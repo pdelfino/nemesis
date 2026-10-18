@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   AgentEventListener,
   AgentPermissionMode,
+  AgentStartedEvent,
   PermissionHandler,
 } from './events'
 import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
@@ -186,6 +187,8 @@ export class SessionManager {
   private beforePlan: AgentPermissionMode = 'default'
   /** The guide's callout went out already in this session. */
   private planReminded = false
+  /** The init frame of the running session, as its `started` event carries it (#86). */
+  private startedEvent: AgentStartedEvent | null = null
 
   constructor(options: SessionManagerOptions) {
     this.options = options
@@ -216,6 +219,15 @@ export class SessionManager {
   /** The SDK's id of the current session, once it has started. */
   get sessionId(): string | null {
     return this.session?.sessionId ?? null
+  }
+
+  /**
+   * The init frame of the running session, for the environment panel (#86):
+   * null before the first start and again once the session stopped, so the
+   * panel never shows the servers of a session that is gone.
+   */
+  get started(): AgentStartedEvent | null {
+    return this.startedEvent
   }
 
   /** True while a turn is running. */
@@ -518,10 +530,13 @@ export class SessionManager {
    */
   private watch(event: AgentEvent): void {
     if (event.type === 'user-text') this.nudgeAt(this.corrections.observe(event.text))
-    else if (event.type === 'started') this.mode = event.permissionMode
-    else if (event.type === 'stopped') {
+    else if (event.type === 'started') {
+      this.mode = event.permissionMode
+      this.startedEvent = event
+    } else if (event.type === 'stopped') {
       this.corrections.reset()
       this.planReminded = false
+      this.startedEvent = null
     }
   }
 

@@ -32,6 +32,9 @@ export interface LaunchRecord {
 
 const launched: LaunchRecord[] = []
 
+/** The repository root, where the built app lives: the one app every spec launches. Playwright runs from it. */
+const APP_DIR = process.cwd()
+
 /** Hands over every launch since the last call and forgets them. */
 export function drainLaunched(): LaunchRecord[] {
   return launched.splice(0)
@@ -91,13 +94,17 @@ function record(app: ElectronApplication): void {
  * in `settings`; the keys are merged over the profile's own, so a spec can
  * even point the sessions folder elsewhere. A spec that needs the main
  * process to see an environment variable (a PATH with a fake `gh` first on
- * it, #98) passes it in `env`, merged over the test runner's own.
+ * it, #98) passes it in `env`, merged over the test runner's own. A spec
+ * that needs the app started inside another folder (the environment panel's
+ * fixture project, #86) passes it as `cwd`; the app itself is always this
+ * repository's build, named by its absolute path.
  */
 export async function launchApp(
   prefix = 'nemesis-e2e-',
   chromiumSwitches: readonly string[] = [],
   settings: Readonly<Record<string, unknown>> = {},
   env: Readonly<Record<string, string>> = {},
+  cwd: string = APP_DIR,
 ): Promise<LaunchedApp> {
   const userData = mkdtempSync(join(tmpdir(), prefix))
   const sessionsDir = join(userData, 'sessions')
@@ -112,7 +119,8 @@ export async function launchApp(
     // reads; the Chromium switch keeps caches and partitions inside the same
     // throwaway tree. A caller may add Chromium switches of its own (the
     // security harness does).
-    args: ['.', `--user-data-dir=${userData}`, ...chromiumSwitches],
+    args: [APP_DIR, `--user-data-dir=${userData}`, ...chromiumSwitches],
+    cwd,
     // Playwright emulates a light prefers-color-scheme unless told not to;
     // null lets the page follow nativeTheme, which is what the appearance
     // setting drives (#33).

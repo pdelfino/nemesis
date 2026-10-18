@@ -37,11 +37,13 @@ test('M-x reads a command, describe-command and describe-key answer in a help bu
     await expect(query).toBeFocused()
     await expect(page.locator('#prompt')).toBeHidden()
     await expect(page.locator('#palette-prompt')).toHaveText('M-x')
+    // The palette shows the first forty; the tail of a longer list is
+    // reached by typing, so the chord is checked on a command inside them.
     expect(await candidates(page)).toContain('describe-command')
-    expect(await candidates(page)).toContain('switch-buffer')
-    await expect(
-      page.locator('#palette-candidates li', { hasText: 'switch-buffer' }),
-    ).toContainText('C-x b')
+    expect(await candidates(page)).toContain('kill-buffer')
+    await expect(page.locator('#palette-candidates li', { hasText: 'kill-buffer' })).toContainText(
+      'C-x k',
+    )
     await expect(doc).toHaveText('Allow the pending tool now and for the rest of the session.')
 
     // The query narrows the list; the highlight and its doc follow.
