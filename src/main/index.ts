@@ -28,7 +28,12 @@ import { Screenshots, SCREENSHOTS_FOLDER } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
 import { describeExternal, ExternalPolicy } from './security/external'
-import { COCKPIT_URL, registerInternalScheme, serveInternalPages } from './security/internal-scheme'
+import {
+  COCKPIT_URL,
+  INTERNAL_ORIGIN,
+  registerInternalScheme,
+  serveInternalPages,
+} from './security/internal-scheme'
 import { applyNavigationPolicy } from './security/navigation-policy'
 import {
   applyWebRTCPolicy,
@@ -38,7 +43,7 @@ import {
   recordRequests,
   type RequestRecord,
 } from './security/partitions'
-import { PermissionPolicy } from './security/permissions'
+import { originOf, PermissionPolicy } from './security/permissions'
 import { internalPagePreferences } from './security/web-preferences'
 import { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
@@ -69,6 +74,16 @@ const iconPath = app.isPackaged ? undefined : join(__dirname, '../../resources/i
 // allowed them for that origin in this run. The allow set lives in memory
 // only and is emptied on quit.
 const permissionPolicy = new PermissionPolicy()
+// The cockpit's own pages may write the clipboard: `M-w` in a buffer is
+// CodeMirror's kill-ring-save, which Chromium puts behind the
+// clipboard-sanitized-write permission on a secure origin such as
+// nemesis://app. That one permission, for the internal origin only and for
+// this run only; every site, and every other permission of the cockpit, stays
+// denied by default (#49, SECURITY.org T6). The dev server origin gets the
+// same in a development run, where it stands in for the internal origin.
+permissionPolicy.allow(INTERNAL_ORIGIN, 'clipboard-sanitized-write')
+const devOrigin = app.isPackaged ? null : originOf(process.env['ELECTRON_RENDERER_URL'])
+if (devOrigin !== null) permissionPolicy.allow(devOrigin, 'clipboard-sanitized-write')
 app.on('will-quit', () => permissionPolicy.clear())
 
 // T2 (#51): a download or an external link is a question in the prompt
