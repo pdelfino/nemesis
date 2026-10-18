@@ -1,15 +1,23 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, AgentToolUseEvent } from '../../src/main/agent/events'
 import { createCockpitBuffers, type BufferRegistry } from '../../src/main/buffers'
 import { createCockpitRegistry, resolveCockpitDeps } from '../../src/main/commands/keyscheme'
 import { CommandError } from '../../src/main/commands/registry'
-import { describeDiff, DiffBuffers, diffTitle, displayPath, parseDiff } from '../../src/main/diffs'
+import {
+  describeDiff,
+  DiffBuffers,
+  diffTitle,
+  displayPath,
+  insideSessionFolder,
+  parseDiff,
+} from '../../src/main/diffs'
 
 // The diffs of the session (#68): every Edit and Write call, listed and
-// opened in a diff buffer, the file handed to the system after a yes.
+// opened in a diff buffer, the file handed to the system after a yes, and
+// only when it is inside the session folder (#97).
 
 function toolUse(name: string, input: Record<string, unknown>, id = 't1'): AgentToolUseEvent {
   return { type: 'tool-use', toolUseId: id, name, input }
@@ -22,8 +30,8 @@ const EDIT = toolUse('Edit', {
 })
 const WRITE = toolUse('Write', { file_path: '/work/new.txt', content: 'one\ntwo' }, 't2')
 
-function started(sessionId: string): AgentEvent {
-  return { type: 'started', sessionId, model: 'm', permissionMode: 'default', cwd: '/', tools: [] }
+function started(sessionId: string, cwd = '/'): AgentEvent {
+  return { type: 'started', sessionId, model: 'm', permissionMode: 'default', cwd, tools: [] }
 }
 
 interface Harness {
@@ -137,23 +145,81 @@ describe('the diffs of a session', () => {
   })
 })
 
-describe('C-c C-o on a diff buffer', () => {
+describe('a path inside the session folder (#97)', () => {
   let dir: string
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'nemesis-diffs-'))
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'nemesis-diffs-')))
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  function editOf(filePath: string): AgentToolUseEvent {
-    return toolUse('Edit', { file_path: filePath, old_string: 'a', new_string: 'b' })
+  it('is a file under the folder, however deep, and not the folder itself', () => {
+    const cwd = join(dir, 'project')
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    writeFileSync(join(cwd, 'src', 'a.ts'), 'a')
+    writeFileSync(join(cwd, 'b.ts'), 'b')
+    expect(insideSessionFolder(cwd, join(cwd, 'b.ts'))).toBe(true)
+    expect(insideSessionFolder(cwd, join(cwd, 'src', 'a.ts'))).toBe(true)
+    expect(insideSessionFolder(cwd, join(cwd, 'src', '..', 'b.ts'))).toBe(true)
+    expect(insideSessionFolder(cwd, cwd)).toBe(false)
+  })
+
+  it('is not a sibling, a parent, a lookalike folder, a relative path or a missing file', () => {
+    const cwd = join(dir, 'project')
+    mkdirSync(cwd)
+    mkdirSync(join(dir, 'project-two'))
+    writeFileSync(join(dir, 'outside.txt'), 'o')
+    writeFileSync(join(dir, 'project-two', 'c.ts'), 'c')
+    expect(insideSessionFolder(cwd, join(dir, 'outside.txt'))).toBe(false)
+    expect(insideSessionFolder(cwd, join(cwd, '..', 'outside.txt'))).toBe(false)
+    expect(insideSessionFolder(cwd, join(dir, 'project-two', 'c.ts'))).toBe(false)
+    expect(insideSessionFolder(cwd, 'package.json')).toBe(false)
+    expect(insideSessionFolder(relative('/', cwd), join(cwd, 'b.ts'))).toBe(false)
+    expect(insideSessionFolder(cwd, join(cwd, 'missing.ts'))).toBe(false)
+    expect(insideSessionFolder(join(dir, 'nowhere'), join(dir, 'outside.txt'))).toBe(false)
+  })
+
+  it('follows symlinks on both sides: a link under the folder that points out is outside', () => {
+    const cwd = join(dir, 'project')
+    mkdirSync(cwd)
+    writeFileSync(join(dir, 'outside.txt'), 'o')
+    writeFileSync(join(cwd, 'inside.txt'), 'i')
+    symlinkSync(join(dir, 'outside.txt'), join(cwd, 'escape.txt'))
+    symlinkSync(join(cwd, 'inside.txt'), join(cwd, 'alias.txt'))
+    symlinkSync(cwd, join(dir, 'project-link'))
+    expect(insideSessionFolder(cwd, join(cwd, 'escape.txt'))).toBe(false)
+    expect(insideSessionFolder(cwd, join(cwd, 'alias.txt'))).toBe(true)
+    // The folder named through a link is the same folder.
+    expect(insideSessionFolder(join(dir, 'project-link'), join(cwd, 'inside.txt'))).toBe(true)
+    expect(insideSessionFolder(cwd, join(dir, 'project-link', 'inside.txt'))).toBe(true)
+  })
+})
+
+describe('C-c C-o on a diff buffer', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'nemesis-diffs-')))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  function editOf(filePath: string, id = 't1'): AgentToolUseEvent {
+    return toolUse('Edit', { file_path: filePath, old_string: 'a', new_string: 'b' }, id)
+  }
+
+  /** A diff collector whose session runs in `dir`. */
+  function sessionHarness(answer = true, failure = ''): Harness {
+    const h = harness(answer, failure)
+    h.diffs.observe(started('s1', dir))
+    return h
   }
 
   it('hands the file to the system after a yes, and says so', async () => {
     const file = join(dir, 'notes.txt')
     writeFileSync(file, 'b')
-    const { diffs, confirm, open, notices } = harness(true)
+    const { diffs, confirm, open, notices } = sessionHarness(true)
     diffs.observe(editOf(file))
     diffs.show('t1')
     expect(await diffs.openCurrent()).toBe(true)
@@ -165,7 +231,7 @@ describe('C-c C-o on a diff buffer', () => {
   it('launches nothing without a yes', async () => {
     const file = join(dir, 'notes.txt')
     writeFileSync(file, 'b')
-    const { diffs, open, notices } = harness(false)
+    const { diffs, open, notices } = sessionHarness(false)
     diffs.observe(editOf(file))
     diffs.show('t1')
     expect(await diffs.openCurrent()).toBe(false)
@@ -174,7 +240,7 @@ describe('C-c C-o on a diff buffer', () => {
   })
 
   it('refuses a path that is not a regular file on disk, before asking', async () => {
-    const { diffs, confirm, open, notices } = harness(true)
+    const { diffs, confirm, open, notices } = sessionHarness(true)
     diffs.observe(editOf(join(dir, 'missing.txt')))
     diffs.observe(toolUse('Edit', { file_path: dir, old_string: 'a', new_string: 'b' }, 't2'))
     diffs.observe(
@@ -193,10 +259,57 @@ describe('C-c C-o on a diff buffer', () => {
     ])
   })
 
+  it('refuses a file outside the session folder with a notice, and never asks (#97)', async () => {
+    const cwd = join(dir, 'project')
+    mkdirSync(cwd)
+    const outside = join(dir, 'outside.txt')
+    writeFileSync(outside, 'o')
+    // A symlink inside the folder that points out of it is outside too.
+    const escape = join(cwd, 'escape.txt')
+    symlinkSync(outside, escape)
+    // A relative path, even to a file that exists where the cockpit runs.
+    const relativePath = 'package.json'
+    const { diffs, confirm, open, notices } = harness(true)
+    diffs.observe(started('s1', cwd))
+    diffs.observe(editOf(outside, 't1'))
+    diffs.observe(editOf(escape, 't2'))
+    diffs.observe(editOf(relativePath, 't3'))
+    for (const id of ['t1', 't2', 't3']) {
+      diffs.show(id)
+      expect(await diffs.openCurrent()).toBe(false)
+    }
+    expect(confirm).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+    expect(notices).toEqual([
+      `Not opened: ${outside} is not inside the session folder`,
+      `Not opened: ${escape} is not inside the session folder`,
+      `Not opened: ${relativePath} is not a file on disk`,
+    ])
+  })
+
+  it('opens a file under the session folder, and refuses every file while no session has started', async () => {
+    const cwd = join(dir, 'project')
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    const file = join(cwd, 'src', 'a.ts')
+    writeFileSync(file, 'a')
+    const { diffs, confirm, open, notices } = harness(true)
+    diffs.observe(editOf(file))
+    diffs.show('t1')
+    expect(await diffs.openCurrent()).toBe(false)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(notices).toEqual([`Not opened: ${file} is not inside the session folder`])
+    diffs.observe(started('s1', cwd))
+    diffs.observe(editOf(file))
+    diffs.show('t1')
+    expect(await diffs.openCurrent()).toBe(true)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(open).toHaveBeenCalledWith(file)
+  })
+
   it("reports the system's refusal, and refuses when the current buffer is not a diff", async () => {
     const file = join(dir, 'notes.txt')
     writeFileSync(file, 'b')
-    const { buffers, diffs, notices } = harness(true, 'No application')
+    const { buffers, diffs, notices } = sessionHarness(true, 'No application')
     diffs.observe(editOf(file))
     diffs.show('t1')
     expect(await diffs.openCurrent()).toBe(false)
