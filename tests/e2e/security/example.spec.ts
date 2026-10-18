@@ -1,5 +1,5 @@
 import { get } from 'node:https'
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../_test'
 import { fixtureServer, launchNemesis } from './_harness'
 
 /**

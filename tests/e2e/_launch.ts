@@ -14,6 +14,69 @@ export interface LaunchedApp {
 }
 
 /**
+ * What the failure fixture (tests/e2e/_test.ts, #101) wants to know about one
+ * launch: the app, everything its process wrote, and the last frame of its
+ * first window.
+ */
+export interface LaunchRecord {
+  readonly app: ElectronApplication
+  /** The Electron process's stdout and stderr so far, interleaved in arrival order. */
+  output(): string
+  /**
+   * A PNG of the first window: live when the window is still open, else the
+   * frame taken as `app.close()` began. Null when there never was a window
+   * or the screenshot failed.
+   */
+  frame(): Promise<Buffer | null>
+}
+
+const launched: LaunchRecord[] = []
+
+/** Hands over every launch since the last call and forgets them. */
+export function drainLaunched(): LaunchRecord[] {
+  return launched.splice(0)
+}
+
+/** A screenshot that does not hold up a quit: a stuck renderer costs five seconds, not the test. */
+async function screenshot(app: ElectronApplication): Promise<Buffer | null> {
+  const page = app.windows().find((window) => !window.isClosed())
+  if (page === undefined) return null
+  try {
+    return await page.screenshot({ timeout: 5_000 })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Records a launch for the failure fixture. The specs own their cleanup and
+ * close the app in `finally`, which runs before any fixture teardown, so the
+ * window at the failure is gone by the time the fixture looks. The record
+ * therefore takes its frame when `close()` is called, which is right after
+ * the assertion threw; a test that timed out never reaches its `finally`,
+ * and then the fixture gets a live screenshot instead.
+ */
+function record(app: ElectronApplication): void {
+  const chunks: string[] = []
+  const child = app.process()
+  child.stdout?.on('data', (chunk: Buffer | string) => chunks.push(String(chunk)))
+  child.stderr?.on('data', (chunk: Buffer | string) => chunks.push(String(chunk)))
+
+  let lastFrame: Buffer | null = null
+  const close = app.close.bind(app)
+  app.close = async () => {
+    lastFrame = (await screenshot(app)) ?? lastFrame
+    await close()
+  }
+
+  launched.push({
+    app,
+    output: () => chunks.join(''),
+    frame: async () => (await screenshot(app)) ?? lastFrame,
+  })
+}
+
+/**
  * Launches the built app (out/) against a throwaway profile, with NODE_ENV=test
  * so the main process resolves the deterministic Agent SDK mock. The security
  * harness (tests/e2e/security/_harness.ts, #46) builds on this.
@@ -62,6 +125,7 @@ export async function launchApp(
       ...env,
     },
   })
+  record(app)
   return { app, userData, sessionsDir, downloadsDir }
 }
 

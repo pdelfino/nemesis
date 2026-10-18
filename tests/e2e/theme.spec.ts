@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './_test'
 import { launchApp } from './_launch'
 
 // The tokens in src/renderer/style.css, as getComputedStyle reports them.

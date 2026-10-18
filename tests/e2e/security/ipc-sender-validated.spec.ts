@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../_test'
 import { BUFFERS_CHANNEL } from '../../../src/shared/buffers'
 import { fixtureServer, launchNemesis } from './_harness'
 

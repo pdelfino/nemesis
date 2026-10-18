@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../_test'
 import { COCKPIT_URL, INTERNAL_CSP } from '../../../src/main/security/internal-scheme'
 import { fixtureServer, launchNemesis } from './_harness'
 

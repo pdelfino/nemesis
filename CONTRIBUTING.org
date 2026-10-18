@@ -12,6 +12,15 @@ Nemesis is developed on macOS first and mostly by Claude Code under the rules in
 
 =npm run gate= runs the dependency script check (=scripts/check-deps.mjs=, SECURITY.org T5), typecheck, lint, unit tests, the end-to-end smoke and the security specs. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.
 
+When an end-to-end or security spec goes red, the evidence is next to the result, not only in the assertion text. Every spec imports =test= and =expect= from =tests/e2e/_test.ts=, whose automatic fixture leaves two files in the test's folder under =test-results/= whenever a test ends in a status it was not expected to: =window-<n>.png=, the first window of the n-th app the test launched through =launchApp=, and =main.log=, everything the Electron main process wrote to stdout and stderr. Both are also attached to the Playwright report. The specs keep their own cleanup, so the frame is taken as =app.close()= begins, right after the assertion threw; a test that timed out still has its window open and gets a live screenshot. To prove the mechanism with one command, run the probe, which launches the app and fails on purpose (the run exits non-zero by design):
+
+#+begin_src sh
+ARTIFACT_PROBE=1 npx playwright test --project=app -g artifact-probe
+ls test-results/*/window-1.png test-results/*/main.log
+#+end_src
+
+Without =ARTIFACT_PROBE=1= the probe is skipped, so the gate never sees it.
+
 * Issues are the unit of work
 
 Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). Issues bigger than one file carry =## Approach= with the chosen design before anyone edits code. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment. A choice between libraries or architectures that a later issue would otherwise reopen is recorded as an ADR; the process, the numbering and the index live in =docs/adr/README.org=.

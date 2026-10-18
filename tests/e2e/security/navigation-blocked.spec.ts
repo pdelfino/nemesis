@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../_test'
 import { COCKPIT_URL } from '../../../src/main/security/internal-scheme'
 import { INTERNAL_SCHEME } from '../../../src/main/security/navigation-policy'
 import { HARDENED_WEB_PREFERENCES } from '../../../src/main/security/web-preferences'

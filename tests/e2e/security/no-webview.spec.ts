@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../_test'
 import { HARDENED_WEB_PREFERENCES } from '../../../src/main/security/web-preferences'
 import { fixtureServer, launchNemesis } from './_harness'
 
