@@ -393,6 +393,29 @@ describe('the correction nudge and the side question (#80)', () => {
     await agent.stop()
   })
 
+  it('asks a side question with every tool denied, whatever the session itself allows', async () => {
+    const asked: string[] = []
+    const agent = new SessionManager({
+      cwd: '/tmp/nemesis-unit',
+      model: null,
+      permissionHandler: {
+        requestPermission: (request) => {
+          asked.push(request.toolName)
+          return Promise.resolve({ behavior: 'allow' })
+        },
+      },
+      driver: mockDriver(),
+    })
+    const turn = nextTurn(agent)
+    await agent.send('tool: Read')
+    await turn
+    expect(asked).toEqual(['Read'])
+    // The aside asks the same tool; the session's handler never hears of it.
+    expect(await agent.sideQuestion('tool: Bash')).toBe('Did not run Bash.')
+    expect(asked).toEqual(['Read'])
+    await agent.stop()
+  })
+
   it('answers a side question with no session running from a throwaway one', async () => {
     const agent = manager()
     const events = collect(agent)

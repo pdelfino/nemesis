@@ -7,7 +7,7 @@ import type {
 } from './events'
 import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
 import type { AgentDriver, AgentSession, Checkpoint, ToolCall } from './session'
-import { AgentSessionError, createAgentSession, resolveDriver } from './session'
+import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } from './session'
 
 /**
  * The session manager (#84): the one place that holds the cockpit's current
@@ -283,9 +283,12 @@ export class SessionManager {
   async sideQuestion(text: string): Promise<string> {
     if (this.driver === null) this.driver = await resolveDriver()
     const sessionId = this.session?.sessionId ?? null
+    // A side question reads; it never acts. Every tool is denied whatever the
+    // session's own policy allows, so no permission request of the aside can
+    // reach the request buffer, the transcript or the recorder (review of #80).
     const aside = createAgentSession({
       cwd: this.options.cwd,
-      permissionHandler: this.options.permissionHandler,
+      permissionHandler: denyEveryTool,
       driver: this.driver,
       ...(this.options.model === null ? {} : { model: this.options.model }),
       ...(sessionId === null ? {} : { resume: sessionId, fork: true }),
