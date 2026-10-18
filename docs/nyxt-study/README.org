@@ -11,6 +11,7 @@ ADRs under =docs/adr/= and the issues Pedro picks from the list.
 The numbers follow the plan's order of subjects, so a study may land before
 a lower number does.
 
-| Study                            | Subject                                                       | Feeds    | Issue |
-|----------------------------------+---------------------------------------------------------------+----------+-------|
-| [[file:02-prompt-buffer.org][02-prompt-buffer.org]] | Nyxt's prompt buffer and prompter against the Nemesis palette | ADR 0003 | #13   |
+| Study                            | Subject                                                        | Feeds    | Issue |
+|----------------------------------+----------------------------------------------------------------+----------+-------|
+| [[file:02-prompt-buffer.org][02-prompt-buffer.org]] | Nyxt's prompt buffer and prompter against the Nemesis palette  | ADR 0003 | #13   |
+| [[file:04-keymaps.org][04-keymaps.org]]             | nkeymaps and Nyxt's input dispatch against the Nemesis keymaps | ADR 0002 | #15   |
