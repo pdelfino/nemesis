@@ -1,0 +1,51 @@
+#+TITLE: Comparison: Nemesis against the software that does similar things
+#+OPTIONS: toc:nil
+
+One table that puts Nemesis next to the projects that do part of what it does. The data behind it is the landscape read of 2026-OCTOBER-17 in pdelfino/notes (learning/2026-10-17-nemesis-alternatives-landscape.org) and the study list life-ops#442. Marks are reads of READMEs, docs and the apps as of that date; correct them in place. Drafted in #92.
+
+* Legend
+
+yes / partial / no.
+
+- *Keyboard* means a key model (every action bound, modal or Emacs-style), not just shortcuts.
+- *Text UX* means the transcript or page state is a real text document you can search, copy and edit.
+- *Agent* says how the agent is hosted.
+- *MCP* says whether the app exposes its own commands as an MCP server (a plain MCP client gets "client").
+- *Browser* means web pages inside the app.
+- *Safety* means a stated, tested posture beyond the platform default.
+- *Door* means user configuration or eval that changes the app at runtime.
+
+* The table
+
+| Project                            | Kind                  | Stack                           | Keyboard               | Text UX                 | Agent                                      | MCP                                         | Browser                                   | Safety                                  | Door                                            | License        | Stars  |
+|------------------------------------+-----------------------+---------------------------------+------------------------+-------------------------+--------------------------------------------+---------------------------------------------+-------------------------------------------+-----------------------------------------+-------------------------------------------------+----------------+--------|
+| *Nemesis* (plan, #43)              | cockpit, then browser | Electron, TypeScript, CodeMirror | yes, Emacs keyscheme   | yes                     | Claude Agent SDK in-process                | server over its command table (M3)          | planned (M4)                              | yes, one spec per non-negotiable        | TypeScript config with live reload, eval (M3)   | BSD-3          | 0      |
+| Claude Code desktop app (Anthropic) | cockpit               | Electron                        | partial, shortcuts     | partial                 | native Claude Code                         | client                                      | yes, sandboxed, own profile (JULY 2026)   | yes, sandbox and classifiers            | partial (CLAUDE.md, hooks, skills, plugins)     | proprietary    | n/a    |
+| agent-shell                        | cockpit in Emacs      | Emacs Lisp                      | yes                    | yes, buffers            | ACP, 23 agents                             | no                                          | no                                        | partial, agent's own prompts            | yes, Elisp                                      | GPL            | 1,962  |
+| claude-code-ide.el                 | cockpit in Emacs      | Emacs Lisp                      | yes                    | yes                     | CLI in vterm or eat                        | yes, Emacs as a tool server for Claude      | no                                        | partial                                 | yes, Elisp                                      | GPL            | 1,676  |
+| Zed with the Agent Panel           | editor                | Rust                            | yes, vim mode          | partial                 | ACP                                        | client                                      | no                                        | partial                                 | partial, settings and WASM extensions           | GPL and AGPL   | 91,864 |
+| opcode (ex-Claudia)                | GUI                   | Tauri, React                    | no                     | no                      | CLI wrapper                                | client                                      | no                                        | partial, isolated background agents     | partial, custom agents                          | AGPL           | 22,409 |
+| Vibe Kanban                        | orchestrator          | Rust, web UI                    | no                     | no                      | CLI wrappers, many agents                  | yes, a task server for agents               | no                                        | no                                      | no                                              | Apache-2.0     | 28,386 |
+| Claude Squad                       | orchestrator, TUI     | Go, tmux                        | yes, TUI keys          | partial, terminals      | CLI in tmux and worktrees                  | no                                          | no                                        | no                                      | no                                              | AGPL (reported) | 8,618  |
+| Conductor                          | orchestrator, Mac app | macOS app                       | partial                | no                      | CLI per worktree, cloud sandboxes          | client                                      | no                                        | partial                                 | no                                              | proprietary    | n/a    |
+| Goose                              | agent platform        | Rust, Electron UI               | partial                | no                      | its own agent, any model                   | client; extensions are MCP servers          | no                                        | partial                                 | yes, MCP extensions                             | Apache-2.0     | 55,373 |
+| Nyxt 4.0                           | browser               | Common Lisp, Electron renderer  | yes, Emacs, vi, CUA    | yes, prompt buffer      | none built in                              | no                                          | yes                                       | partial, platform default               | yes, Lisp init, REPL, hooks                     | BSD-3          | 11,036 |
+| Glide                              | browser               | TypeScript, Firefox             | yes, modal             | partial, excmds         | none                                       | no                                          | yes                                       | partial, Firefox default                | yes, TypeScript config, web extensions          | see repo       | 1,499  |
+| qutebrowser                        | browser               | Python, Qt                      | yes, vim               | partial, command line   | none                                       | no                                          | yes                                       | partial                                 | yes, Python config                              | GPL            | 11,735 |
+| Min                                | browser               | JavaScript, Electron            | partial                | no                      | none                                       | no                                          | yes                                       | partial, blocking and privacy defaults  | partial, userscripts                            | Apache-2.0     | 9,212  |
+| BrowserOS                          | agentic browser       | Chromium fork                   | no                     | no                      | built-in agents, local models or own keys  | yes, an MCP route for external agents       | yes                                       | partial, autonomy first                 | partial                                         | AGPL-3.0       | 13,972 |
+| Claude in Chrome                   | extension             | Chrome extension                | no                     | no                      | Claude drives your logged-in Chrome        | no                                          | your Chrome                               | partial, acts in live sessions          | no                                              | proprietary    | n/a    |
+
+Stars are GitHub counts read on 2026-OCTOBER-17.
+
+* What the table says
+
+- Nobody has the five pillars together. The two-pillar holders are agent-shell (keyboard, text, no browser and no door beyond Emacs), Glide (keyboard, door, no agent), BrowserOS (agent, browser, no key model), and the official app (cockpit, browser, no key model, no door).
+- The "MCP" column is where Nemesis is nearly alone: only claude-code-ide.el, Vibe Kanban and BrowserOS expose anything to agents, and none exposes a full command table.
+- The "Safety" column is where Nemesis and the official app are alone in having a tested posture; the agentic browsers lead with autonomy.
+- The cockpit basics (sessions, worktrees, diff review) are owned by the orchestrators and the official app; Nemesis should not compete there, it should be the keyboard and text version of them.
+
+* Related
+
+- #43 (plan), #91 (mark), #92 (this draft), life-ops#442 (study list)
+- pdelfino/notes learning/2026-10-17-nemesis-alternatives-landscape.org
