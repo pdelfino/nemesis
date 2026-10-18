@@ -98,6 +98,8 @@ const downloads = new DownloadPolicy({
 const external = new ExternalPolicy({
   confirm: (request) => confirm(prompter, EXTERNAL_SOURCE, describeExternal(request)),
 })
+// A yes for a download is good for one request within 30 seconds (#100); on quit none survives.
+app.on('will-quit', () => downloads.clear())
 
 app.on('web-contents-created', (_event, contents) => {
   // T6 (#49): whatever partition this WebContents uses gets the deny-by-default

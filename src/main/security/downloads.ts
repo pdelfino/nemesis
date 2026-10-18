@@ -18,7 +18,10 @@ import { originOf, type NoticeListener } from './permissions'
  * then asked. On a yes, the policy requests the same URL again itself, and
  * that second item is recognized, pinned to a path inside the quarantine
  * folder and allowed to run; the file keeps the name the user said yes to.
- * A no is a no: nothing was ever written.
+ * A no is a no: nothing was ever written. A yes is good for one request
+ * within `APPROVAL_TTL_MS` (#100): when the re-request never arrives (a
+ * network error), the approval would otherwise sit by URL until any page
+ * asked for that URL again, so a late item is refused and asked about anew.
  *
  * Every file lands in `~/Downloads/nemesis-quarantine/` (`QUARANTINE_FOLDER`
  * under the downloads path) and nowhere else: the save path is set here,
@@ -39,6 +42,9 @@ export const QUARANTINE_FOLDER = 'nemesis-quarantine'
 
 /** The attribute Gatekeeper reads before a downloaded file opens. */
 export const QUARANTINE_ATTRIBUTE = 'com.apple.quarantine'
+
+/** How long a yes waits for the request the policy makes for it. */
+export const APPROVAL_TTL_MS = 30_000
 
 /** The name a file gets when the page offered none worth keeping. */
 const FALLBACK_FILENAME = 'download'
@@ -79,6 +85,14 @@ export interface DownloadPolicyOptions {
   readonly attributes?: QuarantineAttributes | undefined
   /** `process.platform` unless a test says otherwise; the attribute is a macOS thing. */
   readonly platform?: string | undefined
+  /** `Date.now` unless a test says otherwise; dates the approvals. */
+  readonly now?: (() => number) | undefined
+}
+
+/** A yes, and when it was given. */
+interface Approval {
+  readonly request: DownloadRequest
+  readonly at: number
 }
 
 /** Control characters, bidi overrides and zero-width marks: nothing a name needs, everything a trick does. */
@@ -156,16 +170,23 @@ export class DownloadPolicy {
   private readonly confirm: DownloadConfirm
   private readonly attributes: QuarantineAttributes
   private readonly platform: string
+  private readonly now: () => number
   private readonly sessions = new WeakSet<DownloadSurface>()
   private readonly listeners = new Set<NoticeListener>()
-  /** The URLs the user said yes to, by URL, each good for the one request the policy makes. */
-  private readonly approved = new Map<string, DownloadRequest>()
+  /** The URLs the user said yes to, by URL, each good for the one request the policy makes, for a while. */
+  private readonly approved = new Map<string, Approval>()
 
   constructor(options: DownloadPolicyOptions) {
     this.quarantineDir = options.quarantineDir
     this.confirm = options.confirm
     this.attributes = options.attributes ?? xattrAttributes
     this.platform = options.platform ?? process.platform
+    this.now = options.now ?? (() => Date.now())
+  }
+
+  /** Forgets every approval. The app calls this on quit, the way it empties the permission allow set. */
+  clear(): void {
+    this.approved.clear()
   }
 
   /** The transcript subscribes: one line per refusal, per file saved, per file removed. */
@@ -186,8 +207,12 @@ export class DownloadPolicy {
       const approved = this.approved.get(url)
       if (approved !== undefined) {
         this.approved.delete(url)
-        this.save(item, approved)
-        return
+        if (this.now() - approved.at <= APPROVAL_TTL_MS) {
+          this.save(item, approved.request)
+          return
+        }
+        // Too late to be the request the yes was for: refused like any other, and asked about again.
+        this.notify(`Approval for ${approved.request.filename} expired, ask again`)
       }
       // Read what it is, then refuse it: no byte of this item lands anywhere.
       const request: DownloadRequest = {
@@ -217,7 +242,7 @@ export class DownloadPolicy {
       return
     }
     mkdirSync(this.quarantineDir, { recursive: true })
-    this.approved.set(url, request)
+    this.approved.set(url, { request, at: this.now() })
     session.downloadURL(url)
   }
 

@@ -1,6 +1,7 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import type { InvokeAnswer, InvokeChannel, InvokePayload } from '../shared/ipc'
 import { INTERNAL_ORIGIN } from './security/internal-scheme'
+import { warnLimited } from './security/warn-limited'
 
 /**
  * The one door from a page into privileged code (#53, SECURITY.org T1).
@@ -102,14 +103,17 @@ export function guard<C extends InvokeChannel>(
   return async (event, payload) => {
     const sender = topFrameUrl(event.senderFrame)
     if (sender === null || !isInternalPage(sender, devServer)) {
-      console.warn(`ipc: dropped ${channel} from ${describeOrigin(sender)}`)
+      warnLimited(`ipc ${channel}`, `ipc: dropped ${channel} from ${describeOrigin(sender)}`)
       throw new Error(`Rejected ${channel}: the sender is not an internal page`)
     }
     let parsed: InvokePayload<C>
     try {
       parsed = parse(payload)
     } catch (error) {
-      console.warn(`ipc: dropped ${channel} from ${describeOrigin(sender)}: payload rejected`)
+      warnLimited(
+        `ipc ${channel}`,
+        `ipc: dropped ${channel} from ${describeOrigin(sender)}: payload rejected`,
+      )
       throw error
     }
     return run(parsed)

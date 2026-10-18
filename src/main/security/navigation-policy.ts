@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import { warnLimited } from './warn-limited'
 
 /**
  * Where a WebContents may go and what it may spawn (#48, SECURITY.org T1 and T3).
@@ -92,10 +93,11 @@ interface Policy {
 
 const policies = new WeakMap<WebContents, Policy>()
 
-/** The log never carries the URL: a path or a query can hold a secret. */
+/** The log never carries the URL: a path or a query can hold a secret. Bounded per scheme (#100). */
 function refuse(what: string, policy: Policy, url: string, contents: WebContents): void {
   const scheme = schemeOf(url) ?? 'an unparseable URL'
-  console.warn(
+  warnLimited(
+    `navigation ${scheme}`,
     `navigation: blocked ${what} to ${scheme} from ${policy.kind} contents ${contents.id}`,
   )
 }
@@ -151,7 +153,10 @@ export function applyNavigationPolicy(
   // webviewTag is off in HARDENED_WEB_PREFERENCES, so no page should get this
   // far; a WebContents that somehow did is stopped here as well (T1).
   contents.on('will-attach-webview', (event) => {
-    console.warn(`navigation: blocked webview in ${policy.kind} contents ${contents.id}`)
+    warnLimited(
+      'navigation webview',
+      `navigation: blocked webview in ${policy.kind} contents ${contents.id}`,
+    )
     event.preventDefault()
   })
 }
