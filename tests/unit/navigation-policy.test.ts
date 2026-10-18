@@ -36,6 +36,37 @@ describe('navigationAllowed (SECURITY.org T1, T3)', () => {
     expect(navigationAllowed('internal', 'data:text/html,x')).toBe(false)
   })
 
+  it('lets an internal page reach a listed origin, the development exception (#96)', () => {
+    const dev = ['http://localhost:5173']
+    expect(navigationAllowed('internal', 'http://localhost:5173/', dev)).toBe(true)
+    expect(navigationAllowed('internal', 'http://localhost:5173/index.html?t=1', dev)).toBe(true)
+    expect(navigationAllowed('internal', 'nemesis://app/index.html', dev)).toBe(true)
+  })
+
+  it('refuses the dev origin for an internal page when it is not listed', () => {
+    expect(navigationAllowed('internal', 'http://localhost:5173/')).toBe(false)
+    expect(navigationAllowed('internal', 'http://localhost:5173/', [])).toBe(false)
+  })
+
+  it('refuses a sibling origin on another port or host, listed origin or not', () => {
+    const dev = ['http://localhost:5173']
+    expect(navigationAllowed('internal', 'http://localhost:5174/', dev)).toBe(false)
+    expect(navigationAllowed('internal', 'http://127.0.0.1:5173/', dev)).toBe(false)
+    expect(navigationAllowed('internal', 'https://localhost:5173/', dev)).toBe(false)
+    expect(navigationAllowed('internal', 'http://localhost:5173.example.test/', dev)).toBe(false)
+    expect(navigationAllowed('internal', 'http://evil.test/http://localhost:5173/', dev)).toBe(
+      false,
+    )
+  })
+
+  it('never reads the origin list for a page buffer', () => {
+    const dev = ['http://localhost:5173', 'nemesis://app', 'file://']
+    expect(navigationAllowed('page', 'https://example.test/', dev)).toBe(true)
+    expect(navigationAllowed('page', 'http://localhost:5173/', dev)).toBe(true)
+    expect(navigationAllowed('page', 'nemesis://app/index.html', dev)).toBe(false)
+    expect(navigationAllowed('page', 'file:///etc/hosts', dev)).toBe(false)
+  })
+
   it('refuses what is not a URL, for either kind', () => {
     for (const kind of ['page', 'internal'] as const) {
       expect(navigationAllowed(kind, '')).toBe(false)

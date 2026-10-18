@@ -147,8 +147,11 @@ function createWindow(): BrowserWindow {
   win.once('ready-to-show', () => win.show())
 
   // The cockpit is an internal page: it may navigate on the internal scheme
-  // only, and it opens no windows (#48).
-  applyNavigationPolicy(win.webContents, 'internal')
+  // only, and it opens no windows (#48). A development run adds the dev
+  // server origin the page is loaded from, so Vite's full reload, a
+  // navigation of the page to itself, lands (#96); a packaged run, or a run
+  // without the variable, adds nothing.
+  applyNavigationPolicy(win.webContents, 'internal', {}, devOrigin === null ? [] : [devOrigin])
 
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devServer) {
