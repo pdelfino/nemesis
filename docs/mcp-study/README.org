@@ -1,0 +1,12 @@
+#+TITLE: MCP studies
+#+OPTIONS: toc:nil
+
+Each study reads one existing MCP server that Nemesis measures its own
+tool surface against, records what the source actually does with the file
+cited by name, and ends with what Nemesis shares with it and what it does
+not. Nothing is ported: the studies feed ADR 0008 (#27) and the M3 and M4
+issues. The shape follows =docs/nyxt-study/README.org=.
+
+| Study                                                         | Subject                                                              | Feeds    | Issue |
+|---------------------------------------------------------------+----------------------------------------------------------------------+----------+-------|
+| [[file:01-browsermcp-tool-surface.org][01-browsermcp-tool-surface.org]] | browsermcp's complete tool surface, grouped by concern, with the Chrome-extension dependence marked | ADR 0008 | #25   |
