@@ -31,13 +31,21 @@ import type {
  * and relative imports that survive to runtime name their `.ts` extension.
  */
 
+/** The SDK's options to `rewindFiles`: `dryRun` previews without restoring (#99). */
+export interface RewindFilesOptions {
+  readonly dryRun?: boolean
+}
+
 /** Anything the session can talk to: the real SDK query, or the mock. */
 export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>
   setPermissionMode(mode: AgentPermissionMode): Promise<void>
   setModel(model?: string): Promise<void>
-  /** Restores the files the agent touched since the user message named (#84). */
-  rewindFiles(userMessageId: string): Promise<RewindFilesResult>
+  /**
+   * Restores the files the agent touched since the user message named (#84);
+   * a dry run reports what would change and touches nothing (#99).
+   */
+  rewindFiles(userMessageId: string, options?: RewindFilesOptions): Promise<RewindFilesResult>
   close(): void
 }
 
@@ -470,12 +478,18 @@ export class AgentSession {
     return true
   }
 
-  /** Restores the files the agent touched since the checkpoint (#84). */
-  async rewindFiles(checkpoint: Checkpoint): Promise<RewindFilesResult> {
+  /**
+   * Restores the files the agent touched since the checkpoint (#84), or with
+   * `dryRun` reports which would change and restores nothing (#99).
+   */
+  async rewindFiles(
+    checkpoint: Checkpoint,
+    options: RewindFilesOptions = {},
+  ): Promise<RewindFilesResult> {
     if (this.handle === null) await this.start()
     const handle = this.handle
     if (handle === null) throw new AgentSessionError('The session did not start')
-    return handle.rewindFiles(checkpoint.uuid)
+    return handle.rewindFiles(checkpoint.uuid, options)
   }
 
   async setPermissionMode(mode: AgentPermissionMode): Promise<void> {

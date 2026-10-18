@@ -17,6 +17,8 @@ import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } f
  * files or the conversation back to a checkpoint through what the SDK
  * exposes, and `lastToolCalls` feeds the undo prompt. `resume` (#67) picks
  * a past session up by the SDK's id, with its recorded history shown first.
+ * `previewRewind` (#99) is the SDK's dry run of a file rewind, so the cockpit
+ * shows the files before it asks and touches nothing until the yes.
  * `sideQuestion` (#80) asks a throwaway copy of the session, so the answer
  * never enters its history, and the correction counter (#80) watches the
  * user turns and nudges at the second correction in a row. The permission
@@ -74,6 +76,54 @@ export function describeCheckpoints(checkpoints: readonly Checkpoint[]): string 
     'Summarize from here: not available, the Agent SDK exposes no such call.',
   )
   return lines.join('\n')
+}
+
+/**
+ * The help buffer before a file rewind is confirmed (#99): the files the
+ * SDK's dry run says would change, with its counts, and for a rewind of both
+ * how many turns the conversation drops too (`dropped` is null for code alone).
+ */
+export function describeRewindPreview(
+  checkpoint: Checkpoint,
+  result: RewindFilesResult,
+  dropped: number | null,
+): string {
+  const files = result.filesChanged ?? []
+  const lines: string[] = [
+    `Rewind to checkpoint ${checkpoint.index}: the files that would change.`,
+    '',
+  ]
+  if (files.length === 0) lines.push('None: no file changed since the checkpoint.')
+  for (const file of files) lines.push(`  ${file}`)
+  lines.push(
+    '',
+    `${count(files.length, 'file')}, ${count(result.insertions ?? 0, 'insertion')}, ${count(result.deletions ?? 0, 'deletion')}.`,
+  )
+  if (dropped !== null) {
+    lines.push(
+      `The conversation goes back to before the checkpoint as well: ${count(dropped, 'turn')} dropped.`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/** The question before the files are restored (#99), from the dry run's count. */
+export function rewindFilesQuestion(checkpoint: Checkpoint, result: RewindFilesResult): string {
+  return `Restore ${count(result.filesChanged?.length ?? 0, 'file')} to checkpoint ${checkpoint.index}?`
+}
+
+/** The one question before a conversation-only rewind (#99): how many turns go. */
+export function rewindConversationQuestion(checkpoint: Checkpoint, dropped: number): string {
+  return `Restore the conversation to before checkpoint ${checkpoint.index}, dropping ${count(dropped, 'turn')}?`
+}
+
+/** How many turns a conversation rewind to `checkpoint` drops: it and every later one. */
+export function turnsDropped(checkpoints: readonly Checkpoint[], checkpoint: Checkpoint): number {
+  return checkpoints.filter((c) => c.index >= checkpoint.index).length
+}
+
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
 }
 
 /** One checkpoint on one line: its number, when, and the first line of the prompt. */
@@ -338,14 +388,8 @@ export class SessionManager {
    * happened and the session folder keeps it.
    */
   async rewind(checkpoint: Checkpoint, target: RewindTarget): Promise<void> {
-    const session = this.session
-    if (session === null || !session.checkpoints().some((c) => c.uuid === checkpoint.uuid)) {
-      this.emit({
-        type: 'notice',
-        text: `Rewind: checkpoint ${checkpoint.index} is not in this session.`,
-      })
-      return
-    }
+    const session = this.holding(checkpoint)
+    if (session === null) return
     if (target === 'code' || target === 'both') {
       let result: RewindFilesResult
       try {
@@ -361,6 +405,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * The SDK's dry run of a file rewind to `checkpoint` (#99): what the real
+   * one would change, and nothing changed. A refusal is a notice with the
+   * SDK's reason, so the flow that asked ends there and the transcript says why.
+   */
+  async previewRewind(checkpoint: Checkpoint): Promise<RewindFilesResult> {
+    const session = this.holding(checkpoint)
+    if (session === null) return { canRewind: false, error: 'not in this session' }
+    let result: RewindFilesResult
+    try {
+      result = await session.rewindFiles(checkpoint, { dryRun: true })
+    } catch (error) {
+      result = { canRewind: false, error: describe(error) }
+    }
+    if (!result.canRewind) {
+      this.emit({
+        type: 'notice',
+        text: `Rewind: files cannot be restored to checkpoint ${checkpoint.index}: ${result.error ?? 'the SDK refused'}.`,
+      })
+    }
+    return result
+  }
+
+  /** The user said no to a rewind (#99): the answer is in the transcript, nothing else moves. */
+  declineRewind(checkpoint: Checkpoint): void {
+    this.emit({
+      type: 'notice',
+      text: `Rewind: checkpoint ${checkpoint.index} left as is, nothing restored.`,
+    })
+  }
+
   /** Stops the session for good: at quit. */
   async stop(): Promise<void> {
     const session = this.session
@@ -368,6 +443,19 @@ export class SessionManager {
     const off = this.detach()
     await session.stop()
     off()
+  }
+
+  /** The session the checkpoint belongs to, or null and a notice when it is not the current one. */
+  private holding(checkpoint: Checkpoint): AgentSession | null {
+    const session = this.session
+    if (session !== null && session.checkpoints().some((c) => c.uuid === checkpoint.uuid)) {
+      return session
+    }
+    this.emit({
+      type: 'notice',
+      text: `Rewind: checkpoint ${checkpoint.index} is not in this session.`,
+    })
+    return null
   }
 
   private async restoreConversation(session: AgentSession, checkpoint: Checkpoint): Promise<void> {

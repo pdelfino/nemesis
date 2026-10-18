@@ -3,8 +3,12 @@ import { PromptQueue } from '../agent/prompt-queue'
 import {
   describeCheckpoint,
   describeCheckpoints,
+  describeRewindPreview,
   REWIND_TARGETS,
+  rewindConversationQuestion,
+  rewindFilesQuestion,
   SessionManager,
+  turnsDropped,
   undoPrompt,
   type RewindTarget,
 } from '../agent/session-manager'
@@ -33,7 +37,7 @@ import {
   investigatePrompt,
   screenshotPrompt,
 } from './guide-prompts'
-import { confirm, VERIFY_SOURCE } from './confirm'
+import { confirm, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -259,7 +263,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'rewind',
-      doc: 'List the checkpoints, then restore the conversation, the code or both at one.',
+      doc: 'List the checkpoints, then restore the conversation, the code or both at one, after a preview and a yes.',
       run: () => {
         const checkpoints = agent.checkpoints()
         help.show(describeCheckpoints(checkpoints))
@@ -268,7 +272,28 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           const checkpoint = checkpoints.find((candidate) => candidate.uuid === uuid)
           if (checkpoint === undefined) return
           prompter.read({ source: 'rewind-targets', prompt: 'Restore:' }, async (target) => {
-            if (isRewindTarget(target)) await agent.rewind(checkpoint, target)
+            if (!isRewindTarget(target)) return
+            // Restoring files is the one action that rewrites the working
+            // tree, so the SDK's dry run shows its list first and the
+            // question names the count (#99); a conversation-only rewind
+            // asks the one question, with the turns it drops.
+            const dropped = turnsDropped(checkpoints, checkpoint)
+            let question: string
+            if (target === 'conversation') {
+              question = rewindConversationQuestion(checkpoint, dropped)
+            } else {
+              const preview = await agent.previewRewind(checkpoint)
+              if (!preview.canRewind) return
+              help.show(
+                describeRewindPreview(checkpoint, preview, target === 'both' ? dropped : null),
+              )
+              question = rewindFilesQuestion(checkpoint, preview)
+            }
+            if (await confirm(prompter, REWIND_SOURCE, question)) {
+              await agent.rewind(checkpoint, target)
+            } else {
+              agent.declineRewind(checkpoint)
+            }
           })
         })
       },

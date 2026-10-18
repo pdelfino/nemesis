@@ -14,7 +14,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { UUID } from 'node:crypto'
 import { join } from 'node:path'
-import type { AgentDriver, AgentQueryHandle } from './session'
+import type { AgentDriver, AgentQueryHandle, RewindFilesOptions } from './session'
 
 /**
  * A deterministic stand-in for the Agent SDK (#58), honored only when
@@ -66,9 +66,14 @@ import type { AgentDriver, AgentQueryHandle } from './session'
  *
  * An interrupt ends the running turn and nothing else: the query goes on
  * reading prompts, as the real one does, so the context is kept (#84). Only
- * `close()` ends the stream. One driver numbers its sessions: the first is
- * `mock-session`, the next `mock-session-2`, so a fresh session after
- * `new-task` has an id of its own.
+ * `close()` ends the stream. A file rewind is bookkeeping over the Edit calls
+ * the query answered (#99): the dry run lists the file of every allowed
+ * `edit:` since the user message named, one line in and one out each, and
+ * touches nothing; the real run forgets those edits, so the next preview is
+ * empty. The query knows only the messages it read itself, so a checkpoint
+ * from before a resume is refused with a reason, as the SDK refuses. One
+ * driver numbers its sessions: the first is `mock-session`, the next
+ * `mock-session-2`, so a fresh session after `new-task` has an id of its own.
  */
 
 const MOCK_MODEL = 'claude-mock-1'
@@ -187,6 +192,10 @@ class MockQuery implements AgentQueryHandle {
   private closed = false
   /** What the next request carries into the model. */
   private contextTokens = 0
+  /** The turn each user message opened, by the uuid it was sent under (#99). */
+  private readonly turnOf = new Map<string, number>()
+  /** The allowed Edit calls, by the turn that made them, until a rewind forgets them (#99). */
+  private edits: { readonly turn: number; readonly file: string }[] = []
 
   constructor(prompt: AsyncIterable<SDKUserMessage>, options: Options, sessionId: string) {
     this.prompt = prompt
@@ -202,9 +211,24 @@ class MockQuery implements AgentQueryHandle {
     return Promise.resolve(undefined)
   }
 
-  /** The mock edits no file, so there is never anything to put back. */
-  rewindFiles(): Promise<RewindFilesResult> {
-    return Promise.resolve({ canRewind: true, filesChanged: [], insertions: 0, deletions: 0 })
+  /** The mock writes no file: see the edits bookkeeping in the file comment (#99). */
+  rewindFiles(userMessageId: string, options: RewindFilesOptions = {}): Promise<RewindFilesResult> {
+    const turn = this.turnOf.get(userMessageId)
+    if (turn === undefined) {
+      return Promise.resolve({
+        canRewind: false,
+        error: 'the mock query has no record of that message',
+      })
+    }
+    const since = this.edits.filter((edit) => edit.turn >= turn)
+    const filesChanged = [...new Set(since.map((edit) => edit.file))]
+    if (options.dryRun !== true) this.edits = this.edits.filter((edit) => edit.turn < turn)
+    return Promise.resolve({
+      canRewind: true,
+      filesChanged,
+      insertions: since.length,
+      deletions: since.length,
+    })
   }
 
   setPermissionMode(mode: NonNullable<Options['permissionMode']>): Promise<void> {
@@ -227,6 +251,7 @@ class MockQuery implements AgentQueryHandle {
     for await (const message of this.prompt) {
       if (this.closed) return
       this.turn = new AbortController()
+      if (message.uuid !== undefined) this.turnOf.set(message.uuid, this.turns + 1)
       yield* this.answer(promptText(message))
     }
   }
@@ -292,6 +317,7 @@ class MockQuery implements AgentQueryHandle {
       yield this.assistant([{ type: 'tool_use', id: toolUseId, name: 'Edit', input }])
       const decision = await this.ask('Edit', input)
       const allowed = decision.behavior === 'allow'
+      if (allowed) this.edits.push({ turn: this.turns, file: MOCK_FILE })
       yield this.toolResult(toolUseId, allowed ? 'Edit ran' : decision.message, !allowed)
       const reply = allowed ? 'Edited notes.txt.' : 'Did not edit notes.txt.'
       yield this.assistant([{ type: 'text', text: reply, citations: null }])

@@ -5,9 +5,11 @@ import type { PaletteSource, Prompter } from './prompter'
  * download and external-protocol policies in src/main/security ask the user
  * before anything lands on disk or launches, so does a diff buffer before
  * its file goes to the system (#68), and so does the verify key before a
- * command that came from an attached issue runs in a shell (#98); they know
- * nothing of the palette, only a function that answers true or false. This
- * file is that function and the four fixed sources it reads from.
+ * command that came from an attached issue runs in a shell (#98), and so does
+ * the rewind command before the files or the conversation go back to a
+ * checkpoint (#99); they know nothing of the palette, only a function that
+ * answers true or false. This file is that function and the five fixed
+ * sources it reads from.
  *
  * The no comes first in both sources, so it is the highlighted candidate
  * when the read opens: a stray `RET` refuses, and a yes takes a deliberate
@@ -23,6 +25,8 @@ export const EXTERNAL_SOURCE = 'external'
 export const OPEN_FILE_SOURCE = 'open-file'
 /** `C-c C-v` asks before a command from an attached issue, remote text, runs in a shell (#98). */
 export const VERIFY_SOURCE = 'verify'
+/** `rewind` asks before the working tree or the conversation goes back to a checkpoint (#99). */
+export const REWIND_SOURCE = 'rewind'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -70,6 +74,21 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'Run it with your permissions',
         doc: 'The command runs in a shell as a child of the cockpit, outside the agent; the yes holds for this session while the issue is unchanged.',
+      },
+    ],
+  },
+  {
+    name: REWIND_SOURCE,
+    candidates: () => [
+      {
+        id: NO,
+        label: 'Do not restore',
+        doc: 'Nothing changes; the checkpoints stay as they are.',
+      },
+      {
+        id: YES,
+        label: 'Restore',
+        doc: 'The files listed go back to their state at the checkpoint, or the conversation to before it, as the question says.',
       },
     ],
   },

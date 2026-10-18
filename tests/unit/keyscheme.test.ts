@@ -7,6 +7,11 @@ import {
 } from '../../src/main/commands/dispatcher'
 import { defineKeymap, KeyResolver } from '../../src/main/commands/keymap'
 import { CommandRegistry, defineCommand } from '../../src/main/commands/registry'
+import type { AgentEvent, PermissionHandler } from '../../src/main/agent/events'
+import { mockDriver } from '../../src/main/agent/mock'
+import { SessionManager } from '../../src/main/agent/session-manager'
+import { CONFIRM_SOURCES } from '../../src/main/commands/confirm'
+import { Prompter } from '../../src/main/commands/prompter'
 import {
   BUFFER_KEYMAPS,
   cockpitCommands,
@@ -269,5 +274,133 @@ describe('the context commands (#80)', () => {
     expect(deps.agent.sessionId).toBeNull()
     expect(registry.get('compact')?.doc).toMatch(/prompt buffer is the instruction/)
     await deps.agent.stop()
+  })
+})
+
+// The rewind command of #84 with the preview and the question of #99: the
+// SDK's dry run fills the help buffer, the prompt buffer asks with the no
+// highlighted, and only a yes runs the real rewind.
+describe('the rewind command previews and asks (#99)', () => {
+  function harness() {
+    const prompter = new Prompter()
+    for (const source of CONFIRM_SOURCES) prompter.addSource(source)
+    const allow: PermissionHandler = {
+      requestPermission: () => Promise.resolve({ behavior: 'allow' }),
+    }
+    const agent = new SessionManager({
+      cwd: '/tmp/nemesis-unit',
+      model: null,
+      permissionHandler: allow,
+      driver: mockDriver(),
+    })
+    const deps = resolveCockpitDeps({ prompter, agent })
+    const registry = createCockpitRegistry(deps)
+    const notices: string[] = []
+    agent.on((event: AgentEvent) => {
+      if (event.type === 'notice') notices.push(event.text)
+    })
+    const shown: string[] = []
+    deps.help.on((content) => shown.push(content.text))
+    return { deps, prompter, agent, registry, notices, shown }
+  }
+
+  async function sendAndWait(agent: SessionManager, text: string): Promise<void> {
+    const turn = new Promise<void>((resolve) => {
+      const off = agent.on((event) => {
+        if (event.type === 'turn-end') {
+          off()
+          resolve()
+        }
+      })
+    })
+    await agent.send(text)
+    await turn
+  }
+
+  /**
+   * Runs rewind, picks checkpoint 2 and the target, and hands back the answer
+   * in flight, boxed: an async function returning the promise itself would
+   * await it, and it resolves only once the question is answered.
+   */
+  async function startRewind(
+    h: ReturnType<typeof harness>,
+    target: string,
+  ): Promise<{ flow: Promise<unknown> }> {
+    await h.registry.run('rewind', { source: 'test' })
+    const list = h.prompter.pending
+    expect(list).toMatchObject({ prompt: 'Rewind to:' })
+    if (list === null) throw new Error('No checkpoint read')
+    const second = h.agent.checkpoints()[1]
+    if (second === undefined) throw new Error('No second checkpoint')
+    await h.prompter.answer({ id: list.id, choice: second.uuid })
+    const targets = h.prompter.pending
+    expect(targets).toMatchObject({ prompt: 'Restore:' })
+    if (targets === null) throw new Error('No target read')
+    // The answer resolves only when the flow behind it ends, after the question.
+    const flow = h.prompter.answer({ id: targets.id, choice: target })
+    await vi.waitFor(() => expect(h.prompter.pending?.source).toBe('rewind'))
+    return { flow }
+  }
+
+  it('shows the files, asks with the no first, and restores only after a yes', async () => {
+    const h = harness()
+    await sendAndWait(h.agent, 'one')
+    await sendAndWait(h.agent, 'edit: beta changed')
+
+    let { flow } = await startRewind(h, 'code')
+    const question = h.prompter.pending
+    expect(question).toMatchObject({ prompt: 'Restore 1 file to checkpoint 2?' })
+    expect(question?.candidates.map((c) => c.label)).toEqual(['Do not restore', 'Restore'])
+    expect(h.shown.at(-1)).toBe(
+      [
+        'Rewind to checkpoint 2: the files that would change.',
+        '',
+        '  /mock/notes.txt',
+        '',
+        '1 file, 1 insertion, 1 deletion.',
+      ].join('\n'),
+    )
+    if (question === null) throw new Error('No question')
+    await h.prompter.answer({ id: question.id, choice: 'no' })
+    await flow
+    expect(h.notices).toEqual(['Rewind: checkpoint 2 left as is, nothing restored.'])
+
+    // The no left the file: the next preview lists it again, and for both
+    // targets the buffer says what the conversation loses too.
+    flow = (await startRewind(h, 'both')).flow
+    const again = h.prompter.pending
+    expect(again).toMatchObject({ prompt: 'Restore 1 file to checkpoint 2?' })
+    expect(h.shown.at(-1)).toContain('  /mock/notes.txt\n')
+    expect(h.shown.at(-1)).toContain(
+      'The conversation goes back to before the checkpoint as well: 1 turn dropped.',
+    )
+    if (again === null) throw new Error('No question')
+    await h.prompter.answer({ id: again.id, choice: 'yes' })
+    await flow
+    expect(h.notices.slice(1)).toEqual([
+      'Rewind: files restored to checkpoint 2, 1 file changed.',
+      'Rewind: conversation restored to before checkpoint 2; 1 checkpoint kept.',
+    ])
+    expect(h.agent.checkpoints().map((c) => c.index)).toEqual([1])
+    await h.agent.stop()
+  })
+
+  it('asks one question for a conversation-only rewind, with the turns dropped', async () => {
+    const h = harness()
+    for (const text of ['one', 'two', 'three']) await sendAndWait(h.agent, text)
+    const { flow } = await startRewind(h, 'conversation')
+    const question = h.prompter.pending
+    expect(question).toMatchObject({
+      prompt: 'Restore the conversation to before checkpoint 2, dropping 2 turns?',
+    })
+    // No dry run was shown: the help buffer still holds the checkpoint list.
+    expect(h.shown).toHaveLength(1)
+    expect(h.shown[0]).toContain('Checkpoints, one per prompt sent')
+    if (question === null) throw new Error('No question')
+    await h.prompter.answer({ id: question.id, choice: 'no' })
+    await flow
+    expect(h.notices).toEqual(['Rewind: checkpoint 2 left as is, nothing restored.'])
+    expect(h.agent.checkpoints().map((c) => c.index)).toEqual([1, 2, 3])
+    await h.agent.stop()
   })
 })
