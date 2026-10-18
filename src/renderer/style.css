@@ -74,6 +74,83 @@ main {
 #request-keys {
   margin: 0.3rem 0 0;
 }
+/* The help buffer is a read-only document under the transcript (#65). */
+#help {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
+}
+#help[hidden] {
+  display: none;
+}
+#help .cm-editor {
+  min-height: 0;
+}
+#help .cm-editor.cm-focused {
+  outline: none;
+}
+#help .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+/* The palette takes the prompt section's place while a choice is read (#65). */
+#prompt.palette-open {
+  display: none;
+}
+#palette {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  box-shadow: inset 2px 0 0 var(--ink);
+}
+#palette[hidden] {
+  display: none;
+}
+#palette-line {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+#palette-prompt {
+  font-weight: bold;
+  white-space: nowrap;
+}
+#palette-input {
+  flex: 1;
+}
+#palette .cm-editor.cm-focused {
+  outline: none;
+}
+#palette .cm-scroller {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+#palette .cm-content {
+  padding: 0;
+}
+#palette-candidates {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 30vh;
+  overflow: auto;
+}
+#palette-candidates li {
+  padding: 0 0.4rem;
+}
+#palette-candidates li[aria-selected='true'] {
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.palette-detail {
+  color: var(--muted);
+}
+#palette-doc {
+  margin: 0.4rem 0 0;
+}
 /* The current buffer carries the point, so it says so (#60). */
 [data-buffer-type][data-current] {
   box-shadow: inset 2px 0 0 var(--ink);

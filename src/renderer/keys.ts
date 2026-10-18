@@ -22,7 +22,7 @@ import {
  * with Emacs keys of its own never sees `C-x` or `C-c C-c`.
  */
 
-const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission']
+const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission', 'help']
 
 /** Told what a key ran, so a buffer can act on it (the prompt sends on `send-prompt`). */
 export type CommandListener = (outcome: KeyOutcome, bufferType: BufferType | null) => void
@@ -76,7 +76,8 @@ async function onKeyDown(event: KeyboardEvent, capture: KeyCapture): Promise<voi
   }
   try {
     const outcome = await window.nemesis.sendKey(press)
-    pending = outcome.status === 'pending'
+    // A capture (`describe-key`, #65) wants the next sequence whatever it is.
+    pending = outcome.status === 'pending' || outcome.capture === true
     if (outcome.status === 'command') capture.onCommand?.(outcome, press.bufferType)
   } catch (error) {
     // A rejected bridge call must not leave the page stuck mid-sequence.

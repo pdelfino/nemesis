@@ -98,7 +98,7 @@ describe('the buffer registry (#60)', () => {
 describe('the buffer commands in the command registry (#59, #60)', () => {
   it('cycles with switch-buffer and kills with kill-buffer', async () => {
     const buffers = createCockpitBuffers()
-    const commands = createCockpitRegistry(buffers)
+    const commands = createCockpitRegistry({ buffers })
     const context = { source: 'test' } as const
 
     await commands.run('switch-buffer', context)

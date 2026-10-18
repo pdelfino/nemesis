@@ -5,7 +5,8 @@ import { installSessionBridge } from './agent/session-bridge'
 import { installBufferBridge } from './buffer-bridge'
 import { createCockpitBuffers } from './buffers'
 import { installKeyBridge } from './commands/key-bridge'
-import { createCockpitDispatcher, createCockpitRegistry } from './commands/keyscheme'
+import { createCockpitDispatcher, resolveCockpitDeps } from './commands/keyscheme'
+import { installPaletteBridge } from './commands/palette-bridge'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { internalPagePreferences } from './security/web-preferences'
 
@@ -67,8 +68,11 @@ void app.whenReady().then(() => {
   // rules ask about waits on a key through the permission bridge (#63).
   const permissions = new PermissionBridge(buffers)
   installSessionBridge({ cwd: process.cwd(), permissions })
+  // The palette reads a choice for a command, and help answers in a buffer (#65).
+  const deps = resolveCockpitDeps({ buffers, permissions })
+  installPaletteBridge({ prompter: deps.prompter, help: deps.help })
   // Keys mean nothing until the registry and the keymaps are up (#59).
-  installKeyBridge(createCockpitDispatcher(createCockpitRegistry(buffers, permissions)))
+  installKeyBridge(createCockpitDispatcher(deps))
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

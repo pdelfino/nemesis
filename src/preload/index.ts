@@ -12,6 +12,8 @@ import type { BufferInfo, BufferList, BufferSpec } from '../shared/buffers'
 import { BUFFER_CREATE_CHANNEL, BUFFERS_CHANGED_CHANNEL, BUFFERS_CHANNEL } from '../shared/buffers'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from '../shared/keys'
 import { BINDINGS_CHANNEL, DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../shared/keys'
+import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from '../shared/palette'
+import { HELP_SHOWN_CHANNEL, PALETTE_ANSWER_CHANNEL, PALETTE_OPEN_CHANNEL } from '../shared/palette'
 
 // The only bridge between internal pages and the main process (SECURITY.org, T1).
 // Typed functions only, never a raw ipcRenderer. Completed by #53.
@@ -34,6 +36,14 @@ const base = {
   },
   onAgentEvent: (listener: (event: AgentEvent) => void): void => {
     ipcRenderer.on(AGENT_EVENT_CHANNEL, (_event, agentEvent: AgentEvent) => listener(agentEvent))
+  },
+  onPaletteOpen: (listener: (request: PaletteRequest) => void): void => {
+    ipcRenderer.on(PALETTE_OPEN_CHANNEL, (_event, request: PaletteRequest) => listener(request))
+  },
+  answerPalette: (answer: PaletteAnswer): Promise<PaletteOutcome> =>
+    ipcRenderer.invoke(PALETTE_ANSWER_CHANNEL, answer),
+  onHelpShown: (listener: (content: HelpContent) => void): void => {
+    ipcRenderer.on(HELP_SHOWN_CHANNEL, (_event, content: HelpContent) => listener(content))
   },
 } satisfies NemesisApi
 

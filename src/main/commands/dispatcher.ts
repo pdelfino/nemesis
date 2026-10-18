@@ -14,7 +14,7 @@ import type { CommandRegistry } from './registry'
  * process resolves it against the keymaps and runs the command.
  */
 
-const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission']
+const BUFFER_TYPES: readonly BufferType[] = ['prompt', 'transcript', 'permission', 'help']
 
 /** How many dispatches are kept in memory for describe and for the tests. */
 const LOG_LIMIT = 200
@@ -83,12 +83,47 @@ export function assertBindingsAreRegistered(
   }
 }
 
+/** A key sequence read for `describe-key` (#65): what it was and what it would have run. */
+export interface KeyReading {
+  readonly chord: string
+  /** Null when the sequence is unbound in that buffer. */
+  readonly command: string | null
+  readonly bufferType: BufferType | null
+}
+
+/**
+ * Reads the next complete key sequence instead of running it (#65). The
+ * `describe-key` command asks here, and the dispatcher, which is built after
+ * the registry, consults the same reader on every press.
+ */
+export class KeyReader {
+  private waiting: ((reading: KeyReading) => void) | null = null
+
+  get pending(): boolean {
+    return this.waiting !== null
+  }
+
+  /** Resolves with the next sequence. A second read while one waits replaces it. */
+  read(): Promise<KeyReading> {
+    return new Promise((resolve) => {
+      this.waiting = resolve
+    })
+  }
+
+  settle(reading: KeyReading): void {
+    const waiting = this.waiting
+    this.waiting = null
+    waiting?.(reading)
+  }
+}
+
 export class KeyDispatcher {
   private readonly records: DispatchRecord[] = []
 
   constructor(
     private readonly registry: CommandRegistry,
     private readonly resolver: KeyResolver,
+    private readonly reader: KeyReader = new KeyReader(),
   ) {}
 
   /** The sequence typed so far, or null. */
@@ -111,6 +146,18 @@ export class KeyDispatcher {
     if (stroke === null) return { status: 'ignored', chord: this.resolver.pending ?? '' }
 
     const resolution = this.resolver.resolve(stroke, press.bufferType)
+    if (resolution.kind === 'pending') return { status: 'pending', chord: resolution.chord }
+
+    // A sequence read for describe-key is described, not run (#65).
+    if (this.reader.pending) {
+      const command = resolution.kind === 'command' ? resolution.command : null
+      this.reader.settle({ chord: resolution.chord, command, bufferType: press.bufferType })
+      return {
+        status: 'captured',
+        chord: resolution.chord,
+        ...(command === null ? {} : { command }),
+      }
+    }
     if (resolution.kind !== 'command') {
       return { status: resolution.kind, chord: resolution.chord }
     }
@@ -124,7 +171,7 @@ export class KeyDispatcher {
       console.error(`Command ${command} (${chord}) failed:`, error)
       return { status: 'error', chord, command }
     }
-    return { status: 'command', chord, command }
+    return { status: 'command', chord, command, ...(this.reader.pending ? { capture: true } : {}) }
   }
 
   private record(entry: DispatchRecord): void {

@@ -14,9 +14,8 @@ import {
   createCockpitDispatcher,
   createCockpitRegistry,
   GLOBAL_KEYMAP,
+  resolveCockpitDeps,
 } from '../../src/main/commands/keyscheme'
-import { BufferRegistry } from '../../src/main/buffers'
-import { PermissionBridge } from '../../src/main/agent/permission-bridge'
 
 function press(key: string, options: Partial<KeyPress> = {}): KeyPress {
   return {
@@ -46,13 +45,15 @@ describe('the default Emacs keyscheme (#59)', () => {
     expect(BUFFER_KEYMAPS.permission?.commandFor('1')).toBe('choose-option-1')
     expect(BUFFER_KEYMAPS.permission?.commandFor('4')).toBe('choose-option-4')
     expect(BUFFER_KEYMAPS.permission?.commandFor('5')).toBeUndefined()
+    // The help keys, Emacs 28's (#65).
+    expect(GLOBAL_KEYMAP.commandFor('C-h x')).toBe('describe-command')
+    expect(GLOBAL_KEYMAP.commandFor('C-h k')).toBe('describe-key')
   })
 
   it('registers every command a keymap names', () => {
     const registry = createCockpitRegistry()
-    const buffers = new BufferRegistry()
     expect(registry.list()).toHaveLength(
-      cockpitCommands(buffers, new PermissionBridge(buffers)).length,
+      cockpitCommands(resolveCockpitDeps(), new CommandRegistry()).length,
     )
     expect(() =>
       assertBindingsAreRegistered(registry, [GLOBAL_KEYMAP, ...Object.values(BUFFER_KEYMAPS)]),
@@ -101,6 +102,48 @@ describe('the dispatcher', () => {
     ).toMatchObject({
       status: 'unbound',
     })
+  })
+
+  it('reads the next sequence for describe-key instead of running it (#65)', async () => {
+    const deps = resolveCockpitDeps()
+    const dispatcher = createCockpitDispatcher(deps)
+    const shown = vi.fn()
+    deps.help.on(shown)
+    // The command that asked is answered with a capture, so the renderer
+    // hands every key over until the sequence ends.
+    expect(await dispatcher.handle(press('h', { ctrlKey: true, code: 'KeyH' }))).toEqual({
+      status: 'pending',
+      chord: 'C-h',
+    })
+    expect(await dispatcher.handle(press('k', { code: 'KeyK' }))).toEqual({
+      status: 'command',
+      chord: 'C-h k',
+      command: 'describe-key',
+      capture: true,
+    })
+    expect(await dispatcher.handle(press('x', { ctrlKey: true, code: 'KeyX' }))).toEqual({
+      status: 'pending',
+      chord: 'C-x',
+    })
+    expect(await dispatcher.handle(press('b', { code: 'KeyB' }))).toEqual({
+      status: 'captured',
+      chord: 'C-x b',
+      command: 'switch-buffer',
+    })
+    await vi.waitFor(() => expect(shown).toHaveBeenCalled())
+    expect(shown.mock.calls[0]?.[0]).toMatchObject({
+      text: 'C-x b runs switch-buffer.\nSwitch to the next buffer.',
+    })
+    // Nothing ran: the log has only the key that asked, and the buffer did not switch.
+    expect(dispatcher.log.map((record) => record.command)).toEqual(['describe-key'])
+    expect(deps.buffers.current?.kind).toBe('help')
+
+    // An unbound sequence is read too, with no command.
+    const reading = deps.keys.read()
+    expect(await dispatcher.handle(press('q', { code: 'KeyQ', bufferType: 'transcript' }))).toEqual(
+      { status: 'captured', chord: 'q' },
+    )
+    expect(await reading).toEqual({ chord: 'q', command: null, bufferType: 'transcript' })
   })
 
   it('ignores a bare modifier and reports the sequence in flight', async () => {

@@ -1,6 +1,7 @@
 import type { AgentEvent, PromptQueueState, PromptReceipt, PromptState } from './agent'
 import type { BufferInfo, BufferList, BufferSpec } from './buffers'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
+import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 
 /**
  * The surface internal pages see as `window.nemesis`. Implemented by the
@@ -28,6 +29,12 @@ export interface NemesisApi {
   onPromptQueueChanged(listener: (state: PromptQueueState) => void): void
   /** Every event of the cockpit's agent session, unchanged (#61; the transcript renders them, #62). */
   onAgentEvent(listener: (event: AgentEvent) => void): void
+  /** The main process wants a choice: the palette opens over the candidates (#65). */
+  onPaletteOpen(listener: (request: PaletteRequest) => void): void
+  /** Answers a palette read with the candidate picked, or null for a cancel (#65). */
+  answerPalette(answer: PaletteAnswer): Promise<PaletteOutcome>
+  /** The help buffer has new text: describe-command or describe-key answered (#65). */
+  onHelpShown(listener: (content: HelpContent) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

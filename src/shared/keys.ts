@@ -11,7 +11,7 @@
  */
 
 /** Buffer types the cockpit knows about. Per-type keymaps override the global map. */
-export type BufferType = 'prompt' | 'transcript' | 'permission'
+export type BufferType = 'prompt' | 'transcript' | 'permission' | 'help'
 
 /**
  * Buffer types where an unmodified key is a command, not text (`y`/`n` on a
@@ -34,11 +34,17 @@ export interface KeyPress {
 /**
  * What the main process did with a key press. `chord` is the sequence so far in
  * Emacs notation, which the echo area will show once the mode line lands.
+ *
+ * `captured` means the sequence was read for `describe-key` (#65), not run.
+ * `capture` on a command outcome means the main process wants the next
+ * sequence whatever it is, so the renderer hands every key over until the
+ * sequence ends, as it does while a prefix is pending.
  */
 export interface KeyOutcome {
-  readonly status: 'command' | 'pending' | 'unbound' | 'ignored' | 'error'
+  readonly status: 'command' | 'pending' | 'unbound' | 'ignored' | 'error' | 'captured'
   readonly chord: string
   readonly command?: string
+  readonly capture?: boolean
 }
 
 /** One dispatched command. Never holds buffer text, only the chord and the name. */
