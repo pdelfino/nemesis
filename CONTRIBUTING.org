@@ -18,7 +18,7 @@ Every issue that describes code carries =## Verify= (a terminating command or a 
 
 * Commits and pull requests
 
-Interactive sessions commit straight to =main= after a green local gate; speed over ceremony is the maintainer's call. The unattended queue works on =issue/<number>-<slug>= and opens a draft pull request, which is its review surface. Small commits with a Conventional Commits prefix. A commit or pull request names the issue, the Verify commands that were run, and any new dependency with its one-line justification.
+Interactive sessions commit straight to =main= after a green local gate; speed over ceremony is the maintainer's call. The unattended queue works on its own branch (=claude-queue/<number>= per issue, or the stack name of a =--stack= run) and opens a draft pull request, which is its review surface. Small commits with a Conventional Commits prefix. A commit or pull request names the issue, the Verify commands that were run, and any new dependency with its one-line justification.
 
 Pull requests that touch =src/main/security/=, =src/preload/=, the permission bridge in =src/main/agent/=, =SECURITY.org= or =tests/e2e/security/= are reviewed interactively by the maintainer before merge, whoever authored them.
 

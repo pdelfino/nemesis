@@ -4,7 +4,7 @@ Read `README.org` for what this is and `SECURITY.org` before touching anything u
 
 ## Stack (do not substitute)
 
-Electron (current stable, pinned), TypeScript strict, CodeMirror 6 with the Replit Emacs keymap for every text surface, the Claude Agent SDK in the main process, better-sqlite3, Vitest, Playwright for Electron, electron-vite, electron-builder. No application code before 2026-11-01 (milestone M0 is a week in Emacs agent-shell, no code).
+Electron (current stable, pinned), TypeScript strict, CodeMirror 6 with the Replit Emacs keymap for every text surface, the Claude Agent SDK in the main process, better-sqlite3, Vitest, Playwright for Electron, electron-vite, electron-builder. The M0 agent-shell week (#44) runs alongside the code: Pedro lifted the no-code-before-November rule on 2026-10-17.
 
 ## Layout (created by the M1 scaffold issue; keep it)
 
@@ -24,7 +24,7 @@ docs/adr/            architecture decision records
 
 ## Gate
 
-`npm run gate` = typecheck, lint, unit tests, end-to-end smoke. It runs locally before every commit. CI is the second opinion. Nothing is pushed with a red gate.
+`npm run gate` = dependency script check, typecheck, lint, unit tests, the end-to-end specs and the security specs. It runs locally before every commit. CI is the second opinion. Nothing is pushed with a red gate.
 
 Node comes from nvm and the default shell node is older: run `source ~/.nvm/nvm.sh && nvm use` once per shell before any `npm` command. `.npmrc` sets `engine-strict`, so the wrong Node fails loudly instead of silently.
 
@@ -34,7 +34,7 @@ Node comes from nvm and the default shell node is older: run `source ~/.nvm/nvm.
 
 ## Rules
 
-- Interactive sessions commit straight to `main` after a green local gate (Pedro's call, 2026-10-17: speed over ceremony). The non-interactive queue works on `issue/<number>-<slug>` and opens a draft pull request, because nobody is watching it. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
+- Interactive sessions commit straight to `main` after a green local gate (Pedro's call, 2026-10-17: speed over ceremony). The non-interactive queue works on its own branch (`claude-queue/<number>` per issue, or the stack name of a `--stack` run) and opens a draft pull request, because nobody is watching it. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
 - Done means the issue's checklist is resolved: tick what landed, strike what was abandoned with a reason, bold what remains, then a one-line "verified with ..." comment.
 - No new dependency without a one-line justification in the pull request. No dependency that needs a lifecycle script. Prefer Electron and Node built-ins.
 - Security controls are test-first: the failing spec under `tests/e2e/security/` lands in the same pull request as the control.
