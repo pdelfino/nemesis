@@ -1,0 +1,239 @@
+#+TITLE: ADR 0002: keymaps as data, chord parsing and the renderer's share of the keys
+#+OPTIONS: toc:nil
+
+- Status: accepted
+- Date: 2026-OCTOBER-17
+- Threat or Pillar: README.org pillar 1, keyboard-driven (pillar 4, safe by
+  construction, sets the boundary the renderer half respects)
+- Issue: #59 and #61 (recorded by #20)
+
+* Context
+
+Every action in Nemesis is a named command bound to a key (README.org, pillar
+1). The command registry and the keymap format are therefore the spine of the
+application and of the later extension door: a user keymap in M3 (#71) and the
+mode system (#22) both have to fit the shape chosen for the first binding, so
+the shape had to be chosen once, before that binding, and had to survive two
+things that already existed in the tree when #59 started.
+
+** Emacs notation is the given
+
+The cockpit is Emacs-shaped by design (CLAUDE.md pins the Replit Emacs keymap
+for every text surface). The keys Pedro types are Emacs keys, so the notation
+the keymaps are written in is Emacs notation: a chord is a sequence of strokes
+separated by spaces (=C-x b=, =C-c C-c=), a stroke is modifiers and a key, with
+=C-= for control, =M-= for meta (Alt or Option), =S-= for shift on a named key
+only, =s-= for super (Command), and named keys spelled as Emacs spells them
+(=RET=, =SPC=, =TAB=, =ESC=, =DEL=, =<up>=, =<f1>=). Nothing in the Electron or
+DOM vocabulary (=KeyboardEvent.key=, =KeyboardEvent.code=) is fit to write a
+keymap in: the DOM names are layout dependent for letters and inconsistent for
+modifiers, and a user who knows =C-x b= from Emacs should not have to learn
+=Ctrl+KeyX= to rebind it.
+
+** Two keymap layers already exist
+
+A permission prompt answers =y= and =n=, a plan buffer approves on =C-c C-c=
+and the prompt buffer sends on the same chord. The same key means different
+things in different buffers, and most keys mean the same thing everywhere. So
+there are two layers from the first day: a global map and a map per buffer
+type, with the buffer-type map consulted first. Nyxt does the same with more
+layers: its =source/input.lisp= builds the list of keymaps for the current
+buffer from the enabled modes, ordered by priority, and looks the pending keys
+up across that list. Nemesis has no modes yet (#22), so two layers is the
+smallest shape that is still the Nyxt shape.
+
+** A cockpit chord and an editor key collide on one surface
+
+The prompt buffer (#61) is CodeMirror 6 with the Replit Emacs keymap, which
+binds =C-a=, =C-e=, =C-k=, =M-f=, =C-y=, =M-w= and =C-x= and =C-c= sequences
+of its own. The key capture that #59 shipped intercepted every chord (every
+press with Control, Alt or Command down), called =preventDefault()= and
+reported it to the main process, which answered asynchronously. CodeMirror
+therefore never saw =C-a= or =M-f=, and the editor's Emacs keymap was dead
+until someone decided who owns which key. That decision could not wait for
+the modes ADR: the prompt buffer is the front door and #61 was next in the
+stack.
+
+* Decision
+
+** Keymaps are TypeScript data modules
+
+A keymap is a plain object from chord string to command name, built with
+=defineKeymap(name, spec)= in =src/main/commands/keymap.ts=. The cockpit's
+bindings live in =src/main/commands/keyscheme.ts= as =GLOBAL_KEYMAP= and
+=BUFFER_KEYMAPS=, one entry per buffer type. A keymap is data, not code with
+side effects: it names commands, it never calls them, so it can be listed
+(=describe-key=, =describe-command=, the palette), compared and published. It is a TypeScript
+module rather than a configuration file because the extension door treats user
+configuration as code anyway (#71 compiles an =init.ts=, the way =init.el= is
+Lisp), and a module can compute its entries, as the permission map does for the
+numbered answers to a question. The format is decided here, once; a user keymap
+in M3 is the same call with the same shape.
+
+** Chords are parsed once, in Emacs notation, from a shared vocabulary
+
+=parseChord= and =parseStroke= in =src/main/commands/keymap.ts= turn a chord
+string into strokes when the keymap is built, never on a key press. Two
+spellings of one chord compare equal after =normalizeChord= reprints them, so
+a keymap cannot bind =C-M-x= and =M-C-x= to two commands by accident. The
+stroke itself (its shape, its printing with =formatStroke=, its reading off a
+DOM key press with =strokeFromKeyPress=, and the named-key table) lives in
+=src/shared/keys.ts=, because since #61 the renderer has to spell a key the
+way the keymaps do (see the fourth rule). On macOS, Option plus a letter
+produces a different character, so when meta or super is down the
+layout-independent =code= decides the letter. Shift on a printable character is
+the character itself (=A=, never =S-a=), as in Emacs; =S-= is accepted only on
+a named key, and the parser rejects the other spelling with a message that says
+what to write instead.
+
+A keymap is a trie over strokes, so =C-x= is a prefix and =C-x b= a binding.
+Conflicts are rejected when the map is built: the same chord twice, a chord
+that is a prefix of a longer binding, a chord whose prefix is already a
+command. The error names the keymap, both chords and both commands.
+
+** The main process owns the registry and the dispatch
+
+The registry (=src/main/commands/registry.ts=) is the one route to an action:
+a key, the =M-x= palette and a later extension all run a command by name
+through it. The dispatcher in =src/main/commands/dispatcher.ts= takes a key
+press reported by the renderer, reads a stroke off it and asks the
+=KeyResolver= in =src/main/commands/keymap.ts= what it means. The resolver
+holds the half-typed sequence between presses and consults layers in order,
+the buffer-type map first, then the global map; the first layer that knows the
+sequence decides. A prefix in a higher layer wins over a command in a lower
+one, so =C-x= stays a prefix as it does in Emacs, and the lower layer can still
+complete the sequence on a later stroke: a plan buffer that binds =C-c C-c= and
+=C-c C-k= does not hide the global =C-c C-l=. =C-g= is the abort chord
+(=ABORT_CHORD= in =src/main/commands/keyscheme.ts=): typed mid-sequence it
+abandons the sequence, then is looked up on its own, so it also runs
+=keyboard-quit=. Nyxt's =dispatch-input-event= in =source/input.lisp= keeps a
+key stack on the buffer the same way, returns early on a prefix match and
+clears the stack when the sequence is bound or unbound; the Nemesis resolver is
+that idea with the stack held by the resolver instead of the buffer.
+
+The renderer never decides what a key means. It sends a =KeyPress= over the
+sender-validated channel in =src/main/commands/key-bridge.ts= and gets back a
+=KeyOutcome= with the chord so far and, when a command ran, its name. Typed
+text never crosses the bridge: outside a modal buffer only chords are reported,
+and the dispatch log the tests read holds chords and command names, never
+buffer content (SECURITY.org, logging rule).
+
+At startup, =assertBindingsAreRegistered= in =src/main/commands/dispatcher.ts=
+walks every keymap and throws when a binding names a command the registry does
+not have. =createCockpitDispatcher= in =src/main/commands/keyscheme.ts= calls
+it before the first window opens, so a stale binding fails the app at launch,
+with the keymap name, the chord and the unknown name in the message, instead
+of failing the first time someone presses the key.
+
+** The renderer intercepts only what the main process published
+
+At load the renderer asks once for the shape of the keymaps: =bindings()= in
+=src/shared/api.ts=, served by =src/main/commands/key-bridge.ts= from
+=KeyResolver.bindings()=. The shape (=KeymapShape= in =src/shared/keys.ts=) is
+the canonical chords of each layer plus every proper prefix of a multi-stroke
+chord; it carries no command names, so the renderer learns which keys are the
+cockpit's, never what they do. The key capture in =src/renderer/keys.ts=
+intercepts a press only when its stroke, spelled with the shared
+=formatStroke=, is a bound chord or a prefix for the buffer under the point
+(=startsCockpitChord= in =src/shared/keys.ts=, which mirrors the resolver's
+layering), when a sequence is half typed, or when the buffer is modal
+(=MODAL_BUFFER_TYPES=, the permission prompt). Every other key, =C-a= and
+=M-f= included, reaches CodeMirror untouched. Until the shape arrives, every
+chord is reported, which is the #59 behaviour.
+
+The listener runs in the capture phase and stops propagation, so the editor
+never sees =C-x= or =C-c C-c=. Because the main process answers
+asynchronously, a known prefix marks the sequence pending before the answer
+arrives, so the next stroke is not typed into the buffer while the bridge call
+is in flight. Nyxt's =dispatch-input-event= returns nil to forward a key to its
+renderer when nothing is bound and non-nil to swallow it; Nemesis cannot
+forward a key after the fact, since Electron's main process does not see the
+event until the renderer has already let it through or not, so the renderer
+decides first from the published shape, and the main process keeps the final
+word on meaning.
+
+* Alternatives considered
+
+** Keymaps in JSON or YAML, loaded at start and watched
+
+Option B on #59. A file a user edits by hand, parsed by the app, with a loader
+and a watcher. It is easier to edit without knowing TypeScript and it is
+inert, which is a security property. It lost because it cannot express what an
+Emacs-style configuration routinely does: compute bindings (the numbered
+permission answers), bind a chord to a command defined three lines above in the
+same file, or make a binding conditional. The extension door (#71) is code in
+any case, so a second format for the one thing that is already data would mean
+two loaders, two error paths and two documents, and M3 would still need the
+code path. A keymap stays declarative data inside a code module: the inert
+quality is kept where it matters, in the object, while the module around it can
+do what =init.el= does.
+
+** The renderer owns the keymaps and the dispatch
+
+Option C on #61: move the resolver into the renderer, keymaps as renderer
+data, so there is no round trip and CodeMirror and the cockpit negotiate in the
+same process. It lost on two counts. It would put two sources of truth for what
+a chord means on either side of the bridge the moment the palette (#65) or an
+extension runs a command without a key, and it would move the registry, the
+one route to every action, into the process that will later host untrusted
+page content (SECURITY.org: the renderer has no Node, the preload surface is
+minimal, the main process decides). The renderer reports, the main process
+decides, is the #59 spine, and #61 kept it.
+
+** Intercept every chord in the renderer
+
+What #59 shipped and #61 reversed. Every press with Control, Alt or Command
+down was taken from the page and sent over the bridge, and the main process
+answered unbound for most of them. It was the right first cut, since no editor
+existed yet, and it is still the fallback until the shape arrives. It lost as
+the steady state because it kills the editor: the Replit Emacs keymap never saw
+=C-a=, =C-e=, =C-k=, =M-f=, =M-p=, and the prompt buffer could not be an Emacs
+buffer, which is the whole point of #61. Reporting every chord also sends more
+across the bridge than the cockpit needs.
+
+** Let CodeMirror see the key first, report the rest
+
+Option B on #61: the editor gets the key, the renderer reports to the main
+process only the presses the editor left alone (checked through
+=defaultPrevented=). It lost because the editor's Emacs keymap binds =C-x= and
+=C-c= sequences of its own, so =C-x b= and =C-c C-c= would be eaten by the
+editor and never reach the registry. The cockpit's bindings would stop being
+global, and which keys the cockpit had would depend on which editor was under
+the point.
+
+* Consequences
+
+- A user keymap in M3 (#71) is a =defineKeymap(name, spec)= call in the user's
+  =init.ts=, with chords in Emacs notation and command names as strings; it
+  parses with the same parser and fails with the same errors as the cockpit's
+  maps. Because the renderer learns the shape at load, a keymap added or
+  changed at runtime must be republished to the renderer, the way the buffer
+  list is pushed on change; #71 owns that push.
+- The startup check cuts both ways. A typo in a binding is caught at launch
+  with a message that names the keymap, the chord and the unknown command, and
+  a user binding to a command that does not exist must fail in the config
+  error buffer (#71) rather than crash the app, so #71 has to run the same
+  check per keymap and report, not throw.
+- A new buffer type is a code change in three places: the =BufferType= union
+  in =src/shared/keys.ts=, the lists in =src/main/commands/dispatcher.ts= and
+  =src/renderer/keys.ts= that validate it, and an entry in =BUFFER_KEYMAPS=.
+  The modes ADR (#22) will decide whether modes replace the buffer-type layer
+  or sit on top of it; the resolver's layer list is the seam, and Nyxt's
+  =source/keyscheme.lisp=, where the emacs, cua and vi keyschemes each inherit
+  from a default parent, is the model for scheme switching that Nemesis does
+  not have yet.
+- Conflicts inside one keymap are rejected at build time, but a buffer-type map
+  shadowing a global binding is allowed on purpose (the plan buffer's
+  =C-c C-c=). =describe-key= (#65) tells a user which layer answered; there is
+  no warning when a shadow is created.
+- The renderer's share depends on the two sides spelling a stroke identically,
+  which is why the stroke code lives in =src/shared/keys.ts= and is imported by
+  both. A change to the notation is a change to a shared module, visible in
+  one diff, and =tests/unit/key-bindings.test.ts= pins what the dispatcher
+  publishes against what the renderer hands over.
+- Modifier translation (treating =C-i= as =TAB=, for example) and one command
+  bound to several keys with a preferred spelling for display are not
+  decided here. The comparison with the full nkeymaps library is the Nyxt
+  study #15; the library is a submodule of the Nyxt tree under
+  =_build/nkeymaps= and was not checked out in the local clone when this ADR
+  was written, so this record cites only the Nyxt files that drive it.
