@@ -27,19 +27,22 @@ describe('the shape of a keymap', () => {
       'C-c C-l',
       'C-c C-n',
       'C-c C-p',
+      'C-c C-r',
       'C-c C-u',
       'C-c C-v',
       'C-g',
       'C-h k',
       'C-h x',
       'C-s',
+      'C-x 5 2',
+      'C-x 5 w',
       'C-x b',
       'C-x k',
       'C-x n',
       'C-x s',
       'M-x',
     ])
-    expect(bindings.global.prefixes).toEqual(['C-c', 'C-h', 'C-x'])
+    expect(bindings.global.prefixes).toEqual(['C-c', 'C-h', 'C-x', 'C-x 5'])
     expect(bindings.byBufferType.permission).toEqual({
       chords: ['1', '2', '3', '4', 'a', 'n', 'y'],
       prefixes: [],

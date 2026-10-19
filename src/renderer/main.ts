@@ -10,6 +10,7 @@ import { installPalette } from './palette'
 import { installPlanBuffer } from './plan-buffer'
 import { installPromptBuffer } from './prompt-buffer'
 import { installReplBuffer } from './repl-buffer'
+import { installReviewBuffer } from './review-buffer'
 import { installRequestBuffer } from './request-buffer'
 import { installSpecBuffer } from './spec-buffer'
 import { installTranscriptBuffer } from './transcript-buffer'
@@ -37,6 +38,8 @@ const diff = installDiffBuffer()
 const plan = installPlanBuffer()
 // And the spec buffer: the spec an interview ends with opens there (#85).
 const spec = installSpecBuffer()
+// And the review buffer: a reviewer window's findings open there (#87).
+const review = installReviewBuffer()
 // And the environment buffer: C-c C-e lists the session's environment there (#86).
 const environment = installEnvironmentBuffer()
 // And the *repl* buffer: forms evaluated in the config scope show there (#72).
@@ -66,6 +69,7 @@ void installPromptBuffer().then((prompt) => {
     diff.onCommand(outcome, bufferType)
     plan.onCommand(outcome, bufferType)
     spec.onCommand(outcome, bufferType)
+    review.onCommand(outcome, bufferType)
     environment.onCommand(outcome, bufferType)
     repl.onCommand(outcome, bufferType)
   }

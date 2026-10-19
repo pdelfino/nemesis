@@ -1,4 +1,4 @@
-import { app, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { app, ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { InvokeAnswer, InvokeChannel, InvokePayload } from '../shared/ipc'
 import { INTERNAL_ORIGIN } from './security/internal-scheme'
 import { warnLimited } from './security/warn-limited'
@@ -127,4 +127,41 @@ export function handle<C extends InvokeChannel>(
   run: (payload: InvokePayload<C>) => InvokeAnswer<C> | Promise<InvokeAnswer<C>>,
 ): void {
   ipcMain.handle(channel, guard(channel, parse, run))
+}
+
+/** The handler of each window for a channel, keyed by the id of its WebContents (#70). */
+const perWindow = new Map<string, Map<number, (payload: never) => unknown>>()
+
+/**
+ * Registers a handler for one window (#70). The channel itself is registered
+ * once, through the same sender check and parser as `handle()`; the call then
+ * goes to the handler of the window that sent it, found by `event.sender`,
+ * and a window with none is refused. The handler goes when its window does.
+ */
+export function handleIn<C extends InvokeChannel>(
+  owner: WebContents,
+  channel: C,
+  parse: Parser<InvokePayload<C>>,
+  run: (payload: InvokePayload<C>) => InvokeAnswer<C> | Promise<InvokeAnswer<C>>,
+): void {
+  let owners = perWindow.get(channel)
+  if (owners === undefined) {
+    const table = new Map<number, (payload: never) => unknown>()
+    perWindow.set(channel, table)
+    ipcMain.handle(channel, (event, payload) =>
+      guard(channel, parse, (parsed) => {
+        const handler = table.get(event.sender.id) as
+          ((payload: InvokePayload<C>) => InvokeAnswer<C> | Promise<InvokeAnswer<C>>) | undefined
+        if (handler === undefined) {
+          throw new Error(`Rejected ${channel}: the sender has no cockpit`)
+        }
+        return handler(parsed)
+      })(event, payload),
+    )
+    owners = table
+  }
+  const id = owner.id
+  const table = owners
+  table.set(id, run as (payload: never) => unknown)
+  owner.once('destroyed', () => table.delete(id))
 }

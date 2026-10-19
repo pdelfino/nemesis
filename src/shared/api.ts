@@ -13,6 +13,7 @@ import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 import type { PlanAnswer, PlanContent } from './plan'
 import type { JournalState, ReplContent } from './repl'
+import type { ReviewContent } from './review'
 import type { SpecContent } from './spec'
 
 /**
@@ -57,6 +58,8 @@ export interface NemesisApi {
   answerPlan(answer: PlanAnswer): Promise<void>
   /** A spec buffer has content: the agent wrote the spec of an interview (#85). */
   onSpecShown(listener: (content: SpecContent) => void): void
+  /** A review buffer has content: the reviewer window's turn ended with these findings (#87). */
+  onReviewShown(listener: (content: ReviewContent) => void): void
   /** A command adds text to the prompt being composed: attach-check, screenshot-window (#81). */
   onPromptInsert(listener: (insert: PromptInsert) => void): void
   /** The environment buffer has content: the environment command listed the session's files and servers (#86). */

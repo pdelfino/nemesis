@@ -1,9 +1,10 @@
-import { BrowserWindow } from 'electron'
+import type { WebContents } from 'electron'
 import { TRANSCRIPT_GOTO_CHANNEL } from '../../shared/agent'
 import { DIFF_SHOWN_CHANNEL } from '../../shared/diff'
 import { ENVIRONMENT_SHOWN_CHANNEL } from '../../shared/environment'
 import { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL } from '../../shared/plan'
 import { JOURNAL_CHANGED_CHANNEL, REPL_SHOWN_CHANNEL } from '../../shared/repl'
+import { REVIEW_SHOWN_CHANNEL } from '../../shared/review'
 import { SPEC_SHOWN_CHANNEL } from '../../shared/spec'
 import {
   HELP_SHOWN_CHANNEL,
@@ -13,9 +14,10 @@ import {
 import type { DiffBuffers } from '../diffs'
 import type { EnvironmentBuffers } from '../environment'
 import type { HelpBuffers } from '../help'
-import { handle } from '../ipc'
+import { handleIn } from '../ipc'
 import { parsePlanAnswer, type PlanBuffers } from '../plans'
 import type { Repl } from '../repl'
+import type { ReviewBuffers } from '../reviews'
 import type { Journal } from '../config/journal'
 import type { SpecBuffers } from '../specs'
 import type { TranscriptSearch } from '../transcript-search'
@@ -30,16 +32,21 @@ import { parsePaletteAnswer, type Prompter } from './prompter'
  * and the content of a plan buffer, whose approval or rejection comes back
  * with the text as edited (#82), and the content of a spec buffer (#85),
  * and the content of the environment buffer (#86), and the log of the
- * `*repl*` buffer and the journal's count (#72).
- * One window in M1, as in the other bridges.
+ * `*repl*` buffer and the journal's count (#72), and the content of a
+ * review buffer (#87).
+ * One bridge per window, as in the other bridges (#70): the pushes go to
+ * that window only, and its answers reach its own prompter and plans.
  */
 export interface PaletteBridgeOptions {
+  /** The window the bridge serves. */
+  readonly contents: WebContents
   readonly prompter: Prompter
   readonly help: HelpBuffers
   readonly transcripts: TranscriptSearch
   readonly diffs: DiffBuffers
   readonly plans: PlanBuffers
   readonly specs: SpecBuffers
+  readonly reviews: ReviewBuffers
   readonly environment: EnvironmentBuffers
   readonly repl: Repl
   /** Null under `--no-config`: the count stays blank. */
@@ -47,23 +54,37 @@ export interface PaletteBridgeOptions {
 }
 
 export function installPaletteBridge(options: PaletteBridgeOptions): void {
-  const { prompter, help, transcripts, diffs, plans, specs, environment, repl, journal } = options
-  prompter.on((request) => broadcast(PALETTE_OPEN_CHANNEL, request))
-  help.on((content) => broadcast(HELP_SHOWN_CHANNEL, content))
-  transcripts.on((target) => broadcast(TRANSCRIPT_GOTO_CHANNEL, target))
-  diffs.onShown((content) => broadcast(DIFF_SHOWN_CHANNEL, content))
-  plans.onShown((content) => broadcast(PLAN_SHOWN_CHANNEL, content))
-  specs.onShown((content) => broadcast(SPEC_SHOWN_CHANNEL, content))
-  environment.onShown((content) => broadcast(ENVIRONMENT_SHOWN_CHANNEL, content))
-  repl.onShown((content) => broadcast(REPL_SHOWN_CHANNEL, content))
-  journal?.on((unpromoted) => broadcast(JOURNAL_CHANGED_CHANNEL, { unpromoted }))
-
-  handle(PALETTE_ANSWER_CHANNEL, parsePaletteAnswer, (answer) => prompter.answer(answer))
-  handle(PLAN_ANSWER_CHANNEL, parsePlanAnswer, (answer) => plans.answer(answer))
-}
-
-function broadcast(channel: string, payload: unknown): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(channel, payload)
+  const {
+    contents,
+    prompter,
+    help,
+    transcripts,
+    diffs,
+    plans,
+    specs,
+    reviews,
+    environment,
+    repl,
+    journal,
+  } = options
+  const send = (channel: string, payload: unknown): void => {
+    if (!contents.isDestroyed()) contents.send(channel, payload)
   }
+  prompter.on((request) => send(PALETTE_OPEN_CHANNEL, request))
+  help.on((content) => send(HELP_SHOWN_CHANNEL, content))
+  transcripts.on((target) => send(TRANSCRIPT_GOTO_CHANNEL, target))
+  diffs.onShown((content) => send(DIFF_SHOWN_CHANNEL, content))
+  plans.onShown((content) => send(PLAN_SHOWN_CHANNEL, content))
+  specs.onShown((content) => send(SPEC_SHOWN_CHANNEL, content))
+  reviews.onShown((content) => send(REVIEW_SHOWN_CHANNEL, content))
+  environment.onShown((content) => send(ENVIRONMENT_SHOWN_CHANNEL, content))
+  repl.onShown((content) => send(REPL_SHOWN_CHANNEL, content))
+  // The journal is the app's, not the window's: its subscription goes with the window.
+  const offJournal = journal?.on((unpromoted) => send(JOURNAL_CHANGED_CHANNEL, { unpromoted }))
+  if (offJournal !== undefined) contents.once('destroyed', offJournal)
+
+  handleIn(contents, PALETTE_ANSWER_CHANNEL, parsePaletteAnswer, (answer) =>
+    prompter.answer(answer),
+  )
+  handleIn(contents, PLAN_ANSWER_CHANNEL, parsePlanAnswer, (answer) => plans.answer(answer))
 }

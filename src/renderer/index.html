@@ -54,6 +54,12 @@
         <div id="spec-editor"></div>
         <p id="spec-keys" class="placeholder"></p>
       </section>
+      <!-- A review buffer (#87): the reviewer window's findings on the diff, read-only, shown while one is open. -->
+      <section id="review" aria-label="review" data-buffer-type="review" hidden>
+        <p id="review-from"></p>
+        <div id="review-editor"></div>
+        <p id="review-keys" class="placeholder"></p>
+      </section>
       <!-- The environment buffer (#86): the session's CLAUDE.md files, rules, hooks, skills, servers and subagents, read-only. -->
       <section id="environment" aria-label="environment" data-buffer-type="environment" hidden>
         <div id="environment-editor"></div>
