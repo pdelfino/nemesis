@@ -10,7 +10,7 @@ import {
   session,
   type WebContentsView,
 } from 'electron'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
 import type { EventSource } from './agent/session-bridge'
@@ -292,6 +292,22 @@ async function readClipboardImage(): Promise<ClipboardImage | null> {
   return null
 }
 
+/**
+ * Text onto the clipboard, as copy-hint-url puts a link's URL there (#123).
+ * Under test the text goes to the file NEMESIS_CLIPBOARD_TEXT names instead,
+ * so a spec never writes the user's clipboard; the variable is ignored in
+ * any other run.
+ */
+function writeClipboardText(text: string): void {
+  const standIn =
+    process.env['NODE_ENV'] === 'test' ? process.env['NEMESIS_CLIPBOARD_TEXT'] : undefined
+  if (standIn !== undefined && standIn.length > 0) {
+    writeFileSync(standIn, text, 'utf8')
+    return
+  }
+  clipboard.writeText(text)
+}
+
 function clipboardImageOf(image: Electron.NativeImage): ClipboardImage | null {
   if (image.isEmpty()) return null
   const { width, height } = image.getSize()
@@ -344,6 +360,13 @@ const PAGE_SCRIPT_DOOR = '__nemesisPageDoor'
  * `app.evaluate`. Main process only, under test only.
  */
 const SEMANTIC_VIEW = '__nemesisSemantic'
+
+/**
+ * How the hints spec reads the labels hint mode put up and what the page's
+ * overlay drew (#123), through `app.evaluate`. Main process only, under test
+ * only.
+ */
+const PAGE_HINTS = '__nemesisHints'
 /** The window focused last, for the app's notices and questions while no window has focus. */
 let lastFocused: number | null = null
 /** How many windows were opened, for the next window's name. */
@@ -541,6 +564,14 @@ void app.whenReady().then(() => {
         const snapshot = await cockpit.semantic.snapshot(bufferId)
         await cockpit.prompts.submit(snapshotPrompt(instruction, snapshot))
       },
+    }
+    // The hints spec (#123): the labels main holds for a page, and the
+    // overlay's own report of where it drew them when they went up.
+    ;(globalThis as { [PAGE_HINTS]?: unknown })[PAGE_HINTS] = {
+      targets: (windowId: number, bufferId: string) =>
+        cockpits.get(windowId)?.hints.targets(bufferId) ?? [],
+      drawn: (windowId: number, bufferId: string) =>
+        cockpits.get(windowId)?.hints.drawn(bufferId) ?? [],
     }
   }
   // app.dock exists on macOS only.
@@ -799,6 +830,7 @@ void app.whenReady().then(() => {
         evaluate,
         home,
         clipboard: { readImage: readClipboardImage },
+        writeClipboardText,
         capturer,
         notices: noticesFor(id),
         windows: windowsFor(id),

@@ -25,7 +25,15 @@ import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
-import { DOCUMENT_MODE, NO_PAGES, PASSTHROUGH_MODE, type PageCommands } from '../page-buffer'
+import {
+  DOCUMENT_MODE,
+  HINT_MODE,
+  NO_PAGES,
+  PASSTHROUGH_MODE,
+  type PageCommands,
+} from '../page-buffer'
+import type { HintAction } from '../pages/hints'
+import { HINT_CHARACTERS } from '../../shared/page-door'
 import { Repl } from '../repl'
 import { reviewApplyPrompt } from '../review-prompt'
 import { ReviewBuffers } from '../reviews'
@@ -149,6 +157,19 @@ export const SUMMARIZE_PAGE =
 const QUESTION_OPTIONS = [1, 2, 3, 4] as const
 
 /** What the commands act on. Every piece has a default, so a test can build one from nothing. */
+/** What the hint commands ask of the window (#123), always about the current page buffer. */
+export interface HintCommands {
+  start(action: HintAction): Promise<void>
+  type(key: string): Promise<void>
+  quit(): Promise<void>
+}
+
+const NO_HINTS: HintCommands = {
+  start: () => Promise.reject(new CommandError('No page buffers in this window')),
+  type: () => Promise.reject(new CommandError('No page buffers in this window')),
+  quit: () => Promise.reject(new CommandError('No page buffers in this window')),
+}
+
 export interface CockpitDeps {
   readonly buffers: BufferRegistry
   readonly permissions: PermissionBridge
@@ -210,6 +231,8 @@ export interface CockpitDeps {
    * (#122); it rejects when the current buffer is not a page.
    */
   readonly semanticText: () => Promise<string>
+  /** Hint mode on the current page buffer (#123); each rejects when the current buffer is not a page. */
+  readonly hints: HintCommands
   /** What open-url reads over: bookmarks, history and the search engines (#124). */
   readonly urls: UrlSources
   /** The profile's history and bookmarks (#125); null when the database did not open. */
@@ -373,6 +396,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     semanticText:
       partial.semanticText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
+    hints: partial.hints ?? NO_HINTS,
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
     stores: partial.stores ?? null,
   }
@@ -409,6 +433,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     fetcher,
     pageText,
     semanticText,
+    hints,
     environment,
     repl,
     windows,
@@ -1305,6 +1330,34 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'follow-hint',
+      mcp: 'never',
+      doc: "Label the links, buttons and fields in the current page buffer's view; typing a label follows the link or focuses the field, C-g leaves.",
+      run: () => hints.start('follow'),
+    }),
+    defineCommand({
+      name: 'copy-hint-url',
+      mcp: 'never',
+      doc: "Label the links in the current page buffer's view; typing a label copies that link's URL, C-g leaves.",
+      run: () => hints.start('copy'),
+    }),
+    defineCommand({
+      name: 'type-hint-key',
+      mcp: 'never',
+      doc: 'Type one key of a hint label, in hint mode; the last key of a label runs the hint.',
+      run: (context) => {
+        // The key is the chord itself: the hint layer binds each label key to this command.
+        if (context.chord === undefined) throw new CommandError('type-hint-key runs from a key')
+        return hints.type(context.chord)
+      },
+    }),
+    defineCommand({
+      name: 'quit-hints',
+      mcp: 'never',
+      doc: 'Take the hint labels down and leave hint mode.',
+      run: () => hints.quit(),
+    }),
+    defineCommand({
       name: 'show-semantic-view',
       mcp: 'never',
       doc: "Show the current page buffer's semantic view in a read-only buffer: its landmarks, headings, links, buttons and fields, each with its ref.",
@@ -1728,7 +1781,20 @@ export const MODE_KEYMAPS: ModeKeymaps = {
       'M-w': 'copy-page-selection',
       g: 'reload-page',
       'C-z': 'toggle-passthrough',
+      // Nyxt's hint keys (#123).
+      f: 'follow-hint',
+      F: 'copy-hint-url',
     }),
+  },
+  // Hint mode (#123) is sealed while its labels are up: every label key
+  // (the alphabet setting picks among them) types into the label, `C-g`
+  // leaves, and no other layer sees a key.
+  [HINT_MODE]: {
+    keymap: defineKeymap(HINT_MODE, {
+      ...Object.fromEntries([...HINT_CHARACTERS].map((key) => [key, 'type-hint-key'])),
+      'C-g': 'quit-hints',
+    }),
+    sealed: true,
   },
   [PASSTHROUGH_MODE]: {
     keymap: defineKeymap(PASSTHROUGH_MODE, {

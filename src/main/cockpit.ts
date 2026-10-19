@@ -6,6 +6,7 @@ import { PagePolicy } from './agent/page-policy'
 import { CommandError } from './commands/registry'
 import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
+import type { AgentEvent } from './agent/events'
 import { SessionManager } from './agent/session-manager'
 import { installBufferBridge, installPageBridge } from './buffer-bridge'
 import { createCockpitBuffers, type BufferRegistry } from './buffers'
@@ -35,7 +36,9 @@ import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
 import { PageBuffers, type PagePolicies } from './page-buffer'
 import type { PageScriptDoor } from './page-door'
+import type { PageAnswers } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
+import { PageHints } from './pages/hints'
 import { SemanticView, semanticText } from './pages/semantic'
 import { Repl } from './repl'
 import { ReviewBuffers } from './reviews'
@@ -87,6 +90,8 @@ export interface Cockpit {
   readonly pages: PageBuffers<WebContentsView>
   /** The semantic view of those pages, through the page-script door (#122). */
   readonly semantic: SemanticView
+  /** Hint mode on those pages (#123). */
+  readonly hints: PageHints
 }
 
 export interface CockpitShared {
@@ -101,6 +106,8 @@ export interface CockpitShared {
   /** The home the environment panel reads (#86). */
   readonly home: string
   readonly clipboard: ClipboardReader
+  /** Puts text on the clipboard, as copy-hint-url does (#123); a stand-in under test. */
+  readonly writeClipboardText: (text: string) => void
   /** The screen, as screenshot-window lists and captures its windows (#81). */
   readonly capturer: WindowCapturer
   /** The app's own notices, a refused permission or download, routed to this window. */
@@ -332,6 +339,46 @@ export function createCockpit(
       pages.viewOf(pageId) === undefined ? undefined : buffers.get(pageId)?.url,
     events: (listener) => pages.onPageEvent(listener),
   })
+  // Hint mode (#123): labels over the snapshot's targets, drawn by the door's
+  // overlay; which label names which ref, and the action on it, stay here.
+  const hintListeners = new Set<(event: AgentEvent) => void>()
+  const askPage = <N extends 'hints' | 'hints-show'>(
+    pageId: string,
+    name: N,
+    args?: readonly number[],
+  ): Promise<PageAnswers[N]> => {
+    const view = pages.viewOf(pageId)
+    if (view === undefined) return Promise.reject(new Error('The page is gone'))
+    return shared.pageDoor.request(view.webContents, name, args)
+  }
+  const hints = new PageHints({
+    semantic,
+    read: (pageId) => askPage(pageId, 'hints'),
+    show: (pageId, args) => askPage(pageId, 'hints-show', args),
+    settings: () => config.settings.hints,
+    mode: (pageId, on) => pages.setHintMode(pageId, on),
+    open: (pageId, url) => pages.load(pageId, url),
+    click: (pageId, x, y) => pages.clickAt(pageId, x, y),
+    copy: shared.writeClipboardText,
+    notify: (text) => {
+      for (const listener of hintListeners) listener({ type: 'notice', text })
+    },
+    events: (listener) => pages.onPageEvent(listener),
+  })
+  const hintNotices: EventSource = {
+    on: (listener) => {
+      hintListeners.add(listener)
+      return () => {
+        hintListeners.delete(listener)
+      }
+    },
+  }
+  const currentPageId = (): string => {
+    const current = buffers.current
+    if (current === null || pages.viewOf(current.id) === undefined)
+      throw new CommandError('The current buffer is not a page')
+    return current.id
+  }
   // Every committed top-frame navigation of a persistent page is a visit in
   // the profile's history (#125); an ephemeral page is never recorded.
   const stopHistory =
@@ -354,6 +401,7 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
+    hintNotices,
     boundary,
   )
   // The MCP server over this window's command table (#28, ADR 0007 and
@@ -450,6 +498,11 @@ export function createCockpit(
         throw new CommandError('The current buffer is not a page')
       return semanticText(await semantic.snapshot(current.id))
     },
+    hints: {
+      start: async (action) => hints.start(currentPageId(), action),
+      type: async (key) => hints.type(currentPageId(), key),
+      quit: async () => hints.quit(currentPageId()),
+    },
     // What open-url reads over (#124): the profile's bookmarks and history
     // (#125), and the engines of the settings, read on every read so a
     // reload-config's are the next read's.
@@ -497,5 +550,6 @@ export function createCockpit(
     worktrees,
     pages,
     semantic,
+    hints,
   }
 }

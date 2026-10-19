@@ -140,8 +140,14 @@ class FakeContents implements PageContents {
     this.log.push(`copy ${this.id}`)
   }
 
-  sendInputEvent(event: { readonly type: string; readonly keyCode: string }): void {
-    this.sent.push(`${event.type} ${event.keyCode}`)
+  sendInputEvent(
+    event:
+      | { readonly type: string; readonly keyCode: string }
+      | { readonly type: string; readonly x: number; readonly y: number },
+  ): void {
+    this.sent.push(
+      'keyCode' in event ? `${event.type} ${event.keyCode}` : `${event.type} ${event.x},${event.y}`,
+    )
   }
 
   /** Types a key down in the page; true when the cockpit took it. */

@@ -5,6 +5,7 @@ import {
   PAGE_DOOR_REQUEST_CHANNEL,
   parsePageAnswer,
   parsePageReplyEnvelope,
+  parsePageRequestArgs,
   type PageAnswers,
   type PageRequest,
   type PageRequestName,
@@ -75,15 +76,28 @@ export class PageScriptDoor {
 
   constructor(private readonly options: PageScriptDoorOptions) {}
 
-  /** Asks a page buffer's preload for `name`; the answer, parsed whole, or an error. */
+  /**
+   * Asks a page buffer's preload for `name`; the answer, parsed whole, or an
+   * error. `args` are numbers only (hint mode's labels, #123), sent when given.
+   */
   request<N extends PageRequestName>(
     contents: DoorContents,
     name: N,
+    args?: readonly number[],
     timeoutMs?: number,
   ): Promise<PageAnswers[N]> {
     if (contents.isDestroyed()) return Promise.reject(new Error('The page is gone'))
+    let checked: readonly number[]
+    try {
+      checked = parsePageRequestArgs(args)
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)))
+    }
     const opened = this.expect(contents, name, timeoutMs)
-    contents.send(PAGE_DOOR_REQUEST_CHANNEL, { id: opened.id, name })
+    contents.send(
+      PAGE_DOOR_REQUEST_CHANNEL,
+      args === undefined ? { id: opened.id, name } : { id: opened.id, name, args: [...checked] },
+    )
     return opened.answer
   }
 

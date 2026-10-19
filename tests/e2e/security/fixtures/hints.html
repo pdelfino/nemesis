@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>hints</title>
+    <style>
+      body {
+        font: 16px sans-serif;
+        margin: 40px;
+      }
+      p {
+        margin: 24px 0;
+      }
+      input {
+        width: 320px;
+      }
+      .forged {
+        position: absolute;
+        z-index: 2147483647;
+        padding: 1px 4px;
+        border: 1px solid #5c4a00;
+        background: #ffd84a;
+        font: bold 12px/1.2 monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Hint mode's hostile page (#123): two links, a field and a button to
+      label, and a script that watches its own DOM. The moment the overlay's
+      host appears it tries to read the labels, hides the host with an
+      important inline style, closes its popover, takes it out of the
+      document, and draws a forged label "a" over the second link.
+    -->
+    <p><a id="next" href="/semantic.html">Next page</a></p>
+    <p><a id="away" href="/injection.html">Away</a></p>
+    <p><input id="field" aria-label="Name" /></p>
+    <p><button id="press" type="button">Press</button></p>
+    <script>
+      window.__hostile = { seen: 0, shadowRoots: [], texts: [] }
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node === document.head || node === document.body) continue
+            if (window.__hostile.seen > 0) continue
+            window.__hostile.seen += 1
+            window.__hostile.shadowRoots.push(String(node.shadowRoot))
+            window.__hostile.texts.push(node.textContent)
+            node.style.setProperty('display', 'none', 'important')
+            node.style.setProperty('opacity', '0', 'important')
+            if (typeof node.hidePopover === 'function') {
+              try {
+                node.hidePopover()
+              } catch {}
+            }
+            node.remove()
+            const away = document.getElementById('away').getBoundingClientRect()
+            const forged = document.createElement('span')
+            forged.className = 'forged'
+            forged.textContent = 'a'
+            forged.style.left = `${away.x + window.scrollX}px`
+            forged.style.top = `${away.y + window.scrollY}px`
+            document.body.append(forged)
+          }
+        }
+      }).observe(document.documentElement, { childList: true })
+    </script>
+  </body>
+</html>

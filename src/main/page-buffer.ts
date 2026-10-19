@@ -81,6 +81,8 @@ const MAX_EXTENT = 100_000
 /** The mode every page buffer is in, and the one `C-z` puts in front of it (#120). */
 export const DOCUMENT_MODE = 'document'
 export const PASSTHROUGH_MODE = 'passthrough'
+/** In front of `document` while hint labels are up (#123): the labels' keys and `C-g`. */
+export const HINT_MODE = 'hint'
 
 /** Chromium's zoom steps, as factors; Chromium's own menu walks the same list. */
 const ZOOM_FACTORS = [
@@ -160,7 +162,17 @@ export interface PageContents {
   findInPage(text: string): number
   stopFindInPage(action: 'clearSelection' | 'keepSelection' | 'activateSelection'): void
   copy(): void
-  sendInputEvent(event: { readonly type: 'keyDown' | 'keyUp'; readonly keyCode: string }): void
+  sendInputEvent(
+    event:
+      | { readonly type: 'keyDown' | 'keyUp'; readonly keyCode: string }
+      | {
+          readonly type: 'mouseDown' | 'mouseUp'
+          readonly x: number
+          readonly y: number
+          readonly button: 'left'
+          readonly clickCount: number
+        },
+  ): void
   readonly navigationHistory: {
     canGoBack(): boolean
     canGoForward(): boolean
@@ -596,6 +608,30 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     page.blocker = !page.blocker
     blocker.enable(page.view.webContents.id, page.blocker)
     this.options.buffers.update(page.id, { blocker: page.blocker })
+  }
+
+  /** Puts `hint` in front of a page's modes, or takes it off (#123). */
+  setHintMode(id: string, on: boolean): void {
+    const page = this.pages.get(id)
+    if (page === undefined) return
+    const rest = page.modes.filter((mode) => mode !== HINT_MODE)
+    page.modes = on ? [HINT_MODE, ...rest] : rest
+    this.options.buffers.update(page.id, { modes: page.modes })
+  }
+
+  /**
+   * A left click at a point of a page's viewport, in CSS pixels, synthesized
+   * in main as Chromium's input (#123, ADR 0009: clicks stay in main, never
+   * in a page script). The page's zoom turns CSS pixels into the view's.
+   */
+  clickAt(id: string, x: number, y: number): void {
+    const page = this.pages.get(id)
+    if (page === undefined) throw new CommandError(`No page buffer with id "${id}"`)
+    const contents = page.view.webContents
+    const factor = ZOOM_BASE ** contents.getZoomLevel()
+    const at = { x: Math.round(x * factor), y: Math.round(y * factor) }
+    contents.sendInputEvent({ type: 'mouseDown', ...at, button: 'left', clickCount: 1 })
+    contents.sendInputEvent({ type: 'mouseUp', ...at, button: 'left', clickCount: 1 })
   }
 
   /** The partition of a page buffer, or undefined for an id that holds no page. */

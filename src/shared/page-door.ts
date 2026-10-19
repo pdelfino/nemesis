@@ -8,7 +8,12 @@
  * on the reply channel, and main keeps the answer only when it parses here
  * whole. A consumer adds a name and its schema to `PAGE_ANSWERS`, never a
  * channel. Version 1 shipped one name, `ping`, so the door was testable
- * before a consumer existed; the semantic view (#122) adds `snapshot`.
+ * before a consumer existed; the semantic view (#122) adds `snapshot`, and
+ * hint mode (#123) adds `hints` and `hints-show`.
+ *
+ * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
+ * exists, are numbers or ref ids main itself issued"): never code, never
+ * text a page wrote. `hints-show` is the one name that takes any.
  */
 
 /** Main to the page preload: `{ id, name }`, no code and no free text. */
@@ -19,6 +24,9 @@ export const PAGE_DOOR_REPLY_CHANNEL = 'nemesis:page-door-reply'
 
 /** The longest request id either side accepts; main's are far shorter. */
 export const MAX_PAGE_REQUEST_ID = 64
+
+/** The most numbers one request's `args` may hold. */
+export const MAX_PAGE_REQUEST_ARGS = 4096
 
 /** The longest URL an answer may carry, the bound page-buffer.ts holds a URL to. */
 export const MAX_PAGE_URL = 8192
@@ -135,10 +143,61 @@ export interface SnapshotAnswer {
   readonly nodes: readonly SnapshotNode[]
 }
 
+/**
+ * The most elements one hint read carries, and so the most labels one draw
+ * shows (#123). A page with more in its viewport is cut, in document order.
+ */
+export const MAX_HINTS = 500
+
+/** The longest hint label, in characters. */
+export const MAX_HINT_LABEL = 6
+
+/**
+ * The characters a hint label is made of: what the `hint` keymap layer binds
+ * (#123), so the `hints.alphabet` setting is a choice among these.
+ */
+export const HINT_CHARACTERS = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+/**
+ * One element hint mode can label (#123): the preload's number for it, the
+ * same number the snapshot gives it, so `formatRef` makes the same ref of
+ * both; a link's absolute URL, empty on every other element; its rectangle
+ * in the viewport, where the label goes.
+ */
+export interface HintNode {
+  readonly id: number
+  readonly href: string
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** `hints`: the interactive elements in the viewport, in document order. */
+export interface HintsAnswer {
+  readonly nodes: readonly HintNode[]
+}
+
+/** One label as the overlay drew it, its rectangle in the viewport. */
+export interface DrawnLabel {
+  readonly id: number
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** `hints-show`: the labels the overlay holds now; none once it is cleared. */
+export interface HintsShowAnswer {
+  readonly labels: readonly DrawnLabel[]
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
   readonly snapshot: SnapshotAnswer
+  readonly hints: HintsAnswer
+  readonly 'hints-show': HintsShowAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -175,12 +234,111 @@ export const PAGE_ANSWERS: {
       }),
     } as const,
   }),
+  hints: Object.freeze({
+    nodes: {
+      kind: 'list',
+      max: MAX_HINTS,
+      item: Object.freeze({
+        id: { kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+        href: { kind: 'string', max: MAX_PAGE_URL } as const,
+        x: { kind: 'number', min: -MAX_PAGE_EXTENT, max: MAX_PAGE_EXTENT } as const,
+        y: { kind: 'number', min: -MAX_PAGE_EXTENT, max: MAX_PAGE_EXTENT } as const,
+        width: { kind: 'number', min: 0, max: MAX_PAGE_EXTENT } as const,
+        height: { kind: 'number', min: 0, max: MAX_PAGE_EXTENT } as const,
+      }),
+    } as const,
+  }),
+  'hints-show': Object.freeze({
+    labels: {
+      kind: 'list',
+      max: MAX_HINTS,
+      item: Object.freeze({
+        id: { kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+        x: { kind: 'number', min: -MAX_PAGE_EXTENT, max: MAX_PAGE_EXTENT } as const,
+        y: { kind: 'number', min: -MAX_PAGE_EXTENT, max: MAX_PAGE_EXTENT } as const,
+        width: { kind: 'number', min: 0, max: MAX_PAGE_EXTENT } as const,
+        height: { kind: 'number', min: 0, max: MAX_PAGE_EXTENT } as const,
+      }),
+    } as const,
+  }),
 })
 
 /** What main sends. */
 export interface PageRequest {
   readonly id: string
   readonly name: PageRequestName
+  /** Numbers only, at most MAX_PAGE_REQUEST_ARGS; absent on a name that takes none. */
+  readonly args?: readonly number[]
+}
+
+/** A request's `args`: absent, or a list of whole numbers in the safe range. Throws on anything else. */
+export function parsePageRequestArgs(args: unknown): readonly number[] {
+  if (args === undefined) return []
+  if (!Array.isArray(args) || args.length > MAX_PAGE_REQUEST_ARGS) {
+    throw new TypeError('The request has no usable args')
+  }
+  for (const one of args as unknown[]) {
+    if (typeof one !== 'number' || !Number.isSafeInteger(one)) {
+      throw new TypeError('The request has an arg that is not a whole number')
+    }
+  }
+  return args as readonly number[]
+}
+
+/** A label to draw over the element the preload numbered `id`. */
+export interface HintLabel {
+  readonly id: number
+  readonly label: string
+}
+
+/**
+ * The labels as `hints-show`'s args: for each, the element's number, the
+ * label's length, then its characters as code points, so the request
+ * carries numbers and no text. Throws on a label outside HINT_CHARACTERS.
+ */
+export function encodeHintLabels(labels: readonly HintLabel[]): readonly number[] {
+  if (labels.length > MAX_HINTS) throw new TypeError(`More than ${MAX_HINTS} labels`)
+  const args: number[] = []
+  for (const { id, label } of labels) {
+    if (!Number.isSafeInteger(id) || id < 1) throw new TypeError('A label has no usable element')
+    if (label.length === 0 || label.length > MAX_HINT_LABEL) {
+      throw new TypeError('A label has no usable length')
+    }
+    args.push(id, label.length)
+    for (const character of label) {
+      if (!HINT_CHARACTERS.includes(character))
+        throw new TypeError('A label is not hint characters')
+      args.push(character.charCodeAt(0))
+    }
+  }
+  return args
+}
+
+/** `hints-show`'s args read back, as the page preload reads them. Throws on anything malformed. */
+export function decodeHintLabels(args: readonly number[]): readonly HintLabel[] {
+  const labels: HintLabel[] = []
+  let at = 0
+  while (at < args.length) {
+    const id = args[at]
+    const length = args[at + 1]
+    if (id === undefined || id < 1 || length === undefined) {
+      throw new TypeError('The labels are cut short')
+    }
+    if (length < 1 || length > MAX_HINT_LABEL || at + 2 + length > args.length) {
+      throw new TypeError('A label has no usable length')
+    }
+    let label = ''
+    for (const code of args.slice(at + 2, at + 2 + length)) {
+      const character = String.fromCharCode(code)
+      if (!HINT_CHARACTERS.includes(character))
+        throw new TypeError('A label is not hint characters')
+      label += character
+    }
+    labels.push({ id, label })
+    if (labels.length > MAX_HINTS) throw new TypeError(`More than ${MAX_HINTS} labels`)
+    at += 2 + length
+  }
+  return labels
 }
 
 /** A reply's envelope, its `data` not yet parsed. */

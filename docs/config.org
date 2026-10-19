@@ -129,7 +129,10 @@ one line in the transcript gives the counts. =theme= applies at once,
 =searchEngines= on the next =open-url=; =stopGateRetries= applies at the next
 gated turn end, =notify= at the next notification and =restore= at the
 next quit (#127: off, no window is saved or reopened; a start with
-=--no-restore= skips the reopening once); =sessionsDir=
+=--no-restore= skips the reopening once), and =hints= at the next =f= in a
+page buffer (#123: =hints.alphabet=, two or more distinct lowercase letters
+or digits, the home row =asdfghjkl= by default, and =hints.maxLength=, the
+longest label, 1 to 6, 3 by default); =sessionsDir=
 and =keyscheme= are read once at start, and the line names them when they
 need a restart. A top-level loop is stopped after two seconds.
 

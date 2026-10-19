@@ -125,6 +125,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'notify',
   'blockerUpdates',
   'restore',
+  'hints',
 ]
 
 /** `notify.finished` and the like: one toggle of the `notify` object (#114), or null. */

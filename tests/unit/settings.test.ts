@@ -26,6 +26,7 @@ describe('the settings schema', () => {
       notify: null,
       blockerUpdates: 'weekly',
       restore: true,
+      hints: { alphabet: 'asdfghjkl', maxLength: 3 },
     })
   })
 
@@ -144,7 +145,7 @@ describe('the settings schema', () => {
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ],\n  "stopGateRetries": 3,\n  "blockerUpdates": "weekly",\n  "restore": true\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ],\n  "stopGateRetries": 3,\n  "blockerUpdates": "weekly",\n  "restore": true,\n  "hints": {\n    "alphabet": "asdfghjkl",\n    "maxLength": 3\n  }\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -191,6 +192,7 @@ describe('the settings file', () => {
       stopGateRetries: 3,
       blockerUpdates: 'weekly',
       restore: true,
+      hints: { alphabet: 'asdfghjkl', maxLength: 3 },
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

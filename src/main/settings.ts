@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, sep } from 'node:path'
+import { HINT_CHARACTERS, MAX_HINT_LABEL } from '../shared/page-door'
 import { DEFAULT_SEARCH_ENGINES, parseSearchEngines, type SearchEngine } from './url-sources'
 
 /**
@@ -63,7 +64,22 @@ export interface Settings {
    * restores; a start with `--no-restore` skips the restore once.
    */
   readonly restore: boolean
+  /**
+   * Hint mode (#123): the characters labels are made of, each a lowercase
+   * letter or a digit, and the longest label. A page with more targets than
+   * the labels of that length can name gets labels on the first ones only.
+   */
+  readonly hints: HintSettings
 }
+
+/** The `hints` object of settings.json. */
+export interface HintSettings {
+  readonly alphabet: string
+  readonly maxLength: number
+}
+
+/** The home row, as Nyxt's hint mode starts from it. */
+export const DEFAULT_HINT_SETTINGS: HintSettings = { alphabet: 'asdfghjkl', maxLength: 3 }
 
 /** The `notify` object of settings.json: every event on or off, and the sound. */
 export interface NotifyToggles {
@@ -117,6 +133,7 @@ const KNOWN_KEYS: readonly string[] = [
   'notify',
   'blockerUpdates',
   'restore',
+  'hints',
 ]
 
 /** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
@@ -139,6 +156,7 @@ export function defaultSettings(documentsDir: string): Settings {
     notify: null,
     blockerUpdates: 'weekly',
     restore: true,
+    hints: DEFAULT_HINT_SETTINGS,
   }
 }
 
@@ -222,6 +240,8 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError('Setting "restore" is not true or false')
   }
 
+  const hints = parseHints(value['hints'] ?? defaults.hints)
+
   return {
     sessionsDir: expanded,
     model,
@@ -233,7 +253,44 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     notify,
     blockerUpdates: blockerUpdates as BlockerUpdates,
     restore,
+    hints,
   }
+}
+
+/** The `hints` object: an alphabet of two or more distinct hint characters, and a length in bounds. */
+function parseHints(payload: unknown): HintSettings {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new SettingsError('Setting "hints" is not an object')
+  }
+  const value = payload as Record<string, unknown>
+  for (const key of Object.keys(value)) {
+    if (key !== 'alphabet' && key !== 'maxLength') {
+      throw new SettingsError(`Unknown setting "hints.${key}"`)
+    }
+  }
+  const alphabet = value['alphabet'] ?? DEFAULT_HINT_SETTINGS.alphabet
+  if (
+    typeof alphabet !== 'string' ||
+    alphabet.length < 2 ||
+    new Set(alphabet).size !== alphabet.length ||
+    ![...alphabet].every((character) => HINT_CHARACTERS.includes(character))
+  ) {
+    throw new SettingsError(
+      'Setting "hints.alphabet" is not two or more distinct lowercase letters or digits',
+    )
+  }
+  const maxLength = value['maxLength'] ?? DEFAULT_HINT_SETTINGS.maxLength
+  if (
+    typeof maxLength !== 'number' ||
+    !Number.isInteger(maxLength) ||
+    maxLength < 1 ||
+    maxLength > MAX_HINT_LABEL
+  ) {
+    throw new SettingsError(
+      `Setting "hints.maxLength" is not a whole number from 1 to ${MAX_HINT_LABEL}`,
+    )
+  }
+  return { alphabet, maxLength }
 }
 
 /** The `notify` object: known toggles only, each a boolean, an absent one at its default. */
@@ -300,6 +357,7 @@ export function serializeSettings(settings: Settings): string {
     stopGateRetries: settings.stopGateRetries,
     blockerUpdates: settings.blockerUpdates,
     restore: settings.restore,
+    hints: settings.hints,
     ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`

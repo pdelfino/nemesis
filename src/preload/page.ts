@@ -1,5 +1,7 @@
 import { ipcRenderer } from 'electron'
 import {
+  decodeHintLabels,
+  MAX_HINTS,
   MAX_NODE_TEXT,
   MAX_PAGE_EXTENT,
   MAX_PAGE_REQUEST_ID,
@@ -11,6 +13,11 @@ import {
   PAGE_DOOR_REQUEST_CHANNEL,
   SEMANTIC_ROLES,
   SEMANTIC_STATES,
+  parsePageRequestArgs,
+  type DrawnLabel,
+  type HintNode,
+  type HintsAnswer,
+  type HintsShowAnswer,
   type PageAnswers,
   type PageRequestName,
   type SemanticRole,
@@ -55,8 +62,42 @@ interface PageElement {
   readonly selectedOptions?: ArrayLike<PageElement>
   getAttribute(name: string): string | null
   hasAttribute(name: string): boolean
+  readonly href?: unknown
   getBoundingClientRect(): PageRect
   checkVisibility?(): boolean
+}
+
+/** The parts of a node of the hint overlay this world writes; only the overlay's own nodes. */
+interface OverlayNode {
+  textContent: string | null
+  className: string
+  readonly style: { setProperty(name: string, value: string): void }
+  append(...nodes: OverlayNode[]): void
+  getBoundingClientRect(): PageRect
+}
+
+/** The overlay's shadow root, closed, so the page's world gets no handle on it. */
+interface OverlayRoot {
+  adoptedStyleSheets: unknown[]
+  replaceChildren(...nodes: OverlayNode[]): void
+}
+
+/** The one node the overlay puts in the page's DOM: the shadow host it owns (#123). */
+interface OverlayHost {
+  popover: string | null
+  readonly isConnected: boolean
+  readonly attributes: ArrayLike<{ readonly name: string }>
+  attachShadow(init: { readonly mode: 'closed' }): OverlayRoot
+  showPopover?(): void
+  matches(selector: string): boolean
+  remove(): void
+  removeAttribute(name: string): void
+  addEventListener(type: string, listener: () => void): void
+}
+
+interface Observer {
+  observe(target: unknown, options: Readonly<Record<string, boolean>>): void
+  disconnect(): void
 }
 
 /** The parts of the page's document this world reads, typed here because the preload has no DOM library. */
@@ -64,11 +105,17 @@ interface PageWorld {
   readonly document: {
     readonly title: string
     readonly body: PageElement | null
+    readonly documentElement: { append(node: OverlayHost): void } | null
     getElementById(id: string): PageElement | null
+    createElement(tag: string): unknown
   }
   readonly location: { readonly href: string }
   readonly scrollX: number
   readonly scrollY: number
+  readonly innerWidth: number
+  readonly innerHeight: number
+  readonly MutationObserver: new (callback: () => void) => Observer
+  readonly CSSStyleSheet: new () => { replaceSync(text: string): void }
 }
 
 const world = globalThis as unknown as PageWorld
@@ -341,23 +388,250 @@ function snapshot(): SnapshotAnswer {
   return { nodes }
 }
 
+// Hint mode (#123). `hints` reads the interactive elements in the viewport,
+// numbered as the snapshot numbers them, so main makes the same refs of both.
+// `hints-show` draws the labels main chose over them: the one place the door
+// writes to the page, and only a shadow host it owns. The host's shadow root
+// is closed and was made in this world, so the page's scripts get no handle
+// on the labels; its style is a constructed sheet, which the page's CSP does
+// not govern, and it sits in the top layer. While labels are up, a page that
+// removes the host, styles it or closes its popover finds it put back, a
+// bounded number of times. What a typed label does is decided in main, from
+// main's own table: a label the page draws itself means nothing.
+
+/** The roles a hint can land on: what can be followed, pressed or typed in. */
+const HINTABLE: ReadonlySet<SemanticRole> = new Set([
+  'link',
+  'button',
+  'textbox',
+  'searchbox',
+  'checkbox',
+  'radio',
+  'switch',
+  'combobox',
+  'slider',
+  'spinbutton',
+  'tab',
+  'menuitem',
+])
+
+/** The elements the last `hints` read found, by number, for `hints-show` to draw over. */
+let hintTargets = new Map<number, PageElement>()
+
+/** A link's absolute URL, or empty: no href, or one past the door's bound. */
+function hrefOf(element: PageElement, role: SemanticRole): string {
+  if (role !== 'link' || typeof element.href !== 'string') return ''
+  return element.href.length <= MAX_PAGE_URL ? element.href : ''
+}
+
+/** The interactive elements in the viewport, in document order, at most MAX_HINTS. */
+function hints(): HintsAnswer {
+  const nodes: HintNode[] = []
+  const targets = new Map<number, PageElement>()
+  hintTargets = targets
+  const body = world.document.body
+  if (body === null) return { nodes }
+  const width = world.innerWidth
+  const height = world.innerHeight
+  const stack: { element: PageElement; sectioned: boolean }[] = [
+    { element: body, sectioned: false },
+  ]
+  while (stack.length > 0 && nodes.length < MAX_HINTS) {
+    const top = stack.pop()
+    if (top === undefined) break
+    const { element, sectioned } = top
+    if (isHidden(element)) continue
+    const role = element === body ? null : roleOf(element, sectioned)
+    if (role !== null && HINTABLE.has(role)) {
+      const rect = element.getBoundingClientRect()
+      const inView =
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.x < width &&
+        rect.y < height &&
+        rect.x + rect.width > 0 &&
+        rect.y + rect.height > 0
+      if (inView) {
+        const id = elementId(element)
+        targets.set(id, element)
+        nodes.push({
+          id,
+          href: hrefOf(element, role),
+          x: coordinate(rect.x, -MAX_PAGE_EXTENT),
+          y: coordinate(rect.y, -MAX_PAGE_EXTENT),
+          width: coordinate(rect.width, 0),
+          height: coordinate(rect.height, 0),
+        })
+      }
+    }
+    const inside = sectioned || SECTIONING.has(element.tagName)
+    const children = element.children
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index]
+      if (child !== undefined) stack.push({ element: child, sectioned: inside })
+    }
+  }
+  return { nodes }
+}
+
+/** The overlay's sheet. `:host` rules marked important outrank the page's, inline style included. */
+const OVERLAY_STYLE = `
+:host {
+  all: initial !important;
+  display: block !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 2147483647 !important;
+  pointer-events: none !important;
+}
+.label {
+  position: absolute;
+  pointer-events: auto;
+  box-sizing: border-box;
+  padding: 1px 4px;
+  border: 1px solid #5c4a00;
+  border-radius: 3px;
+  background: #ffd84a;
+  color: #000;
+  font: bold 12px/1.2 ui-monospace, Menlo, monospace;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+`
+
+/** How many times one draw puts the overlay back after the page took it down. */
+const MAX_RESTORES = 50
+
+interface Overlay {
+  readonly host: OverlayHost
+  readonly root: OverlayRoot
+  readonly observer: Observer
+  restores: number
+}
+
+let overlay: Overlay | null = null
+
+/** In the top layer, over anything the page stacks, where the browser has popovers. */
+function raise(host: OverlayHost): void {
+  if (host.popover !== 'manual') host.popover = 'manual'
+  if (typeof host.showPopover === 'function' && !host.matches(':popover-open')) host.showPopover()
+}
+
+/** Puts the overlay back as it was drawn: in the document, unstyled by the page, on top. */
+function restore(): void {
+  const current = overlay
+  if (current === null || current.restores >= MAX_RESTORES) return
+  const { host } = current
+  let changed = false
+  if (!host.isConnected) {
+    world.document.documentElement?.append(host)
+    changed = true
+  }
+  for (const { name } of Array.from(host.attributes)) {
+    if (name === 'popover') continue
+    host.removeAttribute(name)
+    changed = true
+  }
+  if (!host.matches(':popover-open')) changed = true
+  raise(host)
+  if (changed) current.restores += 1
+}
+
+function openOverlay(): Overlay {
+  const host = world.document.createElement('div') as OverlayHost
+  const root = host.attachShadow({ mode: 'closed' })
+  const sheet = new world.CSSStyleSheet()
+  sheet.replaceSync(OVERLAY_STYLE)
+  root.adoptedStyleSheets = [sheet]
+  const observer = new world.MutationObserver(restore)
+  const opened: Overlay = { host, root, observer, restores: 0 }
+  overlay = opened
+  world.document.documentElement?.append(host)
+  raise(host)
+  observer.observe(world.document, { childList: true, subtree: true })
+  observer.observe(host, { attributes: true })
+  host.addEventListener('toggle', restore)
+  return opened
+}
+
+function closeOverlay(): void {
+  const current = overlay
+  overlay = null
+  if (current === null) return
+  current.observer.disconnect()
+  current.host.remove()
+}
+
+/** Draws the labels main chose, replacing any drawn before; none clears the overlay. */
+function hintsShow(args: readonly number[]): HintsShowAnswer {
+  const labels = decodeHintLabels(args)
+  if (labels.length === 0) {
+    closeOverlay()
+    hintTargets = new Map()
+    return { labels: [] }
+  }
+  const current = overlay ?? openOverlay()
+  current.restores = 0
+  const drawn: { readonly id: number; readonly node: OverlayNode }[] = []
+  for (const { id, label } of labels) {
+    const element = hintTargets.get(id)
+    if (element === undefined) continue
+    const rect = element.getBoundingClientRect()
+    const node = world.document.createElement('span') as OverlayNode
+    node.className = 'label'
+    node.textContent = label
+    node.style.setProperty('left', `${Math.max(0, Math.round(rect.x))}px`)
+    node.style.setProperty('top', `${Math.max(0, Math.round(rect.y))}px`)
+    drawn.push({ id, node })
+  }
+  current.root.replaceChildren(...drawn.map((one) => one.node))
+  const answer: DrawnLabel[] = drawn.map(({ id, node }) => {
+    const rect = node.getBoundingClientRect()
+    return {
+      id,
+      x: coordinate(rect.x, -MAX_PAGE_EXTENT),
+      y: coordinate(rect.y, -MAX_PAGE_EXTENT),
+      width: coordinate(rect.width, 0),
+      height: coordinate(rect.height, 0),
+    }
+  })
+  return { labels: answer }
+}
+
 /** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94). */
-const HANDLERS: { readonly [N in PageRequestName]: () => PageAnswers[N] } = Object.freeze({
+const HANDLERS: {
+  readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
+} = Object.freeze({
   ping: () => ({
     url: world.location.href.slice(0, MAX_PAGE_URL),
     title: world.document.title.replace(/\s+/g, ' ').trim().slice(0, MAX_PAGE_TITLE),
   }),
   snapshot,
+  hints,
+  'hints-show': hintsShow,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {
   if (typeof request !== 'object' || request === null) return
-  const { id, name } = request as { readonly id?: unknown; readonly name?: unknown }
+  const { id, name, args } = request as {
+    readonly id?: unknown
+    readonly name?: unknown
+    readonly args?: unknown
+  }
   if (typeof id !== 'string' || id.length === 0 || id.length > MAX_PAGE_REQUEST_ID) return
   if (typeof name !== 'string' || !Object.hasOwn(HANDLERS, name)) return
   let data: PageAnswers[PageRequestName]
   try {
-    data = HANDLERS[name as PageRequestName]()
+    data = HANDLERS[name as PageRequestName](parsePageRequestArgs(args))
   } catch {
     // No answer is an answer: main settles the request as an error on its timeout.
     return
