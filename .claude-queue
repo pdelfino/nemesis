@@ -4,15 +4,15 @@ Issue #43 is the plan. Work only issues that carry a milestone, the `queue-ready
 
 ## Conventions for every issue
 
-- One branch per issue (`claude-queue/<number>`), or one stack branch for a `--stack` run, and one draft pull request (the queue is unattended, so the pull request is its review surface; interactive sessions commit to main directly). Small commits with a Conventional Commits prefix. Explain why, not what.
-- Run `npm run gate` before every commit once package.json exists. Do not open the pull request for review with a red gate.
+- One branch per issue (`claude-queue/<number>`), or one stack branch for a `--stack` run, pushed as a backup, and no pull request (`--no-pr`; Pedro, 2026-10-19: this repository takes no pull requests). The interactive session reviews the branch and lands it on main. Small commits with a Conventional Commits prefix. Explain why, not what.
+- Run `npm run gate` before every commit once package.json exists. Never leave a red gate on the branch.
 - When the work is done: tick the issue checklist, strike abandoned items with a reason, bold anything that remains, post a one-line "verified with ..." comment naming the commands and specs, and label `claude-queue:solved`. If blocked, label `needs-pedro` with the exact question and stop.
-- Never add a dependency without a one-line justification in the pull request. Never add a dependency that needs a lifecycle script.
+- Never add a dependency without a one-line justification in the commit message. Never add a dependency that needs a lifecycle script.
 
 ## Security
 
-- Security-labeled issues and anything touching src/main/security/, src/preload/, the permission bridge or tests/e2e/security/ may be implemented by the queue but are merged only after interactive review by Pedro. Say so in the pull request description.
-- Controls are test-first. The failing spec lands in the same pull request.
+- Security-labeled issues and anything touching src/main/security/, src/preload/, the permission bridge or tests/e2e/security/ may be implemented by the queue; the interactive session reads them line by line before they land on main. Say so in the issue comment.
+- Controls are test-first. The failing spec lands in the same commit as the control.
 - Never log tokens, cookies, page content or prompts outside the session folder.
 
 ## Do not

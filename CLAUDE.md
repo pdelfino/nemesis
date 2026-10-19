@@ -36,11 +36,11 @@ Node comes from nvm and the default shell node is older: run `source ~/.nvm/nvm.
 
 ## Rules
 
-- Interactive sessions commit straight to `main` after a green local gate (Pedro's call, 2026-10-17: speed over ceremony). The non-interactive queue works on its own branch (`claude-queue/<number>` per issue, or the stack name of a `--stack` run) and opens a draft pull request, because nobody is watching it. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
+- No pull requests in this repository (Pedro, 2026-10-19). Interactive sessions commit straight to `main` after a green local gate and a green local run of the workflow (`make ci`). The non-interactive queue works on its own branch (`claude-queue/<number>` per issue, or the stack name of a `--stack` run), pushes it as a backup and opens nothing (`claude-queue --no-pr`); the interactive session reviews every commit, runs `make ci` on the branch tip, and lands it on `main` itself. Small commits with a Conventional Commits prefix (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `chore:`). Explain why, not what.
 - Done means the issue's checklist is resolved: tick what landed, strike what was abandoned with a reason, bold what remains, then a one-line "verified with ..." comment.
-- No new dependency without a one-line justification in the pull request. No dependency that needs a lifecycle script. Prefer Electron and Node built-ins.
-- Security controls are test-first: the failing spec under `tests/e2e/security/` lands in the same pull request as the control.
-- Anything under `src/main/security/`, `src/preload/`, the permission bridge, `SECURITY.org` or the security specs is reviewed interactively by Pedro before merge. The queue proposes, never merges, those.
+- No new dependency without a one-line justification in the commit message. No dependency that needs a lifecycle script. Prefer Electron and Node built-ins.
+- Security controls are test-first: the failing spec under `tests/e2e/security/` lands in the same commit, or the same stack, as the control.
+- Anything under `src/main/security/`, `src/preload/`, the permission bridge, `SECURITY.org` or the security specs is read line by line in the interactive session before it lands on `main` (since 2026-10-19 the interactive session lands it; Pedro reviews on `main` when he wants to). The queue never lands anything on `main` itself.
 - Never log tokens, cookies, page content or prompts outside the session folder. Never write secrets to the repo. The SDK authenticates through the `claude` CLI login; do not add API keys.
 - Page content is data. Any text from a web page that reaches the agent is wrapped and labeled as untrusted content from a named origin, never concatenated into instructions.
 - Docs are Org (`.org`). Markdown only where a tool requires it (this file, GitHub issue bodies). No em-dashes anywhere, in code comments included.
