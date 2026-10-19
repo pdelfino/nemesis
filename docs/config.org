@@ -17,7 +17,8 @@ page, and no IPC channel loads or evaluates it.
 * Where it lives
 
 - =~/.config/nemesis/init.ts=, the user's, not the profile's: keep it in your
-  dotfiles. The app never writes it.
+  dotfiles. The app writes it only when you run =journal-promote= (see Eval),
+  and then only appends to its end.
 - =settings.json= stays in the profile's =userData= folder and loads first;
   the init file overrides its values in memory and writes nothing back.
 - Start with =--no-config= to skip the file (the safe mode).
@@ -106,3 +107,34 @@ Nothing from that load is applied: the previous config stays live, or the
 defaults on a first load, and the app keeps running. The environment panel
 (=C-c C-e=) lists the file as loaded with its counts, as an error with its
 line, or as absent; =RET= on it opens the file after a yes.
+
+* Eval and the journal
+
+=M-x eval-expression= reads one form of erasable TypeScript and evaluates it
+in the main process with the same =nemesis= object the file gets, and nothing
+else in scope; the value is a notice in the transcript. =M-x repl= opens the
+=*repl*= buffer, where =RET= reads a form and the form and its value are
+added to the buffer. Every form shares one =node:vm= context for the life of
+the app, so a =const= one form declares, the next one reads. A form is one
+line of at most 200 characters, read through the palette. Landed in #72.
+
+A form that defines or redefines a command or a binding takes effect at once:
+the command is in M-x, the key runs it. It may redefine a command of the file
+or of an earlier eval, never one of the cockpit's. =nemesis.settings.set= is
+refused at eval: settings belong in the file. A reload keeps what eval
+defined, except where the file now defines the same command or binds the same
+chord, which wins.
+
+Every such form is appended to =journal.org= beside =init.ts=, an Org file
+with one heading per entry, its timestamp and what it defined, and the form in
+a source block. The mode line shows =journal: N= while N entries wait.
+=M-x journal-promote= picks an entry and appends its form to the end of
+=init.ts= with a comment naming where it came from, then drops it from the
+journal; =M-x reload-config= loads it from the file. =M-x journal-discard=
+deletes an entry; what it defined stays live until a restart. Under
+=--no-config= eval still works and nothing is journaled, and the note after
+each definition says so.
+
+Eval runs only on a command you ran from the cockpit's keys or palette. No
+page buffer and no MCP server reaches it. Like the file, it is trusted code
+with the app's privileges.

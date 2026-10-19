@@ -23,6 +23,7 @@ import type {
 import { BINDINGS_CHANNEL, DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../shared/keys'
 import { HELP_SHOWN_CHANNEL, PALETTE_ANSWER_CHANNEL, PALETTE_OPEN_CHANNEL } from '../shared/palette'
 import { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL } from '../shared/plan'
+import { JOURNAL_CHANGED_CHANNEL, REPL_SHOWN_CHANNEL } from '../shared/repl'
 import { SPEC_SHOWN_CHANNEL } from '../shared/spec'
 
 // The only bridge between internal pages and the main process (SECURITY.org,
@@ -64,6 +65,11 @@ const base = {
   onSpecShown: (listener) => on(SPEC_SHOWN_CHANNEL, listener),
   onPromptInsert: (listener) => on(PROMPT_INSERT_CHANNEL, listener),
   onEnvironmentShown: (listener) => on(ENVIRONMENT_SHOWN_CHANNEL, listener),
+  // Eval (#72) is two pushes and no invoke: the form is read through the
+  // palette answer channel like any other free text, and evaluated in the
+  // main process on a command the user ran.
+  onReplShown: (listener) => on(REPL_SHOWN_CHANNEL, listener),
+  onJournalChanged: (listener) => on(JOURNAL_CHANGED_CHANNEL, listener),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

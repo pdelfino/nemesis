@@ -9,6 +9,7 @@ import { installModeline } from './modeline'
 import { installPalette } from './palette'
 import { installPlanBuffer } from './plan-buffer'
 import { installPromptBuffer } from './prompt-buffer'
+import { installReplBuffer } from './repl-buffer'
 import { installRequestBuffer } from './request-buffer'
 import { installSpecBuffer } from './spec-buffer'
 import { installTranscriptBuffer } from './transcript-buffer'
@@ -38,6 +39,8 @@ const plan = installPlanBuffer()
 const spec = installSpecBuffer()
 // And the environment buffer: C-c C-e lists the session's environment there (#86).
 const environment = installEnvironmentBuffer()
+// And the *repl* buffer: forms evaluated in the config scope show there (#72).
+const repl = installReplBuffer()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 
@@ -47,7 +50,14 @@ const palette = installPalette()
 void installPromptBuffer().then((prompt) => {
   const act = (outcome: KeyOutcome, bufferType: BufferType | null): void => {
     // A config reload may have bound new keys: the shape is read again (#71).
-    if (outcome.command === 'reload-config') readBindings()
+    // So may a form evaluated in the config scope (#72).
+    if (
+      outcome.command === 'reload-config' ||
+      outcome.command === 'eval-expression' ||
+      outcome.command === 'repl-read'
+    ) {
+      readBindings()
+    }
     // C-g closes an open palette before anything else sees it.
     if (palette.onCommand(outcome)) return
     prompt.onCommand(outcome, bufferType)
@@ -57,6 +67,7 @@ void installPromptBuffer().then((prompt) => {
     plan.onCommand(outcome, bufferType)
     spec.onCommand(outcome, bufferType)
     environment.onCommand(outcome, bufferType)
+    repl.onCommand(outcome, bufferType)
   }
   keys.onCommand = act
   palette.onRan = act

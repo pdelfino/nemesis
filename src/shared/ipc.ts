@@ -44,6 +44,7 @@ import type {
   KeyPress,
 } from './keys'
 import type { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL, PlanAnswer, PlanContent } from './plan'
+import type { JOURNAL_CHANGED_CHANNEL, JournalState, REPL_SHOWN_CHANNEL, ReplContent } from './repl'
 import type { SPEC_SHOWN_CHANNEL, SpecContent } from './spec'
 import type {
   HELP_SHOWN_CHANNEL,
@@ -86,6 +87,8 @@ export interface PushChannels {
   readonly [SPEC_SHOWN_CHANNEL]: SpecContent
   readonly [PROMPT_INSERT_CHANNEL]: PromptInsert
   readonly [ENVIRONMENT_SHOWN_CHANNEL]: EnvironmentContent
+  readonly [REPL_SHOWN_CHANNEL]: ReplContent
+  readonly [JOURNAL_CHANGED_CHANNEL]: JournalState
 }
 
 export type InvokeChannel = keyof InvokeChannels

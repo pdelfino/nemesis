@@ -208,7 +208,8 @@ function activeBufferType(): BufferType | null {
     value === 'diff' ||
     value === 'plan' ||
     value === 'spec' ||
-    value === 'environment'
+    value === 'environment' ||
+    value === 'repl'
     ? value
     : null
 }

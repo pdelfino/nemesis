@@ -4,10 +4,11 @@ import { join } from 'node:path'
 import { createContext, Script } from 'node:vm'
 import type { AgentNoticeEvent } from '../agent/events'
 import type { Keymap } from '../commands/keymap'
+import { defineKeymap } from '../commands/keymap'
 import type { Command, CommandRegistry } from '../commands/registry'
 import type { Settings } from '../settings'
 import type { CallSite, ConfigApiEnv } from './api'
-import { ConfigError, ConfigStaging, createConfigApi, siteIn } from './api'
+import { ConfigError, ConfigStaging, createConfigApi, siteIn, USER_KEYMAP } from './api'
 
 /**
  * The config file (#71, ADR 0006): `~/.config/nemesis/init.ts`, the user's
@@ -198,6 +199,13 @@ export class ConfigLoader {
   private base: Settings | null = null
   /** The settings the cockpit started with, for the restart note. */
   private started: Settings | null = null
+  /**
+   * What eval defined in the running image (#72), by command name and by
+   * chord. Kept across a reload, except where the file now defines the same
+   * name or chord: the later definition wins, as reloading init.el does.
+   */
+  private readonly evalCommands = new Map<string, Command>()
+  private readonly evalBindings = new Map<string, string>()
   private current: ConfigStatus
 
   constructor(options: ConfigLoaderOptions) {
@@ -291,8 +299,29 @@ export class ConfigLoader {
   /** Swaps the previous load for this one in one step. Everything was checked by `stage`. */
   commit(config: StagedConfig, target: ConfigTarget): void {
     for (const command of this.live?.commands ?? []) target.registry.unregister(command.name)
+    for (const name of this.evalCommands.keys()) target.registry.unregister(name)
     target.registry.registerAll(config.commands)
-    target.setUserKeymap(config.keymap)
+    const defined = new Set(config.commands.map((command) => command.name))
+    for (const [name, command] of [...this.evalCommands]) {
+      if (defined.has(name)) this.evalCommands.delete(name)
+      else target.registry.register(command)
+    }
+    const bound = new Set((config.keymap?.entries() ?? []).map((entry) => entry.chord))
+    for (const [chord, command] of [...this.evalBindings]) {
+      if (bound.has(chord) || !target.registry.has(command)) this.evalBindings.delete(chord)
+    }
+    let keymap: Keymap | null
+    try {
+      keymap = this.userKeymap(config.keymap, this.evalBindings)
+    } catch (error) {
+      // A chord of the file now prefixes one made at eval, or the reverse: the file wins.
+      this.evalBindings.clear()
+      keymap = config.keymap
+      this.notify(
+        `Bindings made at eval dropped: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    target.setUserKeymap(keymap)
     target.applySettings(config.settings)
     this.live = config
     this.started ??= config.settings
@@ -314,17 +343,57 @@ export class ConfigLoader {
    * one line with the counts and the settings that wait for a restart.
    */
   reload(target: ConfigTarget): ReloadResult {
-    const own = new Set((this.live?.commands ?? []).map((command) => command.name))
-    const reserved = new Set(
-      target.registry
-        .list()
-        .map((command) => command.name)
-        .filter((name) => !own.has(name)),
-    )
-    const result = this.stage(reserved)
+    const result = this.stage(this.reservedNames(target.registry))
     if (!result.ok) return result
     this.commit(result.config, target)
     return { ok: true, line: this.reloadLine(result.config) }
+  }
+
+  /**
+   * The cockpit's own command names: every name in the registry but the
+   * committed load's and the ones eval made, which a reload or an eval may
+   * define again.
+   */
+  reservedNames(registry: CommandRegistry): Set<string> {
+    const own = new Set((this.live?.commands ?? []).map((command) => command.name))
+    return new Set(
+      registry
+        .list()
+        .map((command) => command.name)
+        .filter((name) => !own.has(name) && !this.evalCommands.has(name)),
+    )
+  }
+
+  /**
+   * Takes what one eval defined into the running image (#72): its commands
+   * replace any of the same name, its bindings go into the user layer over
+   * the file's. The merged layer is built first, so a conflict throws before
+   * anything changes.
+   */
+  adoptEval(
+    commands: readonly Command[],
+    bindings: ReadonlyMap<string, string>,
+    target: ConfigTarget,
+  ): void {
+    const merged = new Map([...this.evalBindings, ...bindings])
+    const keymap = this.userKeymap(this.live?.keymap ?? null, merged)
+    for (const command of commands) {
+      target.registry.unregister(command.name)
+      target.registry.register(command)
+      this.evalCommands.set(command.name, command)
+    }
+    for (const [chord, command] of bindings) this.evalBindings.set(chord, command)
+    target.setUserKeymap(keymap)
+    target.rebuilt()
+  }
+
+  /** The user layer: the file's bindings with eval's over them. */
+  private userKeymap(base: Keymap | null, bindings: ReadonlyMap<string, string>): Keymap | null {
+    if (bindings.size === 0) return base
+    return defineKeymap(USER_KEYMAP, {
+      ...Object.fromEntries((base?.entries() ?? []).map((entry) => [entry.chord, entry.command])),
+      ...Object.fromEntries(bindings),
+    })
   }
 
   private counts(config: StagedConfig): ConfigCounts {

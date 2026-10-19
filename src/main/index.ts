@@ -34,6 +34,8 @@ import {
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import { defineCommand } from './commands/registry'
+import { ConfigEval } from './config/eval'
+import { Journal, journalPath } from './config/journal'
 import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './config/loader'
 import { DiffBuffers } from './diffs'
 import { EnvironmentBuffers } from './environment'
@@ -42,6 +44,7 @@ import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installMenu } from './menu'
 import { PlanBuffers } from './plans'
+import { Repl } from './repl'
 import { Screenshots, SCREENSHOTS_FOLDER } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
@@ -64,6 +67,7 @@ import {
 import { originOf, PermissionPolicy } from './security/permissions'
 import { TransportPolicy } from './security/transport'
 import { internalPagePreferences } from './security/web-preferences'
+import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
@@ -309,8 +313,9 @@ void app.whenReady().then(() => {
   // nothing. Its commands and keys are committed once the registry exists
   // below; the error, if any, waits for the window.
   let dispatcher: ReturnType<typeof createCockpitDispatcher> | null = null
+  const initFile = configPath({ home: app.getPath('home'), env: process.env, argv: process.argv })
   const config = new ConfigLoader({
-    path: configPath({ home: app.getPath('home'), env: process.env, argv: process.argv }),
+    path: initFile,
     base: readSettings,
     buffers: () => buffers.list(),
     run: (name) =>
@@ -442,6 +447,26 @@ void app.whenReady().then(() => {
   // within the limits of fetch-url.ts, and wrapped as untrusted content.
   const files = new WorkingFiles({ cwd: process.cwd() })
   const fetcher = new UrlFetcher()
+  // Eval in the config scope (#72): the forms run in the main process with
+  // the init file's `nemesis` object, and a definition is applied to the
+  // running cockpit and journaled beside init.ts until it is promoted or
+  // discarded. The evaluator needs the registry, built below, so it is
+  // reached through `evaluator` once the cockpit is up.
+  const journal =
+    initFile === null ? null : new Journal({ path: journalPath(initFile), configFile: initFile })
+  let evaluator: ConfigEval | null = null
+  const repl = new Repl(buffers, {
+    journal,
+    evaluate: (form) =>
+      evaluator === null
+        ? Promise.resolve({
+            ok: false,
+            text: 'Eval runs once the cockpit is up, not while it starts',
+            defined: null,
+            journal: null,
+          })
+        : evaluator.evaluate(form),
+  })
   const prompts = installSessionBridge({
     agent,
     permissions,
@@ -460,6 +485,7 @@ void app.whenReady().then(() => {
       environment,
       transport,
       config,
+      repl,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -482,6 +508,7 @@ void app.whenReady().then(() => {
     clipboard: { readImage: readClipboardImage },
     fetcher,
     environment,
+    repl,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
@@ -492,6 +519,8 @@ void app.whenReady().then(() => {
     plans,
     specs,
     environment,
+    repl,
+    journal,
   })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const cockpit = createCockpitDispatcher(deps)
@@ -527,7 +556,21 @@ void app.whenReady().then(() => {
   )
   if (firstLoad.ok) config.commit(firstLoad.config, target)
   else target.rebuilt()
+  evaluator = new ConfigEval({
+    loader: config,
+    target,
+    journal,
+    buffers: () => buffers.list(),
+    run: (name) => cockpit.registry.run(name, { source: 'config' }),
+  })
   const win = createWindow()
+  // The mode line's journal count is pushed on every change; a page that
+  // loads, or loads again, gets the count as it stands.
+  if (journal !== null) {
+    win.webContents.on('did-finish-load', () => {
+      win.webContents.send(JOURNAL_CHANGED_CHANNEL, { unpromoted: journal.count })
+    })
+  }
   // A load error at start is shown once the window can show it, and the
   // app runs on the defaults.
   if (!firstLoad.ok) {
