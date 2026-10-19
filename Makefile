@@ -3,7 +3,7 @@
 # what dev and gate mean.
 
 .DEFAULT_GOAL := help
-.PHONY: help node-version setup dev gate app
+.PHONY: help node-version setup dev gate app ci
 
 # Make runs /bin/sh, where nvm is a shell function and not a command, so a
 # fresh terminal has no `nvm use` in effect. Source nvm.sh here and put the
@@ -40,6 +40,16 @@ dev: node-version node_modules/electron/dist ## Run the app in development mode,
 
 gate: node-version ## Run the gate, the same as npm run gate
 	$(NPM) run gate
+
+# The workflow itself, run on this Mac before anything is pushed (Pedro,
+# 2026-OCTOBER-19: local first, Actions only after a green local run). act runs
+# the gate job of .github/workflows/ci.yml on the host: a clean npm ci, the
+# Electron binary, the gate and npm audit, as the macOS runner would. act is
+# optional (brew install act); the secret scan job needs Docker and runs on
+# GitHub only.
+ci: ## Run the CI workflow's gate job locally with act, before a push
+	@command -v act >/dev/null || { echo "make ci needs act: brew install act"; exit 1; }
+	GITHUB_TOKEN="$$(gh auth token)" act pull_request -W .github/workflows/ci.yml -j gate -P macos-latest=-self-hosted -s GITHUB_TOKEN
 
 app: node-version node_modules/electron/dist ## Build the unsigned release/mac-arm64/Nemesis.app (#35)
 	$(NPM) run package

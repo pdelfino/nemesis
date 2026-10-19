@@ -1,13 +1,18 @@
 name: ci
 
-# Local-first: the full gate runs on every commit on the developer's machine
-# (see CONTRIBUTING.org). Actions is the second opinion at ready-for-review.
+# Local-first: the full gate runs on every commit on the developer's machine,
+# and this workflow runs there too before anything is pushed (`make ci`, act
+# on the host; see CONTRIBUTING.org). Actions is the second opinion: on main,
+# on a tag, and on a pull request once it is ready for review. A draft runs
+# nothing here, so a queue pushing every commit of a stack costs no minutes
+# (Pedro, 2026-OCTOBER-19: "always local first is better for cost reasons").
 
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -15,6 +20,7 @@ permissions:
 jobs:
   secrets:
     name: secret scan (gitleaks)
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,6 +32,7 @@ jobs:
 
   gate:
     name: typecheck, lint, test, audit
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # macOS: the app targets macOS and Playwright drives the real Electron
     # binary, which needs a display that Linux runners lack without xvfb.
     runs-on: macos-latest
