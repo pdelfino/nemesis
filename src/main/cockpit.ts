@@ -543,6 +543,15 @@ export function createCockpit(
       },
       console: consoleLog,
       events: (listener) => pages.onPageEvent(listener),
+      // The navigation tools (#139), through the paths the keys take, so
+      // the navigation and transport policies decide. A page the agent
+      // opens does not take the user's point.
+      moves: {
+        load: (pageId, url) => pages.load(pageId, url),
+        create: () => pages.createPage().id,
+        step: (pageId, by) => pages.step(pageId, by),
+        close: (pageId) => pages.destroyPage(pageId),
+      },
       buffers,
     },
     // A yes-per-call question wants its window on screen.

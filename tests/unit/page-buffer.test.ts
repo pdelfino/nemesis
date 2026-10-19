@@ -411,6 +411,27 @@ describe('loading, and what is refused (#119, SECURITY.org T3)', () => {
     expect(log.at(-1)).toBe('forward https://example.test/two')
   })
 
+  it('steps any page by id and says how, as the MCP page tier reads it (#139)', async () => {
+    const { pages, buffers, views, log, events } = rig()
+    await pages.open('https://example.test/one')
+    const page = pages.list()[0]?.id ?? ''
+    const contents = only(views).webContents
+    contents.entries.push('https://example.test/one', 'javascript:alert(1)')
+    contents.index = 0
+    // The page need not be current: the agent moves it while the point is elsewhere.
+    await pages.open('https://example.test/elsewhere', true)
+    expect(buffers.current?.id).not.toBe(page)
+    expect(pages.step(page, -1)).toBe('none')
+    expect(pages.step(page, 1)).toBe('refused')
+    contents.entries[1] = 'https://example.test/two'
+    expect(pages.step(page, 1)).toBe('moved')
+    expect(log.at(-1)).toBe('forward https://example.test/two')
+    expect(() => pages.step('b99', 1)).toThrow(/No page buffer/)
+    // The end of a load, failed or not, is a `stopped` event.
+    contents.emit('did-stop-loading')
+    expect(events.at(-1)).toEqual({ type: 'stopped', pageId: page })
+  })
+
   it('throws a command error only when the current buffer holds no page', () => {
     const { pages } = rig()
     expect(() => pages.reload()).toThrow(/not a page/)

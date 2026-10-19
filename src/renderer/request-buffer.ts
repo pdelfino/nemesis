@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentQuestion } from '../shared/agent'
+import { requestKeys, type AgentEvent, type AgentQuestion } from '../shared/agent'
 
 /**
  * The request section (#63): what the permission bridge is waiting on, shown
@@ -67,7 +67,7 @@ export function installRequestBuffer(): void {
     const question = request.questions?.[request.answers.length]
     if (question === undefined) {
       title.textContent = request.title ?? `${request.toolName} wants to run`
-      keys.textContent = `y allow once, n deny, a allow ${request.toolName} for this session`
+      keys.textContent = requestKeys(request.toolName)
       return
     }
     title.textContent = question.question

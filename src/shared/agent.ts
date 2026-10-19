@@ -43,6 +43,25 @@ export interface PromptState {
   readonly queue: PromptQueueState
 }
 
+/**
+ * The page tools of the cockpit's own MCP server as its session calls them
+ * (ADR 0008, #139): `mcp__` + the in-app server's name + the `browser_` tier.
+ * Inside the cockpit `a` never covers one, so a yes on a page is for one call.
+ */
+export const PAGE_TOOL_PREFIX = 'mcp__nemesis__browser_'
+
+/** True for a tool the permission bridge answers with `y` or `n` only, every call. */
+export function askedEveryCall(toolName: string): boolean {
+  return toolName.startsWith(PAGE_TOOL_PREFIX)
+}
+
+/** The keys a tool request offers, as the request section and the transcript show them. */
+export function requestKeys(toolName: string): string {
+  return askedEveryCall(toolName)
+    ? 'y allow this one call, n deny'
+    : `y allow once, n deny, a allow ${toolName} for this session`
+}
+
 /** A prompt, or a draft, longer than this is refused rather than truncated. */
 export const MAX_PROMPT_LENGTH = 1_000_000
 

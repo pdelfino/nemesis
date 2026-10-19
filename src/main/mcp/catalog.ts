@@ -16,11 +16,14 @@ import { SESSION_NAME_LENGTH } from '../transcripts'
  * row is served: the tier, which is its prefix and its milestone, and
  * `inApp`, false for the one tool the cockpit's own session must not see.
  *
- * The cockpit tier, and the reading half of the `browser_` tier (#138):
- * the page tools that read a page buffer and never act on it, all free.
- * Their structure holds only what Nemesis controls; the page's own strings
- * come in one `wrapUntrusted` block (page-tier.ts). No row evaluates code,
- * for any client (ADR 0008, "tools that never exist").
+ * The cockpit tier, and two slices of the `browser_` tier: the reading
+ * tools (#138), which read a page buffer and never act on it, all free, and
+ * the navigation tools (#139), which move a page, each asked once per call:
+ * on the socket in the prompt buffer, inside the cockpit by the permission
+ * bridge, which offers no `a` for a `browser_` name. Their structure holds
+ * only what Nemesis controls; the page's own strings come in one
+ * `wrapUntrusted` block (page-tier.ts). No row evaluates code, for any
+ * client (ADR 0008, "tools that never exist").
  */
 
 /** Moves when a client could notice; the appendix of ADR 0008 lists every bump. */
@@ -84,6 +87,12 @@ export const READ_TEXT_CHARS = 20_000
 /** The console entries `browser_get_console_logs` returns when `limit` is not given. */
 export const CONSOLE_LIMIT = 100
 
+/** A navigation tool waits this long, in seconds, for the load to settle before it answers. */
+export const SETTLE_CAP_SECONDS = 15
+
+/** How a navigation ended: the load stopped, it failed, or it had not settled by the cap. */
+const loadStatus = z.enum(['loaded', 'failed', 'timeout'])
+
 /** Every page tool's optional `page`: a buffer id from `cockpit_list_buffers`. */
 const pageArg = z.string().min(1).max(32).optional()
 
@@ -95,6 +104,8 @@ const UNTRUSTED =
 
 const PAGE_DEFAULT =
   '`page` is a buffer id from cockpit_list_buffers; without it, the current page buffer.'
+
+const NAVIGATION = `Asks the user once per call. https: only: a plain http: URL off loopback, and javascript:, file: and data:, come back refused with the reason. Answers once the load settles, at most ${SETTLE_CAP_SECONDS} seconds, with the page's snapshot.`
 
 export const CATALOG: readonly CatalogTool[] = [
   {
@@ -320,6 +331,52 @@ export const CATALOG: readonly CatalogTool[] = [
       entries: z.number(),
       truncated: z.boolean(),
     }),
+  },
+  {
+    name: 'browser_navigate',
+    tier: 'browser',
+    description: `Load a URL in a page buffer; a host alone is opened on https:. ${NAVIGATION} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ url: z.string().min(1).max(MAX_PAGE_URL), page: pageArg }),
+    returns: z.object({ page: z.string(), origin: z.string(), status: loadStatus }),
+  },
+  {
+    name: 'browser_go_back',
+    tier: 'browser',
+    description: `Go back one entry in a page buffer's history; \`moved\` is false when there is none. ${NAVIGATION} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ page: pageArg }),
+    returns: z.object({ page: z.string(), origin: z.string(), moved: z.boolean() }),
+  },
+  {
+    name: 'browser_go_forward',
+    tier: 'browser',
+    description: `Go forward one entry in a page buffer's history; \`moved\` is false when there is none. ${NAVIGATION} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ page: pageArg }),
+    returns: z.object({ page: z.string(), origin: z.string(), moved: z.boolean() }),
+  },
+  {
+    name: 'browser_open_page',
+    tier: 'browser',
+    description: `Open a URL in a new page buffer, which does not take the user's point; \`page\` is its id. ${NAVIGATION} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ url: z.string().min(1).max(MAX_PAGE_URL) }),
+    returns: z.object({ page: z.string(), origin: z.string(), status: loadStatus }),
+  },
+  {
+    name: 'browser_close_page',
+    tier: 'browser',
+    description:
+      'Kill a page buffer by id, from cockpit_list_buffers. Asks the user once per call.',
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ page: z.string().min(1).max(32) }),
+    returns: z.object({ page: z.string(), closed: z.boolean() }),
   },
 ]
 

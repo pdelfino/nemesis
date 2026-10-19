@@ -19,7 +19,7 @@ import {
   type TransactionSpec,
 } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
-import type { AgentEvent, AgentQuestion } from '../shared/agent'
+import { requestKeys, type AgentEvent, type AgentQuestion } from '../shared/agent'
 import { checkEvidenceHeader, looksLikeEvidence, toolEvidenceHeader } from '../shared/evidence'
 
 /**
@@ -243,7 +243,7 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
             state,
             'request',
             event.title ?? `Permission: ${event.toolName}`,
-            `${formatInput(event.input)}\ny allow once, n deny, a allow ${event.toolName} for this session`,
+            `${formatInput(event.input)}\n${requestKeys(event.toolName)}`,
           )
         : appendBlock(
             state,

@@ -2,6 +2,9 @@ import type { BufferInfo, BufferList, PageEvent } from '../../shared/buffers'
 import { MAX_SNAPSHOT_NODES, type FormAnswer, type TextAnswer } from '../../shared/page-door'
 import { wrapUntrusted } from '../agent/boundary'
 import { describeOrigin } from '../ipc'
+import { navigationAllowed } from '../security/navigation-policy'
+import { upgradeOf } from '../security/transport'
+import { normalizeUrl } from '../url-sources'
 import type { ConsoleEntry } from '../pages/console'
 import { formReading, formText } from '../pages/form-guide'
 import { readerBody, type ReaderDocument } from '../pages/reader'
@@ -14,17 +17,26 @@ import {
 import {
   CONSOLE_LIMIT,
   READ_TEXT_CHARS,
+  SETTLE_CAP_SECONDS,
   WAIT_CAP_SECONDS,
   WAIT_FOR_CAP_SECONDS,
   WAIT_FOR_DEFAULT_SECONDS,
 } from './catalog'
 
 /**
- * The page tier of the MCP server, its reading half (#138, ADR 0008): the
+ * The page tier of the MCP server (ADR 0008). Its reading half (#138): the
  * tools that read a page buffer and never act on it. Each is a thin relay to
  * what the cockpit already reads through the page-script door (ADR 0009):
  * the semantic view (#122), reader extraction (#128), the form snapshot
  * (#94), the door's `text` request, and the console ring kept in main.
+ *
+ * Its navigation (#139): navigate, back, forward, open and close, through
+ * the page buffers' own paths, so the navigation policy (#48) and transport
+ * (#52) decide as they do for the keys. The agent names a URL rather than
+ * typing one, so a plain `http:` URL off loopback is refused with the reason
+ * rather than upgraded behind its back, and `javascript:`, `file:` and
+ * `data:` are refused before anything loads. A move answers once the load
+ * settles, capped at SETTLE_CAP_SECONDS, with the page's snapshot.
  *
  * The label rule of ADR 0008: what Nemesis controls (the buffer id, the
  * origin of the committed top-frame URL main holds, counts, flags, times,
@@ -66,6 +78,8 @@ export interface PageTierDeps {
     ): { readonly entries: readonly ConsoleEntry[]; readonly truncated: boolean }
   }
   readonly events: (listener: (event: PageEvent) => void) => () => void
+  /** The moves of the navigation tools (#139), the page buffers' own paths. */
+  readonly moves: PageMoves
   readonly buffers: {
     readonly current: BufferInfo | null
     subscribe(listener: (list: BufferList) => void): unknown
@@ -74,6 +88,44 @@ export interface PageTierDeps {
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
   readonly now?: () => number
 }
+
+/** What the navigation tools ask of the page buffers (#139); page-buffer.ts answers. */
+export interface PageMoves {
+  /** Loads `url` in the page, as open-url does: null once loaded, else the reason. */
+  load(pageId: string, url: string): Promise<string | null>
+  /** A new page buffer, not made current, and its id. */
+  create(): string
+  /** One step through the page's history, as `back` and `forward` take it. */
+  step(pageId: string, by: -1 | 1): 'moved' | 'none' | 'refused'
+  /** Kills the page buffer. */
+  close(pageId: string): void
+}
+
+/**
+ * The URL a navigation tool loads for `raw`, the open-url normalization of
+ * #124 (a host alone goes on `https:`), or an error with the refusal
+ * (SECURITY.org T3): plain `http:` off loopback, or a scheme the page policy
+ * refuses. The reason names the scheme, never the URL.
+ */
+export function navigationTarget(raw: string): string {
+  const trimmed = raw.trim()
+  if (upgradeOf(trimmed) !== null) {
+    throw new Error(
+      'Refused: a plain http: URL off loopback never loads; ask for its https: URL (SECURITY.org, T3)',
+    )
+  }
+  const url = normalizeUrl(trimmed)
+  if (!navigationAllowed('page', url)) {
+    throw new Error(
+      `Refused: ${schemeOf(url)} is not a page URL; a page buffer opens https:, and http: on loopback only (SECURITY.org, T3)`,
+    )
+  }
+  return url
+}
+
+/** What `within` answers when the cap came first. */
+const TIMEOUT = Symbol('timeout')
+type Timeout = typeof TIMEOUT
 
 /** The least time between two snapshots `browser_wait_for` takes. */
 export const WAIT_FOR_SNAPSHOT_MS = 250
@@ -135,8 +187,57 @@ export class PageTier {
         return this.formState(page)
       case 'browser_get_console_logs':
         return this.consoleLogs(page, numberOr(args['limit'], CONSOLE_LIMIT))
+      case 'browser_navigate':
+        return this.navigate(page, String(args['url']), signal)
+      case 'browser_go_back':
+        return this.step(page, -1, signal)
+      case 'browser_go_forward':
+        return this.step(page, 1, signal)
+      case 'browser_open_page':
+        return this.openPage(String(args['url']), signal)
+      case 'browser_close_page':
+        return this.closePage(String(args['page']))
       default:
         throw new Error(`No relay for ${name}`)
+    }
+  }
+
+  /**
+   * The socket door's question for a navigation tool (#139): the tool, the
+   * origin of the page it moves, and the URL the client named as `quote`
+   * renders it; never a string the page wrote. The page the question names
+   * is pinned in the arguments it answers with, so a switch of buffer while
+   * the user answers never moves another page. A refusal throws here, before
+   * anyone is asked.
+   */
+  question(
+    name: string,
+    args: Record<string, unknown>,
+    quote: (text: string) => string,
+  ): { readonly question: string; readonly args: Record<string, unknown> } {
+    if (name === 'browser_open_page') {
+      const url = navigationTarget(String(args['url']))
+      return {
+        question: `${name} on ${describeOrigin(url)}: open ${quote(url)} in a new page?`,
+        args,
+      }
+    }
+    const pageId = this.pageOf(optionalString(args['page']))
+    const on = `${name} on ${this.originOf(pageId)}`
+    const pinned = { ...args, page: pageId }
+    switch (name) {
+      case 'browser_navigate': {
+        const url = navigationTarget(String(args['url']))
+        return { question: `${on}: load ${quote(url)} in ${pageId}?`, args: pinned }
+      }
+      case 'browser_go_back':
+        return { question: `${on}: go back in ${pageId}?`, args: pinned }
+      case 'browser_go_forward':
+        return { question: `${on}: go forward in ${pageId}?`, args: pinned }
+      case 'browser_close_page':
+        return { question: `${on}: close ${pageId}?`, args: pinned }
+      default:
+        throw new Error(`No question for ${name}`)
     }
   }
 
@@ -163,6 +264,12 @@ export class PageTier {
       )
     }
     return newest.id
+  }
+
+  /** The origin of a page's committed URL, as a question names it. */
+  private originOf(pageId: string): string {
+    const url = this.deps.committedUrl(pageId)
+    return url === undefined ? 'a page not yet loaded' : describeOrigin(url)
   }
 
   private resolve(given: string | undefined): Resolved {
@@ -362,6 +469,131 @@ export class PageTier {
     }
   }
 
+  private async navigate(
+    given: string | undefined,
+    raw: string,
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    const pageId = this.pageOf(given)
+    const url = navigationTarget(raw)
+    const status = await this.loaded(this.deps.moves.load(pageId, url), signal)
+    return this.landed(pageId, { status }, `Navigation ${status}:`)
+  }
+
+  private async openPage(raw: string, signal: AbortSignal | undefined): Promise<PageAnswer> {
+    const url = navigationTarget(raw)
+    const pageId = this.deps.moves.create()
+    const status = await this.loaded(this.deps.moves.load(pageId, url), signal)
+    return this.landed(pageId, { status }, `Opened, ${status}:`)
+  }
+
+  /**
+   * Back or forward, as the keys go: the step through the page buffers, then
+   * the page's next stop of loading, or a failure, capped.
+   */
+  private async step(
+    given: string | undefined,
+    by: -1 | 1,
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    const pageId = this.pageOf(given)
+    let settle = (): void => undefined
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve
+    })
+    const off = this.deps.events((event) => {
+      if (event.pageId !== pageId) return
+      if (event.type === 'stopped' || event.type === 'failed') settle()
+    })
+    let moved: 'moved' | 'none' | 'refused'
+    try {
+      moved = this.deps.moves.step(pageId, by)
+      if (moved === 'refused') {
+        throw new Error(
+          `Refused: the ${by === -1 ? 'previous' : 'next'} entry is not a page URL (SECURITY.org, T3)`,
+        )
+      }
+      if (moved === 'moved')
+        await this.within(
+          settled.then(() => 'settled' as const),
+          signal,
+        )
+    } finally {
+      off()
+    }
+    const way = by === -1 ? 'back' : 'forward'
+    return this.landed(
+      pageId,
+      { moved: moved === 'moved' },
+      moved === 'moved' ? `Went ${way}:` : `No page to go ${way} to:`,
+    )
+  }
+
+  private closePage(pageId: string): PageAnswer {
+    if (!this.isPage(pageId)) throw new Error(`No page buffer with id "${pageId}"`)
+    this.deps.moves.close(pageId)
+    const closed = !this.isPage(pageId)
+    return {
+      structured: { page: pageId, closed },
+      text: closed ? `Closed ${pageId}.` : `${pageId} is still open.`,
+    }
+  }
+
+  /** How a load ended: loaded, failed with the reason the buffers gave, or not settled by the cap. */
+  private async loaded(
+    load: Promise<string | null>,
+    signal: AbortSignal | undefined,
+  ): Promise<'loaded' | 'failed' | 'timeout'> {
+    const reason = await this.within(load, signal)
+    if (reason === 'refused') throw new Error('Refused by the navigation policy (SECURITY.org, T3)')
+    if (reason === TIMEOUT) return 'timeout'
+    return reason === null ? 'loaded' : 'failed'
+  }
+
+  /** `work`, or TIMEOUT once SETTLE_CAP_SECONDS have passed or the call was withdrawn. */
+  private async within<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T | Timeout> {
+    const controller = new AbortController()
+    const stop = (): void => controller.abort()
+    signal?.addEventListener('abort', stop)
+    try {
+      return await Promise.race([
+        work,
+        this.sleep(SETTLE_CAP_SECONDS * 1000, controller.signal).then(
+          (): Timeout => TIMEOUT,
+          (): Timeout => TIMEOUT,
+        ),
+      ])
+    } finally {
+      controller.abort()
+      signal?.removeEventListener('abort', stop)
+    }
+  }
+
+  /**
+   * Where a move left the page: its id and the origin it committed in the
+   * structure, the snapshot in the block, as browser_snapshot gives it. A
+   * page that has no document to read yet answers without a block.
+   */
+  private async landed(
+    pageId: string,
+    fields: Record<string, unknown>,
+    said: string,
+  ): Promise<PageAnswer> {
+    const committed = this.deps.committedUrl(pageId)
+    let snapshot: SemanticSnapshot | null = null
+    if (committed !== undefined && this.isPage(pageId)) {
+      snapshot = await this.deps.snapshot(pageId).catch(() => null)
+    }
+    const origin = snapshot?.origin ?? this.originOf(pageId)
+    return {
+      structured: { page: pageId, origin, ...fields },
+      text: `${said} ${pageId} on ${origin}${snapshot === null ? ', no snapshot yet' : `, ${snapshot.count} refs`}.`,
+      ...(snapshot === null
+        ? {}
+        : { block: wrapUntrusted(snapshot.origin, semanticText(snapshot)) }),
+    }
+  }
+
   private consoleLogs(given: string | undefined, limit: number): PageAnswer {
     const { pageId, origin } = this.resolve(given)
     const { entries, truncated } = this.deps.console.read(pageId, limit)
@@ -373,6 +605,15 @@ export class PageTier {
       text: `${entries.length} console entries of ${pageId} on ${origin}${truncated ? ', older ones left out' : ''}.`,
       block: wrapUntrusted(origin, lines.length === 0 ? 'No console entries.' : lines.join('\n')),
     }
+  }
+}
+
+/** The scheme of a URL as a refusal names it; never the rest, which can carry a secret. */
+function schemeOf(url: string): string {
+  try {
+    return new URL(url).protocol
+  } catch {
+    return 'not a URL'
   }
 }
 

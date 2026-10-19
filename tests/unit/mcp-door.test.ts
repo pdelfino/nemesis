@@ -8,10 +8,54 @@ import { CommandRegistry, defineCommand } from '../../src/main/commands/registry
 import { DiffBuffers } from '../../src/main/diffs'
 import { HelpBuffers, type HelpListener } from '../../src/main/help'
 import { diffText } from '../../src/main/mcp/buffer-texts'
+import type { PageTierDeps } from '../../src/main/mcp/page-tier'
+import type { BufferRegistry } from '../../src/main/buffers'
 import { helloMatches, HELLO_PREFIX, McpDoor } from '../../src/main/mcp/socket'
 import { connectClient, fakeCockpit } from './mcp-fakes'
 
 const opened: { door: McpDoor; dir: string }[] = []
+
+/**
+ * One page buffer for the navigation questions (#139): its title and the
+ * path of its URL are page-controlled and carry a canary, its origin is
+ * what Nemesis reads off the committed URL. Each load is recorded.
+ */
+function onePage(loads: string[]): (buffers: BufferRegistry) => PageTierDeps {
+  return (buffers) => {
+    const page = buffers.create({ kind: 'page', title: 'NEMESIS-TITLE-CANARY', elementId: 'page' })
+    buffers.update(page.id, { url: 'https://pages.example/NEMESIS-PATH-CANARY' })
+    const never = (): never => {
+      throw new Error('not read here')
+    }
+    return {
+      list: () => buffers.list().filter((buffer) => buffer.kind === 'page'),
+      committedUrl: (id) => buffers.get(id)?.url,
+      snapshot: async () => ({
+        pageId: page.id,
+        url: buffers.get(page.id)?.url ?? '',
+        origin: 'https://pages.example',
+        nodes: [],
+        count: 0,
+      }),
+      resolve: () => null,
+      reader: never,
+      text: never,
+      form: never,
+      console: { read: () => ({ entries: [], truncated: false }) },
+      events: () => () => undefined,
+      moves: {
+        load: async (id, url) => {
+          loads.push(`${id} ${url}`)
+          return null
+        },
+        create: never,
+        step: never,
+        close: (id) => buffers.kill(id),
+      },
+      buffers,
+    }
+  }
+}
 
 afterEach(() => {
   for (const { door, dir } of opened.splice(0)) {
@@ -306,5 +350,86 @@ describe('the MCP door (#28, ADR 0007)', () => {
       const missing = await client.callTool({ name: 'cockpit_read_buffer', arguments: { id } })
       expect(missing.isError).toBe(true)
     }
+  })
+
+  it('asks once per call for a navigation tool, the origin and the URL in the line, never the page (#139)', async () => {
+    const loads: string[] = []
+    const { mcp, prompter, buffers } = fakeCockpit(undefined, onePage(loads))
+    const pageId = buffers.list().find((buffer) => buffer.kind === 'page')?.id ?? ''
+    const navigate = (): ReturnType<typeof mcp.call> =>
+      mcp.call(
+        'browser_navigate',
+        { url: 'next.example/a?b=1' },
+        { door: 'socket', client: 'claude-code' },
+      )
+
+    const first = navigate()
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    const question = prompter.pending
+    expect(question?.source).toBe('mcp')
+    expect(question?.prompt).toBe(
+      `claude-code asks browser_navigate on https://pages.example: load "https://next.example/a?b=1" in ${pageId}?`,
+    )
+    expect(question?.prompt).not.toContain('CANARY')
+    expect(question?.candidates[0]?.id).toBe('no')
+    expect(loads).toEqual([])
+    await prompter.answer({ id: question?.id ?? '', choice: 'yes' })
+    expect((await first).isError).toBeFalsy()
+    expect(loads).toEqual([`${pageId} https://next.example/a?b=1`])
+
+    // The yes was for that call: the next one asks again, and a no loads nothing.
+    const second = navigate()
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    expect(prompter.pending?.id).not.toBe(question?.id)
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: null })
+    expect((await second).isError).toBe(true)
+    expect(loads).toHaveLength(1)
+
+    // The other moves name the page's origin, and the URL when the client gave one.
+    const lines: [string, Record<string, unknown>, string][] = [
+      ['browser_go_back', {}, `browser_go_back on https://pages.example: go back in ${pageId}?`],
+      [
+        'browser_go_forward',
+        { page: pageId },
+        `browser_go_forward on https://pages.example: go forward in ${pageId}?`,
+      ],
+      [
+        'browser_open_page',
+        { url: 'https://other.example/x' },
+        'browser_open_page on https://other.example: open "https://other.example/x" in a new page?',
+      ],
+      [
+        'browser_close_page',
+        { page: pageId },
+        `browser_close_page on https://pages.example: close ${pageId}?`,
+      ],
+    ]
+    for (const [name, args, line] of lines) {
+      const call = mcp.call(name, args, { door: 'socket', client: 'claude-code' })
+      await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+      expect(prompter.pending?.prompt).toBe(`claude-code asks ${line}`)
+      await prompter.answer({ id: prompter.pending?.id ?? '', choice: null })
+      expect((await call).isError).toBe(true)
+    }
+
+    // A refusal comes back before anyone is asked.
+    for (const url of ['http://example.com/', 'javascript:alert(1)']) {
+      const refused = await mcp.call('browser_navigate', { url }, { door: 'socket', client: 'c' })
+      expect(refused.isError).toBe(true)
+      expect(JSON.stringify(refused.content)).toContain('Refused')
+      expect(prompter.pending).toBeNull()
+    }
+    expect(loads).toHaveLength(1)
+    expect(buffers.get(pageId)).toBeDefined()
+
+    // The yes is for the page the question named, whatever is current by the answer.
+    const pinned = navigate()
+    await vi.waitFor(() => expect(prompter.pending?.prompt).toContain(`in ${pageId}?`))
+    const other = buffers.create({ kind: 'page', title: 'Other', elementId: 'page' })
+    buffers.update(other.id, { url: 'https://other.example/' })
+    buffers.switchTo(other.id)
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    expect((await pinned).isError).toBeFalsy()
+    expect(loads.at(-1)).toBe(`${pageId} https://next.example/a?b=1`)
   })
 })

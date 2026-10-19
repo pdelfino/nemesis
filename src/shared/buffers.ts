@@ -104,6 +104,8 @@ export type PageEvent =
   /** A top-frame navigation committed on `url`. */
   | { readonly type: 'committed'; readonly pageId: string; readonly url: string }
   | { readonly type: 'finished'; readonly pageId: string }
+  /** The page stopped loading, after a load that finished or one that failed. */
+  | { readonly type: 'stopped'; readonly pageId: string }
   /** A top-frame load failed: Chromium's code and its reason (`ERR_NAME_NOT_RESOLVED`). */
   | {
       readonly type: 'failed'

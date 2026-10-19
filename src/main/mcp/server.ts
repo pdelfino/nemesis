@@ -47,10 +47,13 @@ import { PageTier, type PageTierDeps } from './page-tier'
  * goes away before the user answered its question has the question
  * withdrawn, with a notice naming it (#117).
  *
- * The page tier's reading tools (#138) relay to page-tier.ts. Their result
+ * The page tier's tools (#138, #139) relay to page-tier.ts. Their result
  * is the structure, a line of it as text, and the page's own strings as one
  * more text item, the `wrapUntrusted` block, so a client that reads only the
- * structure never sees a word the page wrote.
+ * structure never sees a word the page wrote. A navigation tool's socket
+ * question is page-tier.ts's: the tool, the origin of the page and the URL
+ * the client named, quoted, never a string the page wrote; a refusal comes
+ * back before anything is asked.
  *
  * One resource beside the tools, `nemesis://session/events` (ADR 0008): the
  * current session's `events.jsonl` as recorded, so a tool result that came
@@ -270,10 +273,13 @@ export class CockpitMcp {
     }
     if (call.door === 'socket') this.notice(`${clip(call.client)} called ${name}`)
     try {
+      let given = args
       if (tool.confirmation === 'yes' && call.door === 'socket') {
-        await this.ask(call, `${name}: ${this.detail(name, args)}?`)
+        const asked = this.question(name, args)
+        await this.ask(call, asked.question)
+        given = asked.args
       }
-      const answer = await this.relay(name, args, call)
+      const answer = await this.relay(name, given, call)
       return {
         content: [
           { type: 'text', text: answer.text },
@@ -508,6 +514,20 @@ export class CockpitMcp {
     const outcome = await turn
     if (outcome === 'withdrawn') throw new McpToolError('The client disconnected before the answer')
     if (!outcome) throw new McpToolError('The user refused the call')
+  }
+
+  /**
+   * The question a yes-per-call tool asks on the socket, after the client's
+   * name, and the arguments the yes is for: a page tool's names its page.
+   */
+  private question(
+    name: string,
+    args: Record<string, unknown>,
+  ): { readonly question: string; readonly args: Record<string, unknown> } {
+    if (!name.startsWith('browser_'))
+      return { question: `${name}: ${this.detail(name, args)}?`, args }
+    if (this.pages === null) throw new McpToolError('This cockpit has no page buffers')
+    return this.pages.question(name, args, quote)
   }
 
   /** What a yes-per-call question shows of the arguments. */

@@ -1,3 +1,4 @@
+import { askedEveryCall } from '../../shared/agent'
 import type { BufferRegistry } from '../buffers'
 import { CommandError } from '../commands/registry'
 import type {
@@ -24,6 +25,11 @@ import type {
  * asks the user what the policy asked, and keeps the one thing the user can
  * decide for the rest of the session: `a` puts a tool on an in-memory allow
  * list that answers for it from then on.
+ *
+ * Except a page tool (ADR 0008, #139): a `mcp__nemesis__browser_` name is
+ * offered `y` and `n` only. `a` refuses it, and no allow list answers it,
+ * so a yes on a page is always for one call; `a` keeps its meaning for
+ * every other tool.
  *
  * AskUserQuestion is a tool call like any other to the SDK, so it arrives
  * here too. Its questions are numbered; a digit picks an option and free text
@@ -127,7 +133,11 @@ export class PermissionBridge implements PermissionHandler {
   }
 
   requestPermission(request: PermissionRequest): Promise<PermissionDecision> {
-    if (this.allowed.has(request.toolName) && !this.mustAsk(request)) {
+    if (
+      this.allowed.has(request.toolName) &&
+      !this.mustAsk(request) &&
+      !askedEveryCall(request.toolName)
+    ) {
       return Promise.resolve({ behavior: 'allow' })
     }
     if (request.signal.aborted) {
@@ -190,11 +200,16 @@ export class PermissionBridge implements PermissionHandler {
     this.settle(entry, { behavior: 'deny', message: text }, 'deny')
   }
 
-  /** `a`: the tool runs now and without asking for the rest of the session. */
+  /** `a`: the tool runs now and without asking for the rest of the session; never a page tool. */
   allowForSession(): void {
     const entry = this.head()
     if (entry.questions !== null) {
       throw new CommandError('The pending request is a question: choose with a digit or reply')
+    }
+    if (askedEveryCall(entry.request.toolName)) {
+      throw new CommandError(
+        `${entry.request.toolName} acts on a page: y allows this one call, n denies it`,
+      )
     }
     this.allowed.add(entry.request.toolName)
     this.settle(entry, { behavior: 'allow' }, 'allow-session')

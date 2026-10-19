@@ -38,7 +38,7 @@ const COCKPIT_TOOLS = [
 ]
 
 /** The reading half of ADR 0008's page tier (#138). */
-const PAGE_TOOLS = [
+const READ_TOOLS = [
   'browser_snapshot',
   'browser_wait',
   'browser_wait_for',
@@ -47,8 +47,19 @@ const PAGE_TOOLS = [
   'browser_get_console_logs',
 ]
 
+/** Its navigation (#139). */
+const NAVIGATION_TOOLS = [
+  'browser_navigate',
+  'browser_go_back',
+  'browser_go_forward',
+  'browser_open_page',
+  'browser_close_page',
+]
+
+const PAGE_TOOLS = [...READ_TOOLS, ...NAVIGATION_TOOLS]
+
 describe('the MCP catalog (#28, ADR 0008)', () => {
-  it('is the eight cockpit tools and six page tools, and tools/list serves exactly the table', async () => {
+  it('is the eight cockpit tools and eleven page tools, and tools/list serves exactly the table', async () => {
     expect(CATALOG.map((tool) => tool.name)).toEqual([...COCKPIT_TOOLS, ...PAGE_TOOLS])
     const client = await connectClient(fakeCockpit().mcp)
     const { tools } = await client.listTools()
@@ -69,19 +80,21 @@ describe('the MCP catalog (#28, ADR 0008)', () => {
     }
   })
 
-  it('reads pages and never acts on them: every page row free and in-app, no eval tool at all', () => {
+  it('reads pages free, moves them only after a yes per call, and has no eval tool at all', () => {
     expect(() => parseBufferSpec({ kind: 'page', title: 'A page' })).toThrow()
     const page = CATALOG.filter((tool) => tool.tier === 'browser')
     expect(page.map((tool) => tool.name)).toEqual(PAGE_TOOLS)
     for (const tool of page) {
-      expect(tool.confirmation).toBe('free')
+      const reads = READ_TOOLS.includes(tool.name)
+      expect(tool.confirmation, tool.name).toBe(reads ? 'free' : 'yes')
       expect(tool.inApp).toBe(true)
-      expect(FREE_IN_APP_TOOLS.has(tool.name)).toBe(true)
-      expect(tool.args.shape).toHaveProperty('page')
+      // A yes row is a side effect to the page boundary (#132): it asks while a page is open.
+      expect(FREE_IN_APP_TOOLS.has(tool.name)).toBe(reads)
+      // Every page row names its page, but the one that makes a new page.
+      if (tool.name !== 'browser_open_page') expect(tool.args.shape).toHaveProperty('page')
     }
-    // No acting or navigating tool yet (#139, #140), and no query or select (#141).
+    // No acting tool yet (#140), and no query or select (#141).
     for (const name of [
-      'browser_navigate',
       'browser_click',
       'browser_type',
       'browser_query',
@@ -289,6 +302,12 @@ interface PageRig {
   console: ConsoleLog
   texts: Map<number, TextAnswer>
   clock: { now: number }
+  /** What the navigation tools asked of the page buffers (#139), in order. */
+  moves: string[]
+  /** What the next load answers: null once loaded, a reason, or never. */
+  load: string | null | 'hang'
+  /** What the next history step answers. */
+  step: 'moved' | 'none' | 'refused'
 }
 
 function hostilePages(rig: Partial<PageRig> = {}): {
@@ -304,7 +323,13 @@ function hostilePages(rig: Partial<PageRig> = {}): {
       [2, { status: 'masked', total: 0, text: '' }],
     ]),
     clock: { now: 1_000_000 },
+    moves: [],
+    load: null,
+    step: 'moved',
     ...rig,
+  }
+  const emit = (event: PageEvent): void => {
+    for (const listener of [...state.events]) listener(event)
   }
   const document = 7
   const flag = (name: (typeof FORM_FLAGS)[number]): number => 1 << FORM_FLAGS.indexOf(name)
@@ -405,6 +430,34 @@ function hostilePages(rig: Partial<PageRig> = {}): {
         state.events.add(listener)
         return () => state.events.delete(listener)
       },
+      moves: {
+        load: (id, url) => {
+          state.moves.push(`load ${id} ${url}`)
+          if (state.load === 'hang') return new Promise(() => undefined)
+          if (state.load === null) buffers.update(id, { url })
+          return Promise.resolve(state.load)
+        },
+        create: () => {
+          const created = buffers.create({ kind: 'page', title: 'Page', elementId: 'page' })
+          state.moves.push(`create ${created.id}`)
+          return created.id
+        },
+        step: (id, by) => {
+          state.moves.push(`step ${id} ${by}`)
+          if (state.step === 'moved') {
+            // The page stops loading a moment later, as Chromium reports it.
+            queueMicrotask(() => {
+              emit({ type: 'loading-started', pageId: id })
+              emit({ type: 'stopped', pageId: id })
+            })
+          }
+          return state.step
+        },
+        close: (id) => {
+          state.moves.push(`close ${id}`)
+          buffers.kill(id)
+        },
+      },
       buffers,
       now: () => state.clock.now,
       sleep: async (ms) => {
@@ -503,7 +556,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
     for (const page of buffers.list().filter((buffer) => buffer.kind === 'page')) {
       buffers.kill(page.id)
     }
-    for (const name of PAGE_TOOLS) {
+    for (const name of READ_TOOLS) {
       const none = await client.callTool({
         name,
         arguments: name === 'browser_wait' ? { time: 1 } : { ref: 'd7e1' },
@@ -592,5 +645,105 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
 
     buffers.kill(rig.pageId)
     expect(rig.console.size(rig.pageId)).toBe(0)
+  })
+})
+
+describe('the page tier, navigation (#139, ADR 0008)', () => {
+  const inApp = { door: 'in-app', client: 'the cockpit session' } as const
+  const header = `--- untrusted content from ${ORIGIN} ---`
+
+  it('navigates through the page buffers, normalized as open-url does, and answers with the snapshot', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp } = fakeCockpit(undefined, build)
+    const result = await mcp.call('browser_navigate', { url: ' next.example/b ' }, inApp)
+    expect(result.isError, JSON.stringify(result.content)).toBeFalsy()
+    expect(rig.moves).toEqual([`load ${rig.pageId} https://next.example/b`])
+    expect(result.structuredContent).toEqual({ page: rig.pageId, origin: ORIGIN, status: 'loaded' })
+    const [line, block] = items(result)
+    expect(line).not.toContain('NEMESIS-MCP-CANARY')
+    expect(block?.startsWith(header)).toBe(true)
+    expect(block).toContain('[d7e2] textbox "Password" (masked)')
+    // Loopback http: is the developer's own machine and loads (#52).
+    const local = await mcp.call('browser_navigate', { url: 'http://127.0.0.1:5173/' }, inApp)
+    expect(local.isError).toBeFalsy()
+    expect(rig.moves.at(-1)).toBe(`load ${rig.pageId} http://127.0.0.1:5173/`)
+  })
+
+  it('refuses plain http: off loopback and javascript:, file: and data: with the reason, loading nothing', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp } = fakeCockpit(undefined, build)
+    const refused: [string, string][] = [
+      ['http://example.com/login', 'plain http: URL off loopback'],
+      ['javascript:alert(1)', 'javascript: is not a page URL'],
+      ['file:///etc/passwd', 'file: is not a page URL'],
+      ['data:text/html,<b>hi</b>', 'data: is not a page URL'],
+    ]
+    for (const [url, reason] of refused) {
+      for (const name of ['browser_navigate', 'browser_open_page']) {
+        const result = await mcp.call(name, { url }, inApp)
+        expect(result.isError, `${name} ${url}`).toBe(true)
+        expect(items(result)[0]).toContain(reason)
+        expect(items(result)[0]).toContain('SECURITY.org, T3')
+        // The reason names the scheme, never the URL.
+        expect(items(result)[0]).not.toContain(url)
+      }
+    }
+    expect(rig.moves).toEqual([])
+  })
+
+  it('says how a load ended: failed with the reason, or not settled by the cap of fifteen seconds', async () => {
+    const { build, rig } = hostilePages({ load: 'ERR_NAME_NOT_RESOLVED (-105)' })
+    const { mcp } = fakeCockpit(undefined, build)
+    const failed = await mcp.call('browser_navigate', { url: 'https://nowhere.example' }, inApp)
+    expect(failed.structuredContent).toMatchObject({ status: 'failed' })
+    rig.load = 'hang'
+    const before = rig.clock.now
+    const hung = await mcp.call('browser_navigate', { url: 'https://slow.example' }, inApp)
+    expect(hung.structuredContent).toMatchObject({ page: rig.pageId, status: 'timeout' })
+    expect(rig.clock.now - before).toBe(15_000)
+  })
+
+  it('goes back and forward through the history step the keys take, and says when it could not', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp } = fakeCockpit(undefined, build)
+    const back = await mcp.call('browser_go_back', {}, inApp)
+    expect(back.structuredContent).toEqual({ page: rig.pageId, origin: ORIGIN, moved: true })
+    expect(items(back)[1]?.startsWith(header)).toBe(true)
+    const forward = await mcp.call('browser_go_forward', { page: rig.pageId }, inApp)
+    expect(forward.structuredContent).toMatchObject({ moved: true })
+    expect(rig.moves).toEqual([`step ${rig.pageId} -1`, `step ${rig.pageId} 1`])
+
+    rig.step = 'none'
+    const none = await mcp.call('browser_go_back', {}, inApp)
+    expect(none.isError).toBeFalsy()
+    expect(none.structuredContent).toMatchObject({ moved: false })
+    rig.step = 'refused'
+    const refused = await mcp.call('browser_go_forward', {}, inApp)
+    expect(refused.isError).toBe(true)
+    expect(items(refused)[0]).toContain('not a page URL')
+  })
+
+  it('opens a new page buffer without taking the point, and closes one by id', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp, buffers } = fakeCockpit(undefined, build)
+    const current = buffers.current?.id
+    const opened = await mcp.call('browser_open_page', { url: 'https://new.example/' }, inApp)
+    expect(opened.isError, JSON.stringify(opened.content)).toBeFalsy()
+    const page = (opened.structuredContent as { page: string }).page
+    expect(page).not.toBe(rig.pageId)
+    expect(rig.moves).toEqual([`create ${page}`, `load ${page} https://new.example/`])
+    expect(opened.structuredContent).toMatchObject({ status: 'loaded' })
+    expect(buffers.current?.id).toBe(current)
+
+    const closed = await mcp.call('browser_close_page', { page }, inApp)
+    expect(closed.structuredContent).toEqual({ page, closed: true })
+    expect(buffers.get(page)).toBeUndefined()
+    const again = await mcp.call('browser_close_page', { page }, inApp)
+    expect(again.isError).toBe(true)
+    // A buffer that is no page is never closed by a page tool.
+    const prompt = buffers.list().find((buffer) => buffer.kind === 'prompt')
+    const notPage = await mcp.call('browser_close_page', { page: prompt?.id }, inApp)
+    expect(notPage.isError).toBe(true)
+    expect(buffers.get(prompt?.id ?? '')).toBeDefined()
   })
 })

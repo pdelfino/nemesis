@@ -129,7 +129,10 @@ export interface RedirectDetails {
 /** The minimum of a WebContents a page buffer drives; a fake satisfies it in the unit tests. */
 export interface PageContents {
   readonly id: number
-  on(event: 'did-start-loading' | 'did-finish-load', listener: () => void): unknown
+  on(
+    event: 'did-start-loading' | 'did-stop-loading' | 'did-finish-load',
+    listener: () => void,
+  ): unknown
   on(event: 'did-navigate', listener: (event: unknown, url: string) => void): unknown
   on(
     event: 'did-navigate-in-page',
@@ -581,11 +584,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   }
 
   back(): void {
-    this.step(-1)
+    this.step(this.current().id, -1)
   }
 
   forward(): void {
-    this.step(1)
+    this.step(this.current().id, 1)
   }
 
   /**
@@ -736,19 +739,26 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     }
   }
 
-  private step(by: -1 | 1): void {
-    const page = this.current()
+  /**
+   * One step through a page's history, the path `back` and `forward` take
+   * and the MCP page tier's (#139): `none` when there is no entry that way,
+   * `refused` when the policies refuse the entry, both said as a notice.
+   */
+  step(id: string, by: -1 | 1): 'moved' | 'none' | 'refused' {
+    const page = this.pages.get(id)
+    if (page === undefined) throw new CommandError(`No page buffer with id "${id}"`)
     const history = page.view.webContents.navigationHistory
     if (by === -1 ? !history.canGoBack() : !history.canGoForward()) {
       this.notify(by === -1 ? 'No page to go back to' : 'No page to go forward to')
-      return
+      return 'none'
     }
     const entry = history.getEntryAtIndex(history.getActiveIndex() + by)
     const target = this.allowed(entry?.url ?? '')
-    if (target === null) return
+    if (target === null) return 'refused'
     if (target !== entry?.url) void this.load(page.id, target)
     else if (by === -1) history.goBack()
     else history.goForward()
+    return 'moved'
   }
 
   /** The current buffer's page, or a CommandError when the current buffer holds none. */
@@ -822,6 +832,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const started = (): void => this.emit({ type: 'loading-started', pageId })
     contents.on('did-start-loading', started)
     add('did-start-loading', started)
+
+    // The end of every load, a failed one included: the MCP page tier settles on it (#139).
+    const stopped = (): void => this.emit({ type: 'stopped', pageId })
+    contents.on('did-stop-loading', stopped)
+    add('did-stop-loading', stopped)
 
     const finished = (): void => this.emit({ type: 'finished', pageId })
     contents.on('did-finish-load', finished)

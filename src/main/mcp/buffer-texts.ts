@@ -1,3 +1,4 @@
+import { requestKeys } from '../../shared/agent'
 import type { BufferInfo } from '../../shared/buffers'
 import type { SessionDiff } from '../../shared/diff'
 import type { AgentEvent, AgentQuestion } from '../agent/events'
@@ -89,10 +90,7 @@ export function diffText(diff: SessionDiff): string {
 export function requestText(request: PendingRequest, title: string | null | undefined): string {
   const question: AgentQuestion | undefined = request.questions?.[request.answers.length]
   if (question === undefined) {
-    return [
-      title ?? `${request.toolName} wants to run`,
-      `y allow once, n deny, a allow ${request.toolName} for this session`,
-    ].join('\n')
+    return [title ?? `${request.toolName} wants to run`, requestKeys(request.toolName)].join('\n')
   }
   return [
     question.question,
