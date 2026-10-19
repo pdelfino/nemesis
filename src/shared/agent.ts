@@ -46,13 +46,25 @@ export interface PromptState {
 /**
  * The page tools of the cockpit's own MCP server as its session calls them
  * (ADR 0008, #139): `mcp__` + the in-app server's name + the `browser_` tier.
- * Inside the cockpit `a` never covers one, so a yes on a page is for one call.
+ * Inside the cockpit `a` never covers one whose class is `yes`, so a yes on a
+ * page action is for one call.
  */
 export const PAGE_TOOL_PREFIX = 'mcp__nemesis__browser_'
 
+/**
+ * The page tools whose catalog class is `free` (#138, #141, #147): they read
+ * a page and never act on it, so inside the cockpit they take `a` like the
+ * cockpit tier's free tools. A unit test holds this list to the catalog.
+ */
+export const FREE_PAGE_TOOLS: ReadonlySet<string> = new Set(
+  ['snapshot', 'wait', 'wait_for', 'read_text', 'form_state', 'get_console_logs', 'query'].map(
+    (name) => `${PAGE_TOOL_PREFIX}${name}`,
+  ),
+)
+
 /** True for a tool the permission bridge answers with `y` or `n` only, every call. */
 export function askedEveryCall(toolName: string): boolean {
-  return toolName.startsWith(PAGE_TOOL_PREFIX)
+  return toolName.startsWith(PAGE_TOOL_PREFIX) && !FREE_PAGE_TOOLS.has(toolName)
 }
 
 /** The keys a tool request offers, as the request section and the transcript show them. */

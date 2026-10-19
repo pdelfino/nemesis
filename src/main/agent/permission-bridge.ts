@@ -1,4 +1,4 @@
-import { askedEveryCall } from '../../shared/agent'
+import { askedEveryCall, PAGE_TOOL_PREFIX } from '../../shared/agent'
 import type { BufferRegistry } from '../buffers'
 import { CommandError } from '../commands/registry'
 import type {
@@ -26,10 +26,11 @@ import type {
  * decide for the rest of the session: `a` puts a tool on an in-memory allow
  * list that answers for it from then on.
  *
- * Except a page tool (ADR 0008, #139): a `mcp__nemesis__browser_` name is
- * offered `y` and `n` only. `a` refuses it, and no allow list answers it,
- * so a yes on a page is always for one call; `a` keeps its meaning for
- * every other tool.
+ * Except a page tool that acts (ADR 0008, #139): a `mcp__nemesis__browser_`
+ * name whose catalog class is `yes` is offered `y` and `n` only. `a` refuses
+ * it, and no allow list answers it, so a yes on a page action is always for
+ * one call; `a` keeps its meaning for every other tool, the free page reads
+ * included (#147).
  *
  * A page tool that acts (#140) is put to the user in the MCP page tier's
  * own words, through `pageQuestion`: the request's title is that line (the
@@ -163,7 +164,7 @@ export class PermissionBridge implements PermissionHandler {
       return Promise.resolve({ behavior: 'allow' })
     }
     const pageQuestion = this.pageQuestion
-    if (pageQuestion !== undefined && askedEveryCall(request.toolName)) {
+    if (pageQuestion !== undefined && request.toolName.startsWith(PAGE_TOOL_PREFIX)) {
       return pageQuestion(request.toolName, request.input).then(
         (asked) =>
           asked === null
@@ -249,7 +250,7 @@ export class PermissionBridge implements PermissionHandler {
     this.settle(entry, { behavior: 'deny', message: text }, 'deny')
   }
 
-  /** `a`: the tool runs now and without asking for the rest of the session; never a page tool. */
+  /** `a`: the tool runs now and without asking for the rest of the session; never a page tool that acts. */
   allowForSession(): void {
     const entry = this.head()
     if (entry.questions !== null) {

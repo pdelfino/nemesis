@@ -8,8 +8,8 @@ import {
 } from '../../src/main/agent/permission-bridge'
 import { createCockpitBuffers } from '../../src/main/buffers'
 import { CommandError } from '../../src/main/commands/registry'
-import { IN_APP_SERVER, TIER_PREFIX } from '../../src/main/mcp/catalog'
-import { PAGE_TOOL_PREFIX, requestKeys } from '../../src/shared/agent'
+import { CATALOG, IN_APP_SERVER, TIER_PREFIX } from '../../src/main/mcp/catalog'
+import { FREE_PAGE_TOOLS, PAGE_TOOL_PREFIX, requestKeys } from '../../src/shared/agent'
 
 // The bridge is the permission handler answered from the keyboard (#63).
 // These tests drive it with a bare buffer registry and the request shapes the
@@ -152,6 +152,37 @@ describe('the permission bridge (#63)', () => {
     expect(buffers.current?.kind).toBe('permission')
     bridge.deny()
     expect(await second).toEqual({ behavior: 'deny', message: DENIED_BY_USER })
+  })
+
+  it('lets a free page read take a, and an acting page tool still refuses it (#147)', async () => {
+    const { buffers, bridge, events } = setup()
+    // The list follows the catalog's class: every free browser_ tool, no other.
+    const free = CATALOG.filter((tool) => tool.tier === 'browser' && tool.confirmation === 'free')
+    expect([...FREE_PAGE_TOOLS].sort()).toEqual(
+      free.map((tool) => `mcp__${IN_APP_SERVER}__${tool.name}`).sort(),
+    )
+
+    const snapshot = `${PAGE_TOOL_PREFIX}snapshot`
+    expect(requestKeys(snapshot)).toBe(`y allow once, n deny, a allow ${snapshot} for this session`)
+    const first = bridge.requestPermission(request(snapshot, { input: {} }))
+    bridge.allowForSession()
+    expect(await first).toEqual({ behavior: 'allow' })
+    expect(events.at(-1)).toMatchObject({ toolName: snapshot, outcome: 'allow-session' })
+    const count = events.length
+    expect(await bridge.requestPermission(request(snapshot, { input: {} }))).toEqual({
+      behavior: 'allow',
+    })
+    expect(events).toHaveLength(count)
+
+    const click = `${PAGE_TOOL_PREFIX}click`
+    expect(requestKeys(click)).toBe('y allow this one call, n deny')
+    const acting = bridge.requestPermission(request(click, { input: { ref: 'e1' } }))
+    expect(() => bridge.allowForSession()).toThrow(/y allows this one call/)
+    expect(await settled(acting)).toBe('pending')
+    expect(bridge.allowedTools.has(click)).toBe(false)
+    expect(buffers.current?.kind).toBe('permission')
+    bridge.deny()
+    expect(await acting).toEqual({ behavior: 'deny', message: DENIED_BY_USER })
   })
 
   it('answers a question with a digit, keyed by question text in the updated input', async () => {

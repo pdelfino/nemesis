@@ -373,7 +373,11 @@ the name gets the "unknown tool" =isError= result ADR 0007 fixed.
   always for one call. That is ADR 0007's third question answered: =a= keeps
   its meaning for cockpit-tier tools inside the cockpit, the rest of the
   session per tool name as the bridge already does, and does not exist for
-  the page tier on either door.
+  the page tier on either door. Revised 2026-10-19 (#147): the rule follows
+  the catalog's class, so the page tools whose class is =yes= (navigate and
+  act) stay =y= or =n= every call, and the free page reads (snapshot, wait,
+  wait for, read text, form state, console logs, query) take =y=, =n= and
+  =a= inside the cockpit like the cockpit tier's free tools.
 - *Anything that reads a masked field.* The masking list of #94 lives in one
   place in =src/shared/= and three tools obey it: =browser_snapshot= and
   =browser_form_state= show a masked field as present, with its type and
