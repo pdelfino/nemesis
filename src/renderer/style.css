@@ -113,6 +113,34 @@ main {
 #page {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+}
+/* The page and, while its form is watched, the guide's pane beside it (#94). */
+#page-row {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+#page-row:has(> #page[hidden]) {
+  display: none;
+}
+#form-guide {
+  flex: 0 0 22rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.6rem;
+  border-left: 1px solid #8884;
+}
+#form-guide[hidden] {
+  display: none;
+}
+#form-guide-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 #page:focus {
   outline: none;

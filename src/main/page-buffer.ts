@@ -83,6 +83,8 @@ export const DOCUMENT_MODE = 'document'
 export const PASSTHROUGH_MODE = 'passthrough'
 /** In front of `document` while hint labels are up (#123): the labels' keys and `C-g`. */
 export const HINT_MODE = 'hint'
+/** On while the form guide watches the page (#94): the accept key. */
+export const FORM_GUIDE_MODE = 'form-guide'
 
 /** Chromium's zoom steps, as factors; Chromium's own menu walks the same list. */
 const ZOOM_FACTORS = [
@@ -162,6 +164,10 @@ export interface PageContents {
   findInPage(text: string): number
   stopFindInPage(action: 'clearSelection' | 'keepSelection' | 'activateSelection'): void
   copy(): void
+  /** Selects everything in the focused element, as the user's select-all does. */
+  selectAll(): void
+  /** Types text into the focused element, as the input method does (#94). */
+  insertText(text: string): Promise<void>
   sendInputEvent(
     event:
       | { readonly type: 'keyDown' | 'keyUp'; readonly keyCode: string }
@@ -617,6 +623,34 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const rest = page.modes.filter((mode) => mode !== HINT_MODE)
     page.modes = on ? [HINT_MODE, ...rest] : rest
     this.options.buffers.update(page.id, { modes: page.modes })
+  }
+
+  /**
+   * Puts `form-guide` in the page's modes, behind `hint` while labels are up,
+   * or takes it off (#94).
+   */
+  setFormGuideMode(id: string, on: boolean): void {
+    const page = this.pages.get(id)
+    if (page === undefined) return
+    const rest = page.modes.filter((mode) => mode !== FORM_GUIDE_MODE)
+    if (on) rest.splice(rest[0] === HINT_MODE ? 1 : 0, 0, FORM_GUIDE_MODE)
+    page.modes = rest
+    this.options.buffers.update(page.id, { modes: page.modes })
+  }
+
+  /**
+   * Replaces the value of the page's focused field with `text` (#94): the
+   * field's text selected, then typed over by Chromium's input path, the one
+   * the user's own typing takes, so the page sees input events and nothing
+   * else. It acts on whatever has the focus; the form guide checks that the
+   * focus is the field the text was shown for, just before.
+   */
+  async typeIntoFocused(id: string, text: string): Promise<void> {
+    const page = this.pages.get(id)
+    if (page === undefined) throw new CommandError(`No page buffer with id "${id}"`)
+    const contents = page.view.webContents
+    contents.selectAll()
+    await contents.insertText(text)
   }
 
   /**

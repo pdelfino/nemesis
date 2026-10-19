@@ -9,12 +9,13 @@
  * whole. A consumer adds a name and its schema to `PAGE_ANSWERS`, never a
  * channel. Version 1 shipped one name, `ping`, so the door was testable
  * before a consumer existed; the semantic view (#122) adds `snapshot`, and
- * hint mode (#123) adds `hints` and `hints-show`, and reader mode (#128)
- * adds `reader`.
+ * hint mode (#123) adds `hints` and `hints-show`, reader mode (#128)
+ * adds `reader`, and the form guide (#94) adds `form`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
- * text a page wrote. `hints-show` is the one name that takes any.
+ * text a page wrote. `hints-show` takes labels as code points, and `form`
+ * takes one number, the change count main last saw.
  */
 
 /** Main to the page preload: `{ id, name }`, no code and no free text. */
@@ -234,6 +235,97 @@ export interface ReaderAnswer {
   readonly links: readonly ReaderLink[]
 }
 
+/**
+ * What a field of a form is (#94): the input types the guide tells apart,
+ * a select, a text area, and `other` for any type the list does not name.
+ */
+export const FORM_KINDS = [
+  'text',
+  'email',
+  'tel',
+  'url',
+  'number',
+  'date',
+  'datetime',
+  'month',
+  'time',
+  'password',
+  'select',
+  'textarea',
+  'checkbox',
+  'radio',
+  'file',
+  'other',
+] as const
+
+export type FormKind = (typeof FORM_KINDS)[number]
+
+/** The flags of a form field, one bit each of its `flags`, in this order. */
+export const FORM_FLAGS = [
+  'required',
+  /** Holds a value, a checked box or a chosen file; for a masked field, the only thing said of its value. */
+  'filled',
+  /** A secret (src/shared/form-snapshot.ts): its value never leaves the page's isolated world. */
+  'masked',
+  'disabled',
+  'readonly',
+  /** The browser or the page says the value is wrong, after the human touched it. */
+  'invalid',
+  'checked',
+] as const
+
+export type FormFlag = (typeof FORM_FLAGS)[number]
+
+/** The most fields one form answer carries; a page past it is cut, in document order. */
+export const MAX_FORM_FIELDS = 300
+
+/** The most alerts (role=alert, aria-live=assertive) one form answer carries. */
+export const MAX_FORM_ALERTS = 20
+
+/**
+ * One field of a form, as the page preload read it (#94). `id` is the
+ * preload's number for the element, the one the semantic view's snapshot
+ * gives it (#122), so main makes the same ref of both. Every string is
+ * page content. `value` is empty on a masked field, a box, a radio and a
+ * file: `flags` says whether those are filled or checked.
+ */
+export interface FormField {
+  readonly id: number
+  readonly kind: FormKind
+  readonly label: string
+  /** The `name` attribute, what the form submits the field under. */
+  readonly name: string
+  readonly placeholder: string
+  /** A select's options, ` | ` between them; empty on every other kind. */
+  readonly choices: string
+  /** The validation message, when `invalid` is set. */
+  readonly message: string
+  readonly value: string
+  /** One bit per entry of FORM_FLAGS. */
+  readonly flags: number
+}
+
+/** An alert the page shows: an error banner or a live message. */
+export interface FormAlert {
+  readonly text: string
+}
+
+/**
+ * `form` (#94): the page's form fields, the focused one, and the alerts. The
+ * preload's observer counts every change to the document, focus and typing
+ * included, in `version`; asked with the count main last saw and nothing
+ * changed since, it answers `same` 1 with no fields, so a watch that polls
+ * reads the DOM only when something moved.
+ */
+export interface FormAnswer {
+  readonly version: number
+  readonly same: number
+  /** The focused field's element number, 0 when no field of the answer has the focus. */
+  readonly focused: number
+  readonly fields: readonly FormField[]
+  readonly alerts: readonly FormAlert[]
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
@@ -241,6 +333,7 @@ export interface PageAnswers {
   readonly hints: HintsAnswer
   readonly 'hints-show': HintsShowAnswer
   readonly reader: ReaderAnswer
+  readonly form: FormAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -320,6 +413,38 @@ export const PAGE_ANSWERS: {
       max: MAX_READER_LINKS,
       item: Object.freeze({
         href: { kind: 'string', max: MAX_PAGE_URL } as const,
+      }),
+    } as const,
+  }),
+  form: Object.freeze({
+    version: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    same: { kind: 'number', min: 0, max: 1, integer: true } as const,
+    focused: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    fields: {
+      kind: 'list',
+      max: MAX_FORM_FIELDS,
+      item: Object.freeze({
+        id: { kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+        kind: { kind: 'enum', values: FORM_KINDS } as const,
+        label: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        name: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        placeholder: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        choices: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        message: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        value: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        flags: {
+          kind: 'number',
+          min: 0,
+          max: 2 ** FORM_FLAGS.length - 1,
+          integer: true,
+        } as const,
+      }),
+    } as const,
+    alerts: {
+      kind: 'list',
+      max: MAX_FORM_ALERTS,
+      item: Object.freeze({
+        text: { kind: 'string', max: MAX_NODE_TEXT } as const,
       }),
     } as const,
   }),

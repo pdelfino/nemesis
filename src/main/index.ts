@@ -367,6 +367,12 @@ const SEMANTIC_VIEW = '__nemesisSemantic'
  * only.
  */
 const PAGE_HINTS = '__nemesisHints'
+
+/**
+ * How the form guide spec reads what a watched page's pane holds (#94),
+ * through `app.evaluate`. Main process only, under test only.
+ */
+const FORM_GUIDE = '__nemesisFormGuide'
 /** The window focused last, for the app's notices and questions while no window has focus. */
 let lastFocused: number | null = null
 /** How many windows were opened, for the next window's name. */
@@ -572,6 +578,11 @@ void app.whenReady().then(() => {
         cockpits.get(windowId)?.hints.targets(bufferId) ?? [],
       drawn: (windowId: number, bufferId: string) =>
         cockpits.get(windowId)?.hints.drawn(bufferId) ?? [],
+    }
+    // The form guide's spec (#94): the reading, the reply and the shown suggestion of a watch.
+    ;(globalThis as { [FORM_GUIDE]?: unknown })[FORM_GUIDE] = {
+      state: (windowId: number, bufferId: string) =>
+        cockpits.get(windowId)?.formGuide.state(bufferId) ?? null,
     }
   }
   // app.dock exists on macOS only.

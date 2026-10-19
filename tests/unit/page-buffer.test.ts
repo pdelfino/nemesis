@@ -140,6 +140,15 @@ class FakeContents implements PageContents {
     this.log.push(`copy ${this.id}`)
   }
 
+  selectAll(): void {
+    this.sent.push('selectAll')
+  }
+
+  insertText(text: string): Promise<void> {
+    this.sent.push(`insertText ${text}`)
+    return Promise.resolve()
+  }
+
   sendInputEvent(
     event:
       | { readonly type: string; readonly keyCode: string }

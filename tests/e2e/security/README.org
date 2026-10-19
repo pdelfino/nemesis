@@ -58,6 +58,7 @@ the same ground:
 | =injection.html=    | prompt-injection text, visible, hidden and in a comment         |
 | =permissions.html=  | one button per device or data permission, outcome per =li=      |
 | =pwned.js=          | a remote script the internal page's CSP must refuse to fetch    |
+| =form-guide.html=   | a form with one field of each kind, filled secrets, an injected label and a counted submit (#94) |
 
 The fixtures are hostile on purpose and harmless in fact: no fixture reaches the
 network, and nothing outside this directory is served.

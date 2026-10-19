@@ -3,6 +3,7 @@ import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
 import { installDiffBuffer } from './diff-buffer'
 import { installEnvironmentBuffer } from './environment-buffer'
+import { installFormGuide } from './form-guide'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
 import { installModeline } from './modeline'
@@ -47,6 +48,8 @@ const environment = installEnvironmentBuffer()
 const repl = installReplBuffer()
 // The page section reports where the current page's view goes (#119).
 installPageBuffer()
+// The form guide's pane beside a watched page (#94).
+installFormGuide()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 

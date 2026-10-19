@@ -14,7 +14,12 @@ import {
   SEMANTIC_ROLES,
   SEMANTIC_STATES,
   parsePageRequestArgs,
+  MAX_FORM_ALERTS,
+  MAX_FORM_FIELDS,
   type DrawnLabel,
+  type FormAlert,
+  type FormAnswer,
+  type FormField,
   type HintNode,
   type HintsAnswer,
   type HintsShowAnswer,
@@ -26,6 +31,7 @@ import {
   type SnapshotAnswer,
   type SnapshotNode,
 } from '../shared/page-door'
+import { formField, isSecretField, type FormControl } from '../shared/form-snapshot'
 import { extractReader, type ReaderNode } from '../shared/reader'
 
 // The page-script door (ADR 0009, #130, SECURITY.org T1 and T4): the preload
@@ -110,6 +116,9 @@ interface PageWorld {
     readonly documentElement: { append(node: OverlayHost): void } | null
     getElementById(id: string): PageElement | null
     createElement(tag: string): unknown
+    querySelectorAll(selector: string): ArrayLike<PageElement>
+    readonly activeElement: PageElement | null
+    addEventListener(type: string, listener: () => void, capture: boolean): void
   }
   readonly location: { readonly href: string }
   readonly scrollX: number
@@ -290,15 +299,16 @@ function nameOf(element: PageElement, role: SemanticRole): string {
   return line(element.getAttribute('placeholder')) || line(element.getAttribute('title'))
 }
 
-/** Whether the field holds a secret, whose value never leaves this world (#94's mask). */
-function isSecret(element: PageElement): boolean {
-  if (element.tagName === 'INPUT' && (element.type ?? '').toLowerCase() === 'password') return true
-  const autocomplete = (element.getAttribute('autocomplete') ?? '').toLowerCase()
-  return /\b(?:current-password|new-password|one-time-code|cc-number|cc-csc)\b/.test(autocomplete)
+/**
+ * Whether the field holds a secret, whose value never leaves this world: the
+ * form guide's masking list (#94), src/shared/form-snapshot.ts, the one place.
+ */
+function isSecret(element: PageElement, role: SemanticRole): boolean {
+  return isSecretField(element as unknown as FormControl, nameOf(element, role))
 }
 
 function valueOf(element: PageElement, role: SemanticRole): string {
-  if (!VALUED.has(role) || isSecret(element)) return ''
+  if (!VALUED.has(role) || isSecret(element, role)) return ''
   if (element.tagName === 'SELECT') {
     const chosen = element.selectedOptions?.[0]
     return chosen === undefined ? '' : textOf(chosen)
@@ -317,7 +327,7 @@ function stateOf(element: PageElement, role: SemanticRole): number {
     readonly: element.readOnly === true || aria('readonly') === 'true',
     selected: aria('selected') === 'true',
     pressed: aria('pressed') === 'true',
-    masked: VALUED.has(role) && isSecret(element),
+    masked: VALUED.has(role) && isSecret(element, role),
   }
   let bits = 0
   SEMANTIC_STATES.forEach((state, index) => {
@@ -621,6 +631,82 @@ function reader(): ReaderAnswer {
   )
 }
 
+// The form guide (#94). A read-only observer counts every change to the
+// document, the focus and the typing included, once a watch first asks;
+// `form` reads the fields only when the count moved since main's last read,
+// or when the last full read is older than FORM_REREAD_MS, so a page that
+// swallows the events in its own capture handlers delays the guide, never
+// blinds it. The listeners and the observer live in this world: the page's
+// scripts cannot see or remove them. They count; they write nothing to the
+// page. A secret's value is dropped by `formField` before the answer is built.
+
+/** How old a full read may be before an unchanged count is read again anyway. */
+const FORM_REREAD_MS = 3000
+
+/** The events that move the count, caught on the way down to the field. */
+const FORM_EVENTS = ['focusin', 'focusout', 'input', 'change', 'invalid', 'reset'] as const
+
+let formVersion = 1
+let formWatched = false
+let formReadAt = 0
+
+function watchForm(): void {
+  if (formWatched) return
+  formWatched = true
+  const bump = (): void => {
+    formVersion += 1
+  }
+  new world.MutationObserver(bump).observe(world.document, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    characterData: true,
+  })
+  for (const type of FORM_EVENTS) world.document.addEventListener(type, bump, true)
+}
+
+/** The visible alerts of the page: error banners and assertive live regions. */
+function formAlerts(): FormAlert[] {
+  const alerts: FormAlert[] = []
+  const found = world.document.querySelectorAll('[role="alert"], [aria-live="assertive"]')
+  for (let index = 0; index < found.length && alerts.length < MAX_FORM_ALERTS; index += 1) {
+    const element = found[index]
+    if (element === undefined || isHidden(element)) continue
+    const text = textOf(element)
+    if (text.length > 0) alerts.push({ text })
+  }
+  return alerts
+}
+
+/** The page's form fields, in document order, at most MAX_FORM_FIELDS, and the focused one. */
+function form(args: readonly number[]): FormAnswer {
+  watchForm()
+  const now = Date.now()
+  if (args[0] === formVersion && now - formReadAt < FORM_REREAD_MS) {
+    return { version: formVersion, same: 1, focused: 0, fields: [], alerts: [] }
+  }
+  formReadAt = now
+  const version = formVersion
+  const fields: FormField[] = []
+  const active = world.document.activeElement
+  let focused = 0
+  const controls = world.document.querySelectorAll('input, select, textarea')
+  for (let index = 0; index < controls.length && fields.length < MAX_FORM_FIELDS; index += 1) {
+    const element = controls[index]
+    if (element === undefined || isHidden(element)) continue
+    const role = roleOf(element, false) ?? 'textbox'
+    const field = formField(
+      element as unknown as FormControl,
+      elementId(element),
+      nameOf(element, role),
+    )
+    if (field === null) continue
+    fields.push(field)
+    if (element === active) focused = field.id
+  }
+  return { version, same: 0, focused, fields, alerts: formAlerts() }
+}
+
 /** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
@@ -633,6 +719,7 @@ const HANDLERS: {
   hints,
   'hints-show': hintsShow,
   reader,
+  form,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

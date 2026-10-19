@@ -118,6 +118,17 @@ export interface AgentSessionOptions {
    * (#55), which answers before `canUseTool` is asked and never instead of it.
    */
   readonly hooks?: Options['hooks'] | undefined
+  /**
+   * A narrow session (#94, the form guide): its own system prompt in place of
+   * Claude Code's, the built-in tools it may use (none, for the guide), no
+   * transcript under ~/.claude/projects, no settings files read, and no MCP
+   * server beyond `mcpServers`.
+   */
+  readonly systemPrompt?: string | undefined
+  readonly tools?: readonly string[] | undefined
+  readonly persistSession?: false | undefined
+  readonly settingSources?: Options['settingSources'] | undefined
+  readonly strictMcpConfig?: true | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
 }
@@ -570,6 +581,17 @@ export class AgentSession {
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers }),
       ...(this.options.hooks === undefined ? {} : { hooks: this.options.hooks }),
+      ...(this.options.systemPrompt === undefined
+        ? {}
+        : { systemPrompt: this.options.systemPrompt }),
+      ...(this.options.tools === undefined ? {} : { tools: [...this.options.tools] }),
+      ...(this.options.persistSession === undefined
+        ? {}
+        : { persistSession: this.options.persistSession }),
+      ...(this.options.settingSources === undefined
+        ? {}
+        : { settingSources: this.options.settingSources }),
+      ...(this.options.strictMcpConfig === undefined ? {} : { strictMcpConfig: true }),
       ...(this.options.resume === undefined ? {} : { resume: this.options.resume }),
       ...(this.options.resumeAt === undefined ? {} : { resumeSessionAt: this.options.resumeAt }),
       ...(this.options.fork === true && this.options.resume !== undefined

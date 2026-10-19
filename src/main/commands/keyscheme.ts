@@ -27,6 +27,7 @@ import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
 import {
   DOCUMENT_MODE,
+  FORM_GUIDE_MODE,
   HINT_MODE,
   NO_PAGES,
   PASSTHROUGH_MODE,
@@ -190,6 +191,19 @@ const NO_READER: ReaderCommands = {
   attachment: () => Promise.reject(new CommandError('No page buffers in this window')),
 }
 
+/** The form guide (#94), always about the current page buffer. */
+export interface FormGuideCommands {
+  /** Watching on, or off when it was on. */
+  toggle(): Promise<void>
+  /** The shown suggestion typed into the focused field, when it is the field it names. */
+  accept(): Promise<void>
+}
+
+const NO_FORM_GUIDE: FormGuideCommands = {
+  toggle: () => Promise.reject(new CommandError('No page buffers in this window')),
+  accept: () => Promise.reject(new CommandError('No page buffers in this window')),
+}
+
 export interface CockpitDeps {
   readonly buffers: BufferRegistry
   readonly permissions: PermissionBridge
@@ -255,6 +269,8 @@ export interface CockpitDeps {
   readonly hints: HintCommands
   /** Reader mode on the current page or reader buffer (#128). */
   readonly reader: ReaderCommands
+  /** The form guide on the current page buffer (#94). */
+  readonly formGuide: FormGuideCommands
   /** What open-url reads over: bookmarks, history and the search engines (#124). */
   readonly urls: UrlSources
   /** The profile's history and bookmarks (#125); null when the database did not open. */
@@ -420,6 +436,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
     hints: partial.hints ?? NO_HINTS,
     reader: partial.reader ?? NO_READER,
+    formGuide: partial.formGuide ?? NO_FORM_GUIDE,
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
     stores: partial.stores ?? null,
   }
@@ -458,6 +475,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     semanticText,
     hints,
     reader,
+    formGuide,
     environment,
     repl,
     windows,
@@ -1441,6 +1459,20 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'form-guide-mode',
+      mcp: 'never',
+      doc: 'Watch the form in the current page buffer and guide its filling, field by field, in a pane beside the page; again to stop. The guide never types, clicks or submits.',
+      // The form is read through the door, secrets masked in the page, and
+      // reaches the guide only as untrusted data from its origin (#94).
+      run: () => formGuide.toggle(),
+    }),
+    defineCommand({
+      name: 'form-guide-accept',
+      mcp: 'never',
+      doc: "Type the form guide's shown suggestion into the focused field, when it is the field the suggestion names. Nothing is submitted.",
+      run: () => formGuide.accept(),
+    }),
+    defineCommand({
       name: 'toggle-blocker',
       mcp: 'never',
       doc: 'Turn blocker mode off for the current page buffer, so requests to listed hosts go through, or back on; reload to fetch what was blocked.',
@@ -1801,6 +1833,8 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-c C-s': 'show-semantic-view',
     // The page's main text as a reader buffer (#128).
     'C-c C-r': 'reader-mode',
+    // Watch me fill this form (#94).
+    'C-c C-w': 'form-guide-mode',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {
@@ -1867,6 +1901,13 @@ export const MODE_KEYMAPS: ModeKeymaps = {
       'C-g': 'quit-hints',
     }),
     sealed: true,
+  },
+  // The form guide (#94): while it watches, its one key types the shown
+  // suggestion into the focused field, Emacs's yank on the C-c prefix.
+  [FORM_GUIDE_MODE]: {
+    keymap: defineKeymap(FORM_GUIDE_MODE, {
+      'C-c C-y': 'form-guide-accept',
+    }),
   },
   [PASSTHROUGH_MODE]: {
     keymap: defineKeymap(PASSTHROUGH_MODE, {

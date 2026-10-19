@@ -130,6 +130,14 @@ export class SemanticView {
     return { pageId, element: parsed.element }
   }
 
+  /**
+   * The number of a page's current document, the one its refs carry: what
+   * the form guide (#94) makes its refs under, so they are the snapshot's.
+   */
+  currentDocument(pageId: string): number {
+    return this.documentOf(pageId)
+  }
+
   private documentOf(pageId: string): number {
     return this.documents.get(pageId) ?? this.newDocument(pageId)
   }

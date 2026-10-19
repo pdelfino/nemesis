@@ -39,6 +39,9 @@ import type { PageScriptDoor } from './page-door'
 import type { PageAnswers } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
+import { FormGuide } from './pages/form-guide'
+import { FormGuideSession } from './agent/form-guide'
+import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { SemanticView, semanticText } from './pages/semantic'
 import { PAGES_FOLDER, ReaderBuffers, readerAttachment, type ReaderDocument } from './pages/reader'
 import { Repl } from './repl'
@@ -95,6 +98,8 @@ export interface Cockpit {
   readonly hints: PageHints
   /** Reader mode's buffers over those pages, through the page-script door (#128). */
   readonly readers: ReaderBuffers
+  /** The form guide's watches over those pages (#94). */
+  readonly formGuide: FormGuide
 }
 
 export interface CockpitShared {
@@ -402,12 +407,46 @@ export function createCockpit(
     const shown = current === null ? undefined : readers.documentOf(current.id)
     return shown ?? readers.read(currentPageId())
   }
+  // The form guide (#94): a watched page's form read through the door, the
+  // guide's own tool-less session per watch, its reply in the pane beside
+  // the page, and the accept key typing a shown suggestion into the focused
+  // field. Nothing of it is written to disk.
+  const guideListeners = new Set<(event: AgentEvent) => void>()
+  const formGuide = new FormGuide({
+    read: (pageId, known) => {
+      const view = pages.viewOf(pageId)
+      if (view === undefined) return Promise.reject(new Error('The page is gone'))
+      return shared.pageDoor.request(view.webContents, 'form', [known])
+    },
+    semantic,
+    committedUrl: (pageId) =>
+      pages.viewOf(pageId) === undefined ? undefined : buffers.get(pageId)?.url,
+    guide: () => new FormGuideSession({ cwd, model: () => config.settings.model ?? undefined }),
+    mode: (pageId, on) => pages.setFormGuideMode(pageId, on),
+    type: (pageId, text) => pages.typeIntoFocused(pageId, text),
+    push: (content) => {
+      if (!contents.isDestroyed()) contents.send(FORM_GUIDE_SHOWN_CHANNEL, content)
+    },
+    notify: (text) => {
+      for (const listener of guideListeners) listener({ type: 'notice', text })
+    },
+    events: (listener) => pages.onPageEvent(listener),
+  })
+  const guideNotices: EventSource = {
+    on: (listener) => {
+      guideListeners.add(listener)
+      return () => {
+        guideListeners.delete(listener)
+      }
+    },
+  }
   // Every committed top-frame navigation of a persistent page is a visit in
   // the profile's history (#125); an ephemeral page is never recorded.
   const stopHistory =
     shared.stores === null ? (): void => {} : recordHistory(pages, shared.stores.history)
   window.on('closed', () => {
     stopHistory()
+    void formGuide.stopAll()
     pages.destroyAll()
   })
   const notices = mergeNotices(
@@ -425,6 +464,7 @@ export function createCockpit(
     worktrees,
     pages,
     hintNotices,
+    guideNotices,
     boundary,
   )
   // The MCP server over this window's command table (#28, ADR 0007 and
@@ -535,6 +575,10 @@ export function createCockpit(
       export: async () => readers.export(await readerDocument()),
       attachment: async () => readerAttachment(await readerDocument()),
     },
+    formGuide: {
+      toggle: async () => formGuide.toggle(currentPageId()),
+      accept: async () => formGuide.accept(currentPageId()),
+    },
     // What open-url reads over (#124): the profile's bookmarks and history
     // (#125), and the engines of the settings, read on every read so a
     // reload-config's are the next read's.
@@ -585,5 +629,6 @@ export function createCockpit(
     semantic,
     hints,
     readers,
+    formGuide,
   }
 }

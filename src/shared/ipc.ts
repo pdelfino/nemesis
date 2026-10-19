@@ -45,6 +45,7 @@ import type {
   KeyOutcome,
   KeyPress,
 } from './keys'
+import type { FORM_GUIDE_SHOWN_CHANNEL, FormGuideContent } from './form-guide'
 import type { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL, PlanAnswer, PlanContent } from './plan'
 import type { JOURNAL_CHANGED_CHANNEL, JournalState, REPL_SHOWN_CHANNEL, ReplContent } from './repl'
 import type { REVIEW_SHOWN_CHANNEL, ReviewContent } from './review'
@@ -94,6 +95,7 @@ export interface PushChannels {
   readonly [ENVIRONMENT_SHOWN_CHANNEL]: EnvironmentContent
   readonly [REPL_SHOWN_CHANNEL]: ReplContent
   readonly [JOURNAL_CHANGED_CHANNEL]: JournalState
+  readonly [FORM_GUIDE_SHOWN_CHANNEL]: FormGuideContent
 }
 
 export type InvokeChannel = keyof InvokeChannels

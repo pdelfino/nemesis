@@ -50,7 +50,16 @@
         current page's own view, at the rectangle this page reports. It takes
         the transcript's place while a page buffer is current.
       -->
-      <section id="page" aria-label="page" data-buffer-type="page" tabindex="-1" hidden></section>
+      <div id="page-row">
+        <section id="page" aria-label="page" data-buffer-type="page" tabindex="-1" hidden></section>
+        <!--
+          The form guide's pane (#94): the guide's reply beside a watched page,
+          read-only. Shown while the current page buffer is watched.
+        -->
+        <aside id="form-guide" aria-label="form guide" hidden>
+          <div id="form-guide-editor"></div>
+        </aside>
+      </div>
       <section id="transcript" aria-label="transcript" data-buffer-type="transcript">
         <!-- A read-only CodeMirror document of the session (#62). -->
         <div id="transcript-editor"></div>

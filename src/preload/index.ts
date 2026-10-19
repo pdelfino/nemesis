@@ -17,6 +17,7 @@ import {
   PAGE_BOUNDS_CHANNEL,
 } from '../shared/buffers'
 import { DIFF_SHOWN_CHANNEL } from '../shared/diff'
+import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { ENVIRONMENT_SHOWN_CHANNEL } from '../shared/environment'
 import type {
   InvokeAnswer,
@@ -79,6 +80,8 @@ const base = {
   onJournalChanged: (listener) => on(JOURNAL_CHANGED_CHANNEL, listener),
   // The page buffers (#119): the content area the current page's view covers.
   setPageBounds: (bounds) => invoke(PAGE_BOUNDS_CHANNEL, bounds),
+  // The form guide's pane (#94): one push, main to this window; the page sends nothing.
+  onFormGuideShown: (listener) => on(FORM_GUIDE_SHOWN_CHANNEL, listener),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

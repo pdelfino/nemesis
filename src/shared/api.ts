@@ -8,6 +8,7 @@ import type {
 } from './agent'
 import type { BufferInfo, BufferList, BufferSpec, PageBounds } from './buffers'
 import type { DiffContent } from './diff'
+import type { FormGuideContent } from './form-guide'
 import type { EnvironmentContent } from './environment'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
@@ -74,6 +75,8 @@ export interface NemesisApi {
    * page could reach, since no page buffer carries this preload.
    */
   setPageBounds(bounds: PageBounds | null): Promise<void>
+  /** The form guide's pane beside a page buffer changed, or the watch ended (#94). Push only. */
+  onFormGuideShown(listener: (content: FormGuideContent) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

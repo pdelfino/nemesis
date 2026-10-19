@@ -53,6 +53,10 @@ import type { AgentDriver, AgentQueryHandle, RewindFilesOptions } from './sessio
  *   `usage: N`    the reply, with N tokens in the context from here on (#80)
  *   `/compact ...` a compact boundary, then a result, the context back to
  *                 the size of a fresh session, as the CLI does (#80)
+ *   `The form changed. ...` the form guide's prompt (#94): `Guide: fill
+ *                 [ref] next.` and a suggestion line, `SUGGEST [ref]: "Ada
+ *                 Lovelace"`, for the field the header names as focused;
+ *                 `Guide: no field has the focus.` when none is
  *   anything else the reply `You said: <prompt>`
  *
  * Every reply carries usage the way the API reports it: the input tokens of
@@ -111,6 +115,12 @@ const INTERVIEW_PROMPT =
   /^I want to build (.+?)\. Interview me in detail using the AskUserQuestion tool\./s
 /** The guide's investigation prompt, as the `investigate` command sends it (#85). */
 const INVESTIGATE_PROMPT = 'Use subagents to investigate '
+/** The form guide's opening words, as src/main/agent/form-guide.ts writes them (#94). */
+const FORM_GUIDE_OPENING = 'The form changed.'
+/** The header line naming the focused field, written by the cockpit, never by the page. */
+const FORM_GUIDE_FOCUSED = /^Focused field: \[(d[0-9]+e[0-9]+)\]\.$/m
+/** What the mock guide suggests for every focused field. */
+export const MOCK_FORM_SUGGESTION = 'Ada Lovelace'
 
 /** The three options every `ask:` prompt offers; the spec answers with `2` (#63). */
 const MOCK_OPTIONS = [
@@ -496,6 +506,17 @@ class MockQuery implements AgentQueryHandle {
         yield this.assistant([{ type: 'text', text: reply, citations: null }])
         yield this.result(reply)
       }
+      return
+    }
+
+    if (prompt.startsWith(FORM_GUIDE_OPENING)) {
+      const focused = FORM_GUIDE_FOCUSED.exec(prompt)?.[1]
+      const reply =
+        focused === undefined
+          ? 'Guide: no field has the focus.'
+          : `Guide: fill [${focused}] next.\nSUGGEST [${focused}]: ${JSON.stringify(MOCK_FORM_SUGGESTION)}`
+      yield this.assistant([{ type: 'text', text: reply, citations: null }])
+      yield this.result(reply)
       return
     }
 
