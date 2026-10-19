@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,8 +17,10 @@ import {
   describeDownload,
   DownloadPolicy,
   formatBytes,
+  prepareStaging,
   QUARANTINE_FOLDER,
   quarantineValue,
+  removeStaging,
   safeFilename,
   uniquePath,
   type DownloadItemSurface,
@@ -347,5 +358,71 @@ describe('the download policy (SECURITY.org T2)', () => {
     writeFileSync(join(dir, 'report (2).pdf'), '')
     expect(uniquePath(dir, 'report.pdf')).toBe(join(dir, 'report (3).pdf'))
     expect(uniquePath(dir, 'README')).toBe(join(dir, 'README'))
+  })
+})
+
+describe('the staging folder Chromium buffers offers in (#137)', () => {
+  const made: string[] = []
+  afterEach(() => {
+    for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+  const temp = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'nemesis-staging-'))
+    made.push(dir)
+    return dir
+  }
+
+  it("makes this run's folder under the root, both owner-only", () => {
+    const root = join(temp(), 'download-staging')
+    const dir = prepareStaging(root, 4242, () => false)
+    expect(dir).toBe(join(root, '4242'))
+    expect(statSync(root).mode & 0o777).toBe(0o700)
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(readdirSync(root)).toEqual(['4242'])
+  })
+
+  it("removes a dead run's buffers and stray entries, and keeps a live run's folder", () => {
+    const root = join(temp(), 'download-staging')
+    mkdirSync(join(root, '111'), { recursive: true })
+    writeFileSync(join(root, '111', '.com.github.Electron.abc'), 'left by a crash')
+    mkdirSync(join(root, '222'))
+    writeFileSync(join(root, '222', '.com.github.Electron.def'), 'in use')
+    writeFileSync(join(root, 'stray'), '')
+    mkdirSync(join(root, 'not-a-pid'))
+    const alive = vi.fn((pid: number) => pid === 222)
+    prepareStaging(root, 4242, alive)
+    expect(readdirSync(root).sort()).toEqual(['222', '4242'])
+    expect(readdirSync(join(root, '222'))).toEqual(['.com.github.Electron.def'])
+  })
+
+  it("empties a folder left under this run's own pid by a dead run", () => {
+    const root = join(temp(), 'download-staging')
+    mkdirSync(join(root, '4242'), { recursive: true })
+    writeFileSync(join(root, '4242', 'old'), '')
+    const dir = prepareStaging(root, 4242, () => true)
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it('unlinks a link in the root and leaves its target alone', () => {
+    const base = temp()
+    const outside = join(base, 'outside')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'keep'), 'not ours')
+    const root = join(base, 'download-staging')
+    mkdirSync(root)
+    // Named like a live run, so only the type check removes it.
+    symlinkSync(outside, join(root, '333'))
+    prepareStaging(root, 4242, () => true)
+    expect(existsSync(join(root, '333'))).toBe(false)
+    expect(readdirSync(outside)).toEqual(['keep'])
+  })
+
+  it('removes the folder at quit, and a missing folder is no error', () => {
+    const root = join(temp(), 'download-staging')
+    const dir = prepareStaging(root, 4242, () => false)
+    writeFileSync(join(dir, '.com.github.Electron.ghi'), 'buffered')
+    removeStaging(dir)
+    expect(existsSync(dir)).toBe(false)
+    expect(() => removeStaging(dir)).not.toThrow()
   })
 })
