@@ -72,12 +72,13 @@ Nemesis is not an anonymity browser and will never claim to be one. Its promise 
 
 * Status
 
-Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/43][#43]]. M1 landed the same day (PR #89, PR #93): a prompt buffer with Emacs keys, the transcript as a document, permission prompts answered from the keyboard, the M-x palette, transcripts on disk and an end-to-end smoke. The night of 2026-OCTOBER-18 landed the security baseline (#48 to #54; HTTPS-only, #52, waits on a pick) and M2 (PR #95): sessions and resume, diff buffers, search across transcripts, the context meter with clear and compact, rewind, plan mode as a buffer, interview and verify commands, the menu bar and the system theme. The M0 agent-shell week (#44) runs alongside. Next: the follow-ups from the PR 95 review, rich prompts and the environment panel, then the M3 studies and ADRs; multiple windows (#70) and the user config (#71) wait on picks.
+Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue [[https://github.com/pdelfino/nemesis/issues/43][#43]]. As of 2026-OCTOBER-18, main carries M1 (PR #89, PR #93): a prompt buffer with Emacs keys, the transcript as a document, permission prompts answered from the keyboard, the M-x palette, transcripts on disk and an end-to-end smoke. It carries the security baseline (#48 to #54) and M2 (PR #95): sessions and resume, session names, diff buffers, search across transcripts, the context meter with clear and compact, rewind, plan mode as a buffer, interview and verify commands, the environment panel, the menu bar and the system theme. It also carries the developer loop (=dev:debug=, =peek=, failure artifacts under =test-results/=), the lint-enforced import zones, and the studies and ADRs 0001 to 0008 (PR #105, PR #106). The M0 agent-shell week (#44) runs alongside. Next stack: M3 core (HTTPS-only, #52, the user config, eval and notifications), then multiple windows (#70) and packaging.
 
 * Development setup
 
 - Node 24 LTS through nvm (=.nvmrc=), npm with a committed lockfile.
-- =make setup= then =make dev= opens the window; =make gate= runs the gate; bare =make= lists the targets. Underneath: =make setup= checks Node against =.nvmrc= (through nvm when present) and runs =npm ci --ignore-scripts= and =node node_modules/electron/install.js=, =make dev= is =npm run dev= (and runs setup first on a fresh clone), =make gate= is =npm run gate= (dependency check, typecheck, lint, unit, end-to-end and security specs). The gate runs locally before every commit; GitHub Actions is the second opinion at ready-for-review.
+- =make setup= then =make dev= opens the window; =make gate= runs the gate; bare =make= lists the targets. Underneath: =make setup= checks Node against =.nvmrc= (through nvm when present) and runs =npm ci --ignore-scripts= and =node node_modules/electron/install.js=, =make dev= is =npm run dev= (and runs setup first on a fresh clone), =make gate= is =npm run gate= (dependency check, typecheck, lint, unit, end-to-end and security specs). The gate runs locally before every commit; GitHub Actions is the second opinion at ready-for-review. A red end-to-end spec leaves a screenshot and the main-process log under =test-results/=.
+- =npm run dev:debug= opens the window with a loopback DevTools port on 9222, and =npm run peek= reads the window through that port (title, mode line, buffer text, a PNG). See CONTRIBUTING.org.
 - Claude Code reads =CLAUDE.md= at the root. The non-interactive queue reads =.claude-queue=.
 
 * Roadmap
@@ -86,8 +87,8 @@ Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue
 |-----------+-------------------------------------------------------------------------------------------|
 | M0        | A week in agent-shell. Notes on what a cockpit needs. No code.                            |
 | Security  | Threat model ratified, hardening baseline, security test suite. Blocks M1 features.       |
-| M1        | Cockpit MVP: one window, prompt buffer, transcript, permissions, M-x, transcripts on disk. |
-| M2        | Sessions and resume, diff buffers, search across transcripts, multiple windows.           |
+| M1 (done) | Cockpit MVP: one window, prompt buffer, transcript, permissions, M-x, transcripts on disk. |
+| M2 (done) | Sessions and resume, diff buffers, search across transcripts. Multiple windows moved on.   |
 | M3        | Extension door: user config, live reload, eval, MCP server over the command table.        |
 | M4        | Browser buffers in the Nyxt tradition: prompt buffer over URLs, hints, history, blocker.   |
 | M5        | Distribution: signed and notarized =.app=, update policy.                                 |

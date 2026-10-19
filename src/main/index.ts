@@ -69,6 +69,7 @@ import { originOf, PermissionPolicy } from './security/permissions'
 import { TransportPolicy } from './security/transport'
 import { internalPagePreferences } from './security/web-preferences'
 import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
+import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
@@ -129,6 +130,8 @@ app.on('will-quit', () => downloads.clear())
 // test run.
 const transport = new TransportPolicy()
 transport.guardCertificates(app)
+// A quiet app still prints the last "suppressed N more" line of each key.
+app.on('will-quit', () => warnLimited.flush())
 
 app.on('web-contents-created', (_event, contents) => {
   // T6 (#49): whatever partition this WebContents uses gets the deny-by-default

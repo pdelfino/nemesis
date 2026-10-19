@@ -57,7 +57,7 @@ Without =ARTIFACT_PROBE=1= the probe is skipped, so the gate never sees it.
 
 * Issues are the unit of work
 
-Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). Issues bigger than one file carry =## Approach= with the chosen design before anyone edits code. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment. A choice between libraries or architectures that a later issue would otherwise reopen is recorded as an ADR; the process, the numbering and the index live in =docs/adr/README.org=.
+Every issue that describes code carries =## Verify= (a terminating command or a named spec) and =## Do not touch= (the boundary). An issue with a real design choice carries an =## Approach= table of two or three options (files touched, cost, risk, what each rules out), one marked Recommended, and waits for the maintainer's pick before anyone edits code; nobody asks an open-ended "how do you want it". One-file fixes and errands skip this. Done means the checklist is resolved: tick, strike with a reason, or bold what remains, then a one-line "verified with ..." comment. A choice between libraries or architectures that a later issue would otherwise reopen is recorded as an ADR; the process, the numbering and the index live in =docs/adr/README.org=. An ADR lands as =proposed= with the Approach table and flips to =accepted= when the maintainer picks.
 
 * Commits and pull requests
 
