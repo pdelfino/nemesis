@@ -27,10 +27,14 @@ import { installKeyBridge } from './commands/key-bridge'
 import {
   cockpitKeymapLayers,
   createCockpitDispatcher,
+  createCockpitRegistry,
   resolveCockpitDeps,
+  setUserKeymap,
 } from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
+import { defineCommand } from './commands/registry'
+import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './config/loader'
 import { DiffBuffers } from './diffs'
 import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
@@ -255,6 +259,9 @@ function clipboardImageOf(image: Electron.NativeImage): ClipboardImage | null {
   return { png: image.toPNG(), width, height }
 }
 
+/** The command that runs the config file again (#71). */
+const RELOAD_CONFIG = 'reload-config'
+
 /** One stream of the cockpit's own notices out of several policies. */
 function mergeNotices(...sources: readonly EventSource[]): EventSource {
   return {
@@ -292,15 +299,38 @@ void app.whenReady().then(() => {
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
-  const settings = readSettings()
-  // The appearance (#33): `system` follows the OS, `light` and `dark` pin it.
-  // Set before the window exists, so the renderer's prefers-color-scheme is
-  // right on its first paint and the renderer never reads the settings.
-  nativeTheme.themeSource = settings.theme
   // The buffer list is the spine: the keymap and, later, the palette act on
   // it, so it exists before the window that shows it (#60).
   const buffers = createCockpitBuffers()
   installBufferBridge(buffers)
+  // The config file (#71, ADR 0006): run and checked whole before anything
+  // reads a setting, against the cockpit's command names, so the settings it
+  // overrides are in force from the start and a failing file changes
+  // nothing. Its commands and keys are committed once the registry exists
+  // below; the error, if any, waits for the window.
+  let dispatcher: ReturnType<typeof createCockpitDispatcher> | null = null
+  const config = new ConfigLoader({
+    path: configPath({ home: app.getPath('home'), env: process.env, argv: process.argv }),
+    base: readSettings,
+    buffers: () => buffers.list(),
+    run: (name) =>
+      dispatcher === null
+        ? Promise.reject(new Error('Commands run once the cockpit is up, not while it starts'))
+        : dispatcher.registry.run(name, { source: 'config' }),
+  })
+  const firstLoad = config.stage(
+    new Set([
+      ...createCockpitRegistry()
+        .list()
+        .map((command) => command.name),
+      RELOAD_CONFIG,
+    ]),
+  )
+  const settings = config.settings
+  // The appearance (#33): `system` follows the OS, `light` and `dark` pin it.
+  // Set before the window exists, so the renderer's prefers-color-scheme is
+  // right on its first paint and the renderer never reads the settings.
+  nativeTheme.themeSource = settings.theme
   // One agent session per cockpit, in the folder the app was started in; the
   // SDK loads the CLI's own settings, so the permission rules are the CLI's
   // and so is the model unless the settings name one (#61, #64). It starts on
@@ -321,9 +351,13 @@ void app.whenReady().then(() => {
     leavePlanMode: (): Promise<void> => agent.leavePlanMode(),
   })
   // The manager holds that session and swaps it on new-task or a rewind (#84).
+  // The model is read when a session starts, so a reload's model is the
+  // next session's (#71).
   const agent: SessionManager = new SessionManager({
     cwd: process.cwd(),
-    model: settings.model,
+    get model() {
+      return config.settings.model
+    },
     permissionHandler: plans,
   })
   // The Edit and Write calls of the session, listed and opened as diff
@@ -362,6 +396,7 @@ void app.whenReady().then(() => {
     started: () => agent.started,
     confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
     open: (path) => shell.openPath(path),
+    config: () => config.status,
   })
   // The verify key (#81): the check of the attached issue, else the settings'
   // verify entry, else npm run gate, run as a child of the cockpit with the
@@ -372,7 +407,10 @@ void app.whenReady().then(() => {
   const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
   const verifier = new Verifier({
     cwd: process.cwd(),
-    settingsCommand: settings.verify,
+    // Read on every check, so a reload's verify is the next check's (#71).
+    get settingsCommand() {
+      return config.settings.verify
+    },
     issueBody: () => issues.current?.body ?? null,
     confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
   })
@@ -421,6 +459,7 @@ void app.whenReady().then(() => {
       fetcher,
       environment,
       transport,
+      config,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -455,12 +494,49 @@ void app.whenReady().then(() => {
     environment,
   })
   // Keys mean nothing until the registry and the keymaps are up (#59).
-  const dispatcher = createCockpitDispatcher(deps)
-  installKeyBridge(dispatcher)
-  // The menu bar lists every command with its chord as text (#30). Built once
-  // here; a reload of the keymaps (#71) calls installMenu again.
-  installMenu(dispatcher.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged })
-  createWindow()
+  const cockpit = createCockpitDispatcher(deps)
+  dispatcher = cockpit
+  installKeyBridge(cockpit)
+  // What a config load swaps (#71): its commands in the registry, the user
+  // keymap layer the resolver reads on every key, the settings read at use
+  // time, and the menu bar, which lists every command with its chord as text
+  // (#30) and is built again so the labels follow. The palette's commands
+  // source reads the registry and the layers on every open.
+  const target: ConfigTarget = {
+    registry: cockpit.registry,
+    setUserKeymap,
+    applySettings: (next) => {
+      nativeTheme.themeSource = next.theme
+    },
+    rebuilt: () => installMenu(cockpit.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged }),
+  }
+  cockpit.registry.register(
+    defineCommand({
+      name: RELOAD_CONFIG,
+      doc: 'Run the config file again; a failing file leaves the previous config live.',
+      run: () => {
+        const result = config.reload(target)
+        if (result.ok) {
+          config.notify(result.line)
+          return
+        }
+        deps.help.show(renderProblem(result.problem))
+        config.notify(`Config not reloaded: ${result.problem.message}`)
+      },
+    }),
+  )
+  if (firstLoad.ok) config.commit(firstLoad.config, target)
+  else target.rebuilt()
+  const win = createWindow()
+  // A load error at start is shown once the window can show it, and the
+  // app runs on the defaults.
+  if (!firstLoad.ok) {
+    const problem = firstLoad.problem
+    win.webContents.once('did-finish-load', () => {
+      deps.help.show(renderProblem(problem))
+      config.notify(`Config not loaded: ${problem.message}`)
+    })
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

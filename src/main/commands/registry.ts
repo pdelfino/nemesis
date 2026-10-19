@@ -8,7 +8,7 @@ import type { BufferType } from '../../shared/keys'
 
 /** Where the invocation came from, for commands that care. */
 export interface CommandContext {
-  readonly source: 'key' | 'palette' | 'menu' | 'test'
+  readonly source: 'key' | 'palette' | 'menu' | 'config' | 'test'
   /** The chord that ran it, in Emacs notation, when a key did. */
   readonly chord?: string
   readonly bufferType?: BufferType | null
@@ -52,6 +52,11 @@ export class CommandRegistry {
 
   registerAll(commands: readonly Command[]): void {
     for (const command of commands) this.register(command)
+  }
+
+  /** Drops a command, as a config reload drops the previous load's (#71). */
+  unregister(name: string): void {
+    this.commands.delete(name)
   }
 
   get(name: string): Command | undefined {

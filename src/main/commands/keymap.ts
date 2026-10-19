@@ -195,6 +195,12 @@ export type BufferKeymaps = Readonly<Partial<Record<BufferType, Keymap>>>
 export interface KeyResolverOptions {
   readonly global: Keymap
   readonly byBufferType?: BufferKeymaps
+  /**
+   * The user's layer from the config file (#71, ADR 0006), read on every
+   * sequence so a reload takes effect on the next key. It sits above the
+   * global map and below the buffer-type maps.
+   */
+  readonly user?: () => Keymap | null
   /** Stroke that abandons a half-typed sequence, as `C-g` does in Emacs. */
   readonly abort?: string
 }
@@ -216,6 +222,7 @@ export type Resolution =
 export class KeyResolver {
   private readonly global: Keymap
   private readonly byBufferType: BufferKeymaps
+  private readonly user: () => Keymap | null
   private readonly abortStroke: string | undefined
   private path: string[] = []
   private layers: Keymap[] = []
@@ -223,6 +230,7 @@ export class KeyResolver {
   constructor(options: KeyResolverOptions) {
     this.global = options.global
     this.byBufferType = options.byBufferType ?? {}
+    this.user = options.user ?? (() => null)
     this.abortStroke = options.abort === undefined ? undefined : normalizeChord(options.abort)
   }
 
@@ -242,7 +250,8 @@ export class KeyResolver {
     for (const [type, keymap] of Object.entries(this.byBufferType) as [BufferType, Keymap][]) {
       byBufferType[type] = keymap.shape()
     }
-    return { global: this.global.shape(), byBufferType }
+    const user = this.user()
+    return { global: mergeShapes(this.global.shape(), user?.shape()), byBufferType }
   }
 
   resolve(stroke: KeyStroke, bufferType: BufferType | null = null): Resolution {
@@ -269,6 +278,37 @@ export class KeyResolver {
 
   private layersFor(bufferType: BufferType | null): Keymap[] {
     const buffer = bufferType === null ? undefined : this.byBufferType[bufferType]
-    return buffer === undefined ? [this.global] : [buffer, this.global]
+    const user = this.user()
+    return [
+      ...(buffer === undefined ? [] : [buffer]),
+      ...(user === null ? [] : [user]),
+      this.global,
+    ]
   }
+}
+
+/** The renderer sees the user layer as part of the global one: it only asks which keys are the cockpit's. */
+function mergeShapes(global: KeymapShape, user: KeymapShape | undefined): KeymapShape {
+  if (user === undefined) return global
+  const sorted = (items: readonly string[]): string[] =>
+    [...new Set(items)].sort((a, b) => a.localeCompare(b))
+  return {
+    chords: sorted([...global.chords, ...user.chords]),
+    prefixes: sorted([...global.prefixes, ...user.prefixes]),
+  }
+}
+
+/**
+ * True when `chord` in a lower layer can never run because `upper` takes the
+ * sequence first: a command on the chord or on a prefix of it, or a prefix
+ * on the chord itself. describe and the menu leave such a binding out.
+ */
+export function isShadowed(upper: Keymap, chord: string): boolean {
+  const path = parseChord(chord).map(formatStroke)
+  for (let length = 1; length <= path.length; length += 1) {
+    const hit = upper.lookup(path.slice(0, length))
+    if (hit.kind === 'command') return true
+    if (hit.kind === 'prefix' && length === path.length) return true
+  }
+  return false
 }

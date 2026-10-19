@@ -46,6 +46,8 @@ const palette = installPalette()
 // until it does, every chord is reported.
 void installPromptBuffer().then((prompt) => {
   const act = (outcome: KeyOutcome, bufferType: BufferType | null): void => {
+    // A config reload may have bound new keys: the shape is read again (#71).
+    if (outcome.command === 'reload-config') readBindings()
     // C-g closes an open palette before anything else sees it.
     if (palette.onCommand(outcome)) return
     prompt.onCommand(outcome, bufferType)
@@ -61,9 +63,12 @@ void installPromptBuffer().then((prompt) => {
   // `@` mentions a file at the start of a word and stays text inside one (#83).
   keys.keepAsText = (press) => prompt.keepsAsText(press)
 })
-void window.nemesis.bindings().then(
-  (bindings) => {
-    keys.bindings = bindings
-  },
-  (error: unknown) => console.error('Could not read the key bindings:', error),
-)
+function readBindings(): void {
+  void window.nemesis.bindings().then(
+    (bindings) => {
+      keys.bindings = bindings
+    },
+    (error: unknown) => console.error('Could not read the key bindings:', error),
+  )
+}
+readBindings()

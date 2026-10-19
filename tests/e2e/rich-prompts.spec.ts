@@ -123,7 +123,9 @@ test('@ mentions a file at the point, an attached image reaches the SDK as a blo
     await page.keyboard.type('@')
     await expect(palette).toBeVisible()
     await expect(page.locator('#palette-prompt')).toHaveText('Mention file:')
-    await expect.poll(() => candidates(page)).toContain('package.json')
+    // The palette shows the first forty in git's order; a root file near the
+    // top stands for the listing, and package.json is reached by typing.
+    await expect.poll(() => candidates(page)).toContain('CLAUDE.md')
     await expect.poll(() => promptLines(page)).toEqual(['Read @'])
     await page.keyboard.type('package.json')
     // The exact name ranks first; a fuzzy neighbour such as the lock file follows it.

@@ -34,7 +34,7 @@ import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
 import type { BufferKeymaps, Keymap } from './keymap'
-import { defineKeymap, KeyResolver } from './keymap'
+import { defineKeymap, isShadowed, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
 import {
   askCodebasePrompt,
@@ -1082,10 +1082,39 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
 /** The chord that abandons a half-typed sequence. */
 export const ABORT_CHORD = 'C-g'
 
+/**
+ * The user's layer from the config file (#71, ADR 0006), above the global
+ * map, and the global map as describe and the menu show it once that layer
+ * shadows some of its chords. Null until a config binds a key.
+ */
+let userLayer: { readonly keymap: Keymap; readonly global: Keymap } | null = null
+
+/** Installs or drops the user layer. The config loader calls it on a commit. */
+export function setUserKeymap(keymap: Keymap | null): void {
+  if (keymap === null) {
+    userLayer = null
+    return
+  }
+  const visible = GLOBAL_KEYMAP.entries().filter((entry) => !isShadowed(keymap, entry.chord))
+  userLayer = {
+    keymap,
+    global: defineKeymap(
+      GLOBAL_KEYMAP.name,
+      Object.fromEntries(visible.map((entry) => [entry.chord, entry.command])),
+    ),
+  }
+}
+
+/** The user layer, when a config installed one. */
+export function userKeymap(): Keymap | null {
+  return userLayer?.keymap ?? null
+}
+
 /** Every keymap with the buffers it applies to, for describe-command (#65). */
 export function cockpitKeymapLayers(): readonly KeymapLayer[] {
   return [
-    { keymap: GLOBAL_KEYMAP, bufferType: null },
+    ...(userLayer === null ? [] : [{ keymap: userLayer.keymap, bufferType: null }]),
+    { keymap: userLayer?.global ?? GLOBAL_KEYMAP, bufferType: null },
     ...(Object.entries(BUFFER_KEYMAPS) as [BufferType, Keymap][]).map(([bufferType, keymap]) => ({
       keymap,
       bufferType,
@@ -1119,6 +1148,7 @@ export function createCockpitResolver(): KeyResolver {
   return new KeyResolver({
     global: GLOBAL_KEYMAP,
     byBufferType: BUFFER_KEYMAPS,
+    user: userKeymap,
     abort: ABORT_CHORD,
   })
 }
