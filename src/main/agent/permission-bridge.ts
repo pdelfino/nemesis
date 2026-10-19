@@ -19,9 +19,11 @@ import type {
  *
  * The policy of which tools ask is not here: in M1 it is the CLI's own
  * settings, read by the SDK, and #55 layers the page-buffer policy on this
- * same seam. This file only asks the user what the policy asked, and keeps
- * the one thing the user can decide for the rest of the session: `a` puts a
- * tool on an in-memory allow list that answers for it from then on.
+ * same seam: its hook sends a side-effect tool here while a page is open,
+ * and `mustAsk` keeps the `a` list from answering for it. This file only
+ * asks the user what the policy asked, and keeps the one thing the user can
+ * decide for the rest of the session: `a` puts a tool on an in-memory allow
+ * list that answers for it from then on.
  *
  * AskUserQuestion is a tool call like any other to the SDK, so it arrives
  * here too. Its questions are numbered; a digit picks an option and free text
@@ -65,6 +67,15 @@ interface Entry {
   readonly resolve: (decision: PermissionDecision) => void
 }
 
+export interface PermissionBridgeOptions {
+  /**
+   * The page boundary (#55): true for a request that needs the user's yes
+   * this time even when `a` allowed its tool for the session. Absent, `a`
+   * answers for every tool it allowed.
+   */
+  readonly mustAsk?: ((request: PermissionRequest) => boolean) | undefined
+}
+
 export class PermissionBridge implements PermissionHandler {
   private readonly buffers: BufferRegistry
   private readonly listeners = new Set<AgentEventListener>()
@@ -74,8 +85,12 @@ export class PermissionBridge implements PermissionHandler {
   /** The buffer that was current before the first pending request took the point. */
   private returnTo: string | null = null
 
-  constructor(buffers: BufferRegistry) {
+  /** True for a request `a` may not answer: the page boundary's side-effect tools (#55). */
+  private readonly mustAsk: (request: PermissionRequest) => boolean
+
+  constructor(buffers: BufferRegistry, options: PermissionBridgeOptions = {}) {
     this.buffers = buffers
+    this.mustAsk = options.mustAsk ?? (() => false)
     // A killed request buffer is an answer: the agent must not wait on a
     // request the user can no longer see.
     buffers.subscribe((list) => {
@@ -112,7 +127,9 @@ export class PermissionBridge implements PermissionHandler {
   }
 
   requestPermission(request: PermissionRequest): Promise<PermissionDecision> {
-    if (this.allowed.has(request.toolName)) return Promise.resolve({ behavior: 'allow' })
+    if (this.allowed.has(request.toolName) && !this.mustAsk(request)) {
+      return Promise.resolve({ behavior: 'allow' })
+    }
     if (request.signal.aborted) {
       return Promise.resolve({ behavior: 'deny', message: REQUEST_ABORTED })
     }

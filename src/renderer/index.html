@@ -24,6 +24,10 @@
       <span id="session-name" aria-label="session name"></span>
       <!-- The buffer list, current buffer in brackets (#60). -->
       <span id="buffer-list" aria-label="buffer list"></span>
+      <!-- The current page buffer's committed URL (#119); a loopback plain http: page shows its scheme in red. -->
+      <span id="page-url" aria-label="page url"></span>
+      <!-- The current page buffer's state (#120): passthrough while on, the zoom when it is not 100%, the blocker's count or "blocker off" (#126). -->
+      <span id="page-state" aria-label="page state"></span>
       <!-- The permission mode (#82): default until the session says otherwise; C-c C-p toggles plan. -->
       <span
         id="permission-mode"
@@ -41,6 +45,12 @@
       <span id="modeline-hint" aria-label="hint"></span>
     </header>
     <main>
+      <!--
+        A page buffer (#119): an empty section the main process covers with the
+        current page's own view, at the rectangle this page reports. It takes
+        the transcript's place while a page buffer is current.
+      -->
+      <section id="page" aria-label="page" data-buffer-type="page" tabindex="-1" hidden></section>
       <section id="transcript" aria-label="transcript" data-buffer-type="transcript">
         <!-- A read-only CodeMirror document of the session (#62). -->
         <div id="transcript-editor"></div>

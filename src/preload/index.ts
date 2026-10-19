@@ -10,7 +10,12 @@ import {
 } from '../shared/agent'
 import type { NemesisApi } from '../shared/api'
 import type { BufferSpec } from '../shared/buffers'
-import { BUFFER_CREATE_CHANNEL, BUFFERS_CHANGED_CHANNEL, BUFFERS_CHANNEL } from '../shared/buffers'
+import {
+  BUFFER_CREATE_CHANNEL,
+  BUFFERS_CHANGED_CHANNEL,
+  BUFFERS_CHANNEL,
+  PAGE_BOUNDS_CHANNEL,
+} from '../shared/buffers'
 import { DIFF_SHOWN_CHANNEL } from '../shared/diff'
 import { ENVIRONMENT_SHOWN_CHANNEL } from '../shared/environment'
 import type {
@@ -72,6 +77,8 @@ const base = {
   // main process on a command the user ran.
   onReplShown: (listener) => on(REPL_SHOWN_CHANNEL, listener),
   onJournalChanged: (listener) => on(JOURNAL_CHANGED_CHANNEL, listener),
+  // The page buffers (#119): the content area the current page's view covers.
+  setPageBounds: (bounds) => invoke(PAGE_BOUNDS_CHANNEL, bounds),
 } satisfies NemesisApi
 
 // The dispatch log is how the end-to-end specs see what a chord ran (#59), and

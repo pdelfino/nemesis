@@ -113,6 +113,11 @@ export interface AgentSessionOptions {
    * `canUseTool`, so the permission bridge asks as for any tool.
    */
   readonly mcpServers?: Options['mcpServers'] | undefined
+  /**
+   * The SDK hooks the session starts with: the page boundary's `PreToolUse`
+   * (#55), which answers before `canUseTool` is asked and never instead of it.
+   */
+  readonly hooks?: Options['hooks'] | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
 }
@@ -564,6 +569,7 @@ export class AgentSession {
       enableFileCheckpointing: true,
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers }),
+      ...(this.options.hooks === undefined ? {} : { hooks: this.options.hooks }),
       ...(this.options.resume === undefined ? {} : { resume: this.options.resume }),
       ...(this.options.resumeAt === undefined ? {} : { resumeSessionAt: this.options.resumeAt }),
       ...(this.options.fork === true && this.options.resume !== undefined

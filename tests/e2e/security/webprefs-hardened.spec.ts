@@ -47,6 +47,16 @@ interface Reported {
   readonly prefs: Record<string, unknown> | null
 }
 
+/** The cockpit's bridge, as far as this spec reads it. */
+interface CockpitWindow {
+  readonly nemesis: {
+    buffers(): Promise<{
+      readonly buffers: readonly { id: string; kind: string; url?: string }[]
+      readonly currentId: string | null
+    }>
+  }
+}
+
 /** The types that hold app or web content, the ones the app configures itself. */
 const OURS = ['window', 'browserView', 'webview', 'offscreen']
 
@@ -87,9 +97,27 @@ test('every WebContents reports the hardened preferences at runtime', async () =
     expect(atStartup.length).toBeGreaterThan(0)
     for (const contents of atStartup) assertHardened(contents)
 
-    // A page buffer holding hostile content is held to the same policy.
-    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('node-probe.html'))
+    // A page buffer holding hostile content is held to the same policy: the
+    // app's own, a WebContentsView src/main/page-buffer.ts built (#119).
+    const url = fixtures.secureUrl('node-probe.html')
+    const buffer = await nemesis.openPageBuffer(url)
     expect(buffer.loadError).toBeNull()
+    await expect
+      .poll(() =>
+        nemesis.window.evaluate(async () => {
+          const list = await (globalThis as unknown as CockpitWindow).nemesis.buffers()
+          return list.buffers.find((one) => one.id === list.currentId) ?? null
+        }),
+      )
+      .toMatchObject({ kind: 'page', url })
+    const views = await nemesis.app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().flatMap((window) =>
+        window.contentView.children.flatMap((child) =>
+          'webContents' in child ? [(child as Electron.WebContentsView).webContents.getURL()] : [],
+        ),
+      ),
+    )
+    expect(views).toContain(url)
 
     const withPage = await reportOurs(nemesis)
     expect(withPage.length).toBeGreaterThan(atStartup.length)

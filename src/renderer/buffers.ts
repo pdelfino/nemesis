@@ -30,10 +30,18 @@ function render(list: BufferList): void {
       shown.set(buffer.elementId, buffer)
     }
   }
+  // A page shows only while its buffer is current, in the transcript's place:
+  // the main process covers the page section with that page's view (#119).
+  const current = list.buffers.find((buffer) => buffer.id === list.currentId)
+  const pageCurrent = current?.kind === 'page'
+  renderPageUrl(pageCurrent ? (current.url ?? null) : null)
   for (const section of document.querySelectorAll<HTMLElement>('[data-buffer-type]')) {
     const buffer = shown.get(section.id)
     // A killed buffer stops being shown; its section goes with it.
-    section.hidden = buffer === undefined
+    section.hidden =
+      buffer === undefined ||
+      (buffer.kind === 'page' && !pageCurrent) ||
+      (section.id === 'transcript' && pageCurrent)
     if (buffer !== undefined && buffer.id === list.currentId) {
       section.dataset['current'] = 'true'
     } else {
@@ -45,4 +53,28 @@ function render(list: BufferList): void {
 /** The current buffer is the one in brackets, as Emacs marks the mode line. */
 function label(buffer: BufferInfo, currentId: string | null): string {
   return buffer.id === currentId ? `[${buffer.title}]` : buffer.title
+}
+
+/**
+ * The current page's committed URL in the mode line (#119). Plain http: is
+ * only ever a loopback page (#52), and its scheme is shown in red so it never
+ * reads as https:.
+ */
+function renderPageUrl(url: string | null): void {
+  const element = document.getElementById('page-url')
+  if (element === null) return
+  if (url === null) {
+    element.replaceChildren()
+    element.title = ''
+    return
+  }
+  element.title = url
+  if (url.startsWith('http:')) {
+    const scheme = document.createElement('span')
+    scheme.className = 'insecure'
+    scheme.textContent = 'http'
+    element.replaceChildren(scheme, url.slice('http'.length))
+  } else {
+    element.replaceChildren(url)
+  }
 }

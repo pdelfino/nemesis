@@ -21,8 +21,10 @@ describe('the settings schema', () => {
       keyscheme: 'cockpit',
       theme: 'system',
       verify: null,
+      searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
       stopGateRetries: 3,
       notify: null,
+      blockerUpdates: 'weekly',
     })
   })
 
@@ -43,9 +45,13 @@ describe('the settings schema', () => {
       verify: 'npm test',
     })
     expect(parseSettings({ verify: null }, defaults).verify).toBeNull()
+    // The search engines open-url offers (#124).
+    const engines = [{ keyword: 'fx', name: 'Fixture', url: 'http://127.0.0.1:1/?q=%s' }]
+    expect(parseSettings({ searchEngines: engines }, defaults).searchEngines).toEqual(engines)
     // How many red checks the stop gate sends back before the turn ends (#113).
     expect(parseSettings({ stopGateRetries: 0 }, defaults).stopGateRetries).toBe(0)
     expect(parseSettings({ stopGateRetries: 5 }, defaults).stopGateRetries).toBe(5)
+    expect(parseSettings({ blockerUpdates: 'off' }, defaults).blockerUpdates).toBe('off')
   })
 
   it('reads the notify object, an absent toggle at its default, and keeps null for no key (#114)', () => {
@@ -123,16 +129,19 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ theme: true }, defaults)).toThrow(/"theme"/)
     expect(() => parseSettings({ verify: '' }, defaults)).toThrow(/"verify" is not a command/)
     expect(() => parseSettings({ verify: ['npm', 'test'] }, defaults)).toThrow(/"verify"/)
+    expect(() => parseSettings({ searchEngines: [] }, defaults)).toThrow(/"searchEngines"/)
     expect(() => parseSettings({ stopGateRetries: -1 }, defaults)).toThrow(/"stopGateRetries"/)
     expect(() => parseSettings({ stopGateRetries: 1.5 }, defaults)).toThrow(/"stopGateRetries"/)
     expect(() => parseSettings({ stopGateRetries: 21 }, defaults)).toThrow(/"stopGateRetries"/)
     expect(() => parseSettings({ stopGateRetries: '3' }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ blockerUpdates: 'hourly' }, defaults)).toThrow(/"blockerUpdates"/)
+    expect(() => parseSettings({ blockerUpdates: false }, defaults)).toThrow(/"blockerUpdates"/)
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "stopGateRetries": 3\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ],\n  "stopGateRetries": 3,\n  "blockerUpdates": "weekly"\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -175,7 +184,9 @@ describe('the settings file', () => {
       keyscheme: 'cockpit',
       theme: 'system',
       verify: null,
+      searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
       stopGateRetries: 3,
+      blockerUpdates: 'weekly',
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

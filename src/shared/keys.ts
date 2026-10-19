@@ -22,6 +22,7 @@ export type BufferType =
   | 'review'
   | 'environment'
   | 'repl'
+  | 'page'
 
 /**
  * Buffer types where an unmodified key is a command, not text (`y`/`n` on a

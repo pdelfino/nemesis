@@ -184,3 +184,37 @@ describe('the resolver holds the half-typed sequence', () => {
     expect(keys.resolve(parseStroke('C-c'), 'prompt')).toMatchObject({ command: 'send-prompt' })
   })
 })
+
+describe('mode layers come before the buffer-type map (#120, ADR 0004)', () => {
+  const global = defineKeymap('global', { 'C-x b': 'switch-buffer', 'C-g': 'keyboard-quit' })
+  const page = defineKeymap('page', { 'C-x C-f': 'open-url', 'C-v': 'page-layer' })
+  const modes = {
+    document: { keymap: defineKeymap('document', { 'C-v': 'scroll-page-down', 'C-z': 'enter' }) },
+    passthrough: { keymap: defineKeymap('passthrough', { 'C-z': 'leave' }), sealed: true },
+  }
+
+  it('looks in the modes first, in their order, then the type and global maps', () => {
+    const keys = new KeyResolver({ global, byBufferType: { page }, modes })
+    expect(keys.resolve(parseStroke('C-v'), 'page', ['document'])).toMatchObject({
+      command: 'scroll-page-down',
+    })
+    expect(keys.resolve(parseStroke('C-v'), 'page')).toMatchObject({ command: 'page-layer' })
+    keys.resolve(parseStroke('C-x'), 'page', ['document'])
+    expect(keys.resolve(parseStroke('b'), 'page', ['document'])).toMatchObject({
+      command: 'switch-buffer',
+    })
+    // An unknown mode name is no layer.
+    expect(keys.resolve(parseStroke('C-v'), 'page', ['nowhere'])).toMatchObject({
+      command: 'page-layer',
+    })
+  })
+
+  it('stops at a sealed mode: nothing under it answers', () => {
+    const keys = new KeyResolver({ global, byBufferType: { page }, modes })
+    const on = ['passthrough', 'document']
+    expect(keys.resolve(parseStroke('C-z'), 'page', on)).toMatchObject({ command: 'leave' })
+    expect(keys.resolve(parseStroke('C-v'), 'page', on)).toEqual({ kind: 'unbound', chord: 'C-v' })
+    expect(keys.resolve(parseStroke('C-x'), 'page', on)).toEqual({ kind: 'unbound', chord: 'C-x' })
+    expect(keys.resolve(parseStroke('C-g'), 'page', on)).toEqual({ kind: 'unbound', chord: 'C-g' })
+  })
+})

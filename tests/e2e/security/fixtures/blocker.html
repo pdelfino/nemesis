@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>blocker</title>
+  </head>
+  <body>
+    <p>
+      Three requests: one to a host the hosts file lists, one a filter list names, one to neither.
+    </p>
+    <script>
+      // The blocker spec (#126) reads which of these reached the fixture
+      // server. The query keeps a reload from answering out of the cache.
+      const fresh = `?${Date.now()}`
+      for (const src of [
+        `https://nemesis.test:${location.port}/hosts-listed.txt`,
+        '/nemesis-ad.js',
+        '/blocker-control.txt',
+      ]) {
+        const image = new Image()
+        image.src = src + fresh
+        document.body.append(image)
+      }
+    </script>
+  </body>
+</html>

@@ -27,10 +27,33 @@ describe('the buffer registry (#60)', () => {
   it('refuses a buffer without a usable kind or title', () => {
     const buffers = new BufferRegistry()
     expect(() => buffers.create({ kind: 'transcript', title: '  ' })).toThrow(/needs a title/)
-    // No page buffers until M4; the registry says so instead of guessing.
-    expect(() => buffers.create({ kind: 'page', title: 'Page' } as unknown as BufferSpec)).toThrow(
+    expect(() => buffers.create({ kind: 'tab', title: 'Tab' } as unknown as BufferSpec)).toThrow(
       BufferError,
     )
+  })
+
+  it('holds a page buffer, whose title and committed URL follow its page (#119)', () => {
+    const buffers = new BufferRegistry()
+    const page = buffers.create({ kind: 'page', title: 'Page', elementId: 'page' })
+    expect(page.url).toBeUndefined()
+    const seen: string[] = []
+    buffers.subscribe((list) => seen.push(list.buffers.map((b) => `${b.title} ${b.url}`).join()))
+
+    const committed = buffers.update(page.id, { url: 'https://example.test/', title: 'Example' })
+    expect(committed).toMatchObject({
+      kind: 'page',
+      title: 'Example',
+      url: 'https://example.test/',
+    })
+    expect(buffers.get(page.id)).toBe(committed)
+    expect(Object.isFrozen(committed)).toBe(true)
+    // The same title and URL again announce nothing.
+    buffers.update(page.id, { title: 'Example' })
+    // An empty title keeps the old one; a long one is cut, not refused.
+    expect(buffers.update(page.id, { title: '   ' }).title).toBe('Example')
+    expect(buffers.update(page.id, { title: 'x'.repeat(500) }).title).toHaveLength(200)
+    expect(seen).toHaveLength(2)
+    expect(() => buffers.update('b99', { title: 'Nope' })).toThrow(BufferError)
   })
 
   it('cycles to the next buffer and wraps around, which is what C-x b does', () => {
@@ -117,7 +140,9 @@ describe('what the main process accepts from a page', () => {
       elementId: null,
     })
     expect(() => parseBufferSpec(null)).toThrow(/not an object/)
-    expect(() => parseBufferSpec({ kind: 'page', title: 'Page' })).toThrow(/Unknown buffer kind/)
+    // A page buffer has a view and the baseline behind it, which no IPC spec carries (#119).
+    expect(() => parseBufferSpec({ kind: 'page', title: 'Page' })).toThrow(/not opened over IPC/)
+    expect(() => parseBufferSpec({ kind: 'tab', title: 'Tab' })).toThrow(/Unknown buffer kind/)
     expect(() => parseBufferSpec({ kind: 'transcript', title: '' })).toThrow(/usable title/)
     expect(() => parseBufferSpec({ kind: 'transcript', title: 'x', elementId: 7 })).toThrow(
       /usable element id/,

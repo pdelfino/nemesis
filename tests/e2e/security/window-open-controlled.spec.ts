@@ -44,13 +44,13 @@ test('window.open from a page yields a controlled buffer or nothing, never a bar
       match[3] ?? '',
     ])
   try {
-    const buffersBefore = await buffers()
-    expect(buffersBefore.length).toBeGreaterThan(0)
-
     const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('window-open.html'))
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('window open')
-    // The page buffer is itself one window in the harness; nothing else may appear.
+    // Counted with the page buffer itself open (#119): what the page adds is what is new.
+    const buffersBefore = await buffers()
+    expect(buffersBefore.some((one) => one.kind === 'page')).toBe(true)
+    // The page buffer is a view inside the cockpit window (#119); no window may appear.
     const windowsBefore = await windows()
 
     await buffer.page.click('#open-window')

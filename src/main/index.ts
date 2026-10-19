@@ -5,7 +5,9 @@ import {
   desktopCapturer,
   nativeImage,
   nativeTheme,
+  net,
   session,
+  type WebContentsView,
 } from 'electron'
 import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
@@ -29,7 +31,9 @@ import { Journal, journalPath } from './config/journal'
 import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './config/loader'
 import type { HelpBuffers } from './help'
 import { McpDoor } from './mcp/socket'
+import type { PagePolicies } from './page-buffer'
 import { installMenu } from './menu'
+import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
 import type { WindowCapturer } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
@@ -56,6 +60,9 @@ import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
+import { Bookmarks } from './bookmarks'
+import { History } from './history'
+import { openStore, STORE_FILE } from './store'
 import { Worktrees, type Worktree } from './worktrees'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
@@ -210,6 +217,39 @@ const REQUEST_LOG = '__nemesisRequests'
 /** The URLs handed to the system, for the downloads spec (#51). Main process only, under test only. */
 const EXTERNAL_LOG = '__nemesisExternal'
 
+/**
+ * How the security harness opens a real page buffer in the focused window
+ * and closes it again (#119), through `app.evaluate`. Main process only,
+ * under test only.
+ */
+const PAGE_DOOR = '__nemesisPages'
+
+/** What the page door answers: the buffer, its contents and Chromium's refusal, if any. */
+interface OpenedPage {
+  readonly windowId: number
+  readonly bufferId: string
+  readonly contentsId: number
+  readonly loadError: string | null
+}
+
+/**
+ * The baseline a page buffer runs under before its first load (#119):
+ * `web-contents-created` applied it already, and each call is a no-op on a
+ * WebContents that has it; the page buffer applies it again so its own
+ * creation site is correct whatever the hook does.
+ */
+const pagePolicies: PagePolicies<WebContentsView> = {
+  navigation: (contents) => applyNavigationPolicy(contents, 'page'),
+  transport: (contents) => {
+    transport.watch(contents, 'page')
+    transport.apply(contents.session)
+  },
+  permissions: (contents) => {
+    permissionPolicy.apply(contents.session)
+    permissionPolicy.watch(contents)
+  },
+}
+
 /** A window screenshot is scaled to fit this (#81): enough to read a UI, small enough to send. */
 const SCREENSHOT_SIZE = { width: 1920, height: 1200 }
 
@@ -322,19 +362,76 @@ void app.whenReady().then(() => {
     downloads.apply(one)
     transport.apply(one)
   }
-  if (process.env['NODE_ENV'] === 'test') {
+  // T7 (#126): blocker mode on both partitions, the hosts file and the lists
+  // on disk read now, nothing downloaded until a page buffer opens. Under
+  // test nothing is ever downloaded: the hosts file and a seed list are the
+  // spec's own, named by NEMESIS_HOSTS_FILE and NEMESIS_BLOCKER_LIST.
+  const underTest = process.env['NODE_ENV'] === 'test'
+  const blocker = new Blocker({
+    dir: join(app.getPath('userData'), 'blocker'),
+    hostsFile: underTest ? process.env['NEMESIS_HOSTS_FILE'] || null : SYSTEM_HOSTS,
+    updates: () => config.settings.blockerUpdates,
+    fetch: underTest ? null : (url) => net.fetch(url),
+    seedList: underTest ? process.env['NEMESIS_BLOCKER_LIST'] || undefined : undefined,
+  })
+  blocker.load()
+  app.on('will-quit', () => blocker.stop())
+  const blocked = {
+    persistent: blocker.install(partitions.persistent),
+    ephemeral: blocker.install(partitions.ephemeral),
+  }
+  if (underTest) {
     // Installed before the cockpit window loads, so the first request the
-    // app makes is already in the log the spec reads.
+    // app makes is already in the log the spec reads. On the partitions the
+    // log observes through the blocker, which holds their one listener.
     const log = recordRequests({
       default: session.defaultSession,
-      [PERSISTENT_PARTITION]: partitions.persistent,
-      [EPHEMERAL_PARTITION]: partitions.ephemeral,
+      [PERSISTENT_PARTITION]: blocked.persistent,
+      [EPHEMERAL_PARTITION]: blocked.ephemeral,
     })
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
     ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
+    ;(globalThis as { [PAGE_DOOR]?: unknown })[PAGE_DOOR] = {
+      open: async (
+        url: string,
+        partition: 'persistent' | 'ephemeral' = 'persistent',
+      ): Promise<OpenedPage> => {
+        const cockpit = focusedCockpit()
+        if (cockpit === undefined) throw new Error('No cockpit to open a page buffer in')
+        const buffer = cockpit.pages.createPage({ partition })
+        cockpit.buffers.switchTo(buffer.id)
+        const contentsId = cockpit.pages.viewOf(buffer.id)?.webContents.id ?? -1
+        const loadError = await cockpit.pages.load(buffer.id, url)
+        return { windowId: cockpit.id, bufferId: buffer.id, contentsId, loadError }
+      },
+      close: (windowId: number, bufferId: string): void => {
+        cockpits.get(windowId)?.pages.destroyPage(bufferId)
+      },
+      // What the mode line reads of a page buffer, and a command run as M-x
+      // runs it, for the blocker spec (#126).
+      buffer: (windowId: number, bufferId: string) => cockpits.get(windowId)?.buffers.get(bufferId),
+      run: (windowId: number, name: string): Promise<void> =>
+        cockpits.get(windowId)?.registry.run(name, { source: 'test' }) ??
+        Promise.reject(new Error(`No window ${windowId}`)),
+    }
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
+  // The history and the bookmarks (#125): one node:sqlite file in the
+  // profile, opened once here and closed at quit. A file that will not open
+  // is reported and the cockpit runs without the two stores.
+  let stores: { readonly history: History; readonly bookmarks: Bookmarks } | null = null
+  try {
+    const db = openStore(join(app.getPath('userData'), STORE_FILE))
+    stores = { history: new History(db), bookmarks: new Bookmarks(db) }
+    app.on('will-quit', () => {
+      if (db.isOpen) db.close()
+    })
+  } catch (error) {
+    console.error(
+      `History and bookmarks are off: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   // The config file (#71, ADR 0006): run and checked whole before anything
   // reads a setting, against the cockpit's command names, so the settings it
   // overrides are in force from the start and a failing file changes
@@ -426,7 +523,7 @@ void app.whenReady().then(() => {
   // The app's own notices, a refused site permission or download, a
   // certificate error, a config load, go to the focused window's session
   // (#70), shown and recorded like any event there.
-  const appNotices = mergeNotices(permissionPolicy, downloads, external, transport, config)
+  const appNotices = mergeNotices(permissionPolicy, downloads, external, transport, config, blocker)
   const noticesFor = (id: number): EventSource => ({
     on: (listener) =>
       appNotices.on((event) => {
@@ -578,6 +675,9 @@ void app.whenReady().then(() => {
         notices: noticesFor(id),
         windows: windowsFor(id),
         commands: (help) => [reloadConfig(help)],
+        pagePolicies,
+        stores,
+        blocker,
       },
       place.cwd,
     )

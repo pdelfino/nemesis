@@ -105,6 +105,40 @@ main {
   overflow: hidden;
   padding: 0.8rem;
 }
+/* The transcript gives its place to a current page buffer (#119). */
+#transcript[hidden] {
+  display: none;
+}
+/* A page buffer's section is the rectangle its view covers (#119). */
+#page {
+  flex: 1;
+  min-height: 0;
+}
+#page:focus {
+  outline: none;
+}
+#page-url {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 32rem;
+  min-width: 0;
+}
+#page-url:empty {
+  display: none;
+}
+#page-state:empty {
+  display: none;
+}
+/* Plain http: on loopback is allowed (#52) and never looks like https:. */
+#page-url .insecure {
+  color: #b32424;
+}
+@media (prefers-color-scheme: dark) {
+  #page-url .insecure {
+    color: #f08a8a;
+  }
+}
 #prompt {
   border-top: 1px solid var(--line);
   padding: 0.8rem;

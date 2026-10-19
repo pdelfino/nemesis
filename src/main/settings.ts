@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, sep } from 'node:path'
+import { DEFAULT_SEARCH_ENGINES, parseSearchEngines, type SearchEngine } from './url-sources'
 
 /**
  * The app's settings, a JSON file in the user config dir (#64). Everything
@@ -33,6 +34,12 @@ export interface Settings {
    */
   readonly verify: string | null
   /**
+   * The search engines `open-url` offers (#124): `kw query` searches the
+   * engine of keyword `kw`, and a bare word searches the first. `%s` in an
+   * engine's URL takes the query.
+   */
+  readonly searchEngines: readonly SearchEngine[]
+  /**
    * How many times the stop gate (#113) sends a red check back to the
    * session as the next prompt before the turn ends for the user anyway.
    */
@@ -43,6 +50,13 @@ export interface Settings {
    * read instead. The Telegram token is a secret and never a setting.
    */
   readonly notify: NotifyToggles | null
+  /**
+   * How often the blocker's lists, EasyList and EasyPrivacy, are downloaded
+   * again (#126): `daily`, `weekly` or `monthly`, the first time once a page
+   * buffer opens, never at launch; `off` downloads nothing and keeps the
+   * lists already on disk.
+   */
+  readonly blockerUpdates: BlockerUpdates
 }
 
 /** The `notify` object of settings.json: every event on or off, and the sound. */
@@ -74,6 +88,11 @@ export const NOTIFY_KEYS: readonly (keyof NotifyToggles)[] = [
 
 export type Theme = 'system' | 'light' | 'dark'
 
+/** How often the blocker's lists are downloaded again (#126), or never. */
+export type BlockerUpdates = 'daily' | 'weekly' | 'monthly' | 'off'
+
+export const BLOCKER_UPDATES: readonly BlockerUpdates[] = ['daily', 'weekly', 'monthly', 'off']
+
 export const SETTINGS_FILE = 'settings.json'
 
 /** The keyschemes the cockpit knows. A name outside this list is a typo, not a choice. */
@@ -87,8 +106,10 @@ const KNOWN_KEYS: readonly string[] = [
   'keyscheme',
   'theme',
   'verify',
+  'searchEngines',
   'stopGateRetries',
   'notify',
+  'blockerUpdates',
 ]
 
 /** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
@@ -106,8 +127,10 @@ export function defaultSettings(documentsDir: string): Settings {
     keyscheme: 'cockpit',
     theme: 'system',
     verify: null,
+    searchEngines: DEFAULT_SEARCH_ENGINES,
     stopGateRetries: 3,
     notify: null,
+    blockerUpdates: 'weekly',
   }
 }
 
@@ -155,6 +178,15 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError('Setting "verify" is not a command or null')
   }
 
+  let searchEngines = defaults.searchEngines
+  if (value['searchEngines'] !== undefined) {
+    try {
+      searchEngines = parseSearchEngines(value['searchEngines'])
+    } catch (error) {
+      throw new SettingsError(`Setting "searchEngines": ${describe(error)}`)
+    }
+  }
+
   const stopGateRetries = value['stopGateRetries'] ?? defaults.stopGateRetries
   if (
     typeof stopGateRetries !== 'number' ||
@@ -169,7 +201,25 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
 
   const notify = parseNotify(value['notify'] ?? defaults.notify)
 
-  return { sessionsDir: expanded, model, keyscheme, theme, verify, stopGateRetries, notify }
+  const blockerUpdates = value['blockerUpdates'] ?? defaults.blockerUpdates
+  if (
+    typeof blockerUpdates !== 'string' ||
+    !(BLOCKER_UPDATES as readonly string[]).includes(blockerUpdates)
+  ) {
+    throw new SettingsError(`Setting "blockerUpdates" is not one of ${BLOCKER_UPDATES.join(', ')}`)
+  }
+
+  return {
+    sessionsDir: expanded,
+    model,
+    keyscheme,
+    theme,
+    verify,
+    searchEngines,
+    stopGateRetries,
+    notify,
+    blockerUpdates: blockerUpdates as BlockerUpdates,
+  }
 }
 
 /** The `notify` object: known toggles only, each a boolean, an absent one at its default. */
@@ -232,7 +282,9 @@ export function serializeSettings(settings: Settings): string {
     keyscheme: settings.keyscheme,
     theme: settings.theme,
     verify: settings.verify,
+    searchEngines: settings.searchEngines,
     stopGateRetries: settings.stopGateRetries,
+    blockerUpdates: settings.blockerUpdates,
     ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`

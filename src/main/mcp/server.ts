@@ -353,7 +353,7 @@ export class CockpitMcp {
     const buffers = this.deps.buffers.list().map((buffer) => ({
       id: buffer.id,
       kind: buffer.kind,
-      title: buffer.title,
+      title: titleOf(buffer),
       current: buffer.id === current,
     }))
     return {
@@ -380,7 +380,7 @@ export class CockpitMcp {
       structured: {
         id,
         kind: buffer.kind,
-        title: buffer.title,
+        title: titleOf(buffer),
         from,
         lines: taken.length,
         truncated: from - 1 + taken.length < all.length,
@@ -517,6 +517,21 @@ export class CockpitMcp {
     } else if (event.type === 'stopped') {
       this.session = { id: null, name: null, title: null, startedAt: null, cwd: null }
     }
+  }
+}
+
+/**
+ * A buffer's title as a client reads it. A page buffer's own title is the
+ * page's text, which reaches no agent unwrapped (CLAUDE.md: page content is
+ * data), so a page is named by its origin alone (#119).
+ */
+function titleOf(buffer: BufferInfo): string {
+  if (buffer.kind !== 'page') return buffer.title
+  if (buffer.url === undefined) return 'Page'
+  try {
+    return `Page on ${new URL(buffer.url).origin}`
+  } catch {
+    return 'Page'
   }
 }
 

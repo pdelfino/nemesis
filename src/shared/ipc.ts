@@ -31,6 +31,8 @@ import type {
   BUFFERS_CHANGED_CHANNEL,
   BUFFERS_CHANNEL,
   BufferSpec,
+  PAGE_BOUNDS_CHANNEL,
+  PageBounds,
 } from './buffers'
 import type { DIFF_SHOWN_CHANNEL, DiffContent } from './diff'
 import type { ENVIRONMENT_SHOWN_CHANNEL, EnvironmentContent } from './environment'
@@ -73,6 +75,7 @@ export interface InvokeChannels {
   readonly [PROMPT_STATE_CHANNEL]: { payload: undefined; answer: PromptState }
   readonly [PALETTE_ANSWER_CHANNEL]: { payload: PaletteAnswer; answer: PaletteOutcome }
   readonly [PLAN_ANSWER_CHANNEL]: { payload: PlanAnswer; answer: void }
+  readonly [PAGE_BOUNDS_CHANNEL]: { payload: PageBounds | null; answer: void }
 }
 
 /** Main to renderer, pushed: `webContents.send` on one side, `ipcRenderer.on` on the other. */
