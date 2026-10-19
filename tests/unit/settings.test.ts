@@ -20,6 +20,7 @@ describe('the settings schema', () => {
       keyscheme: 'cockpit',
       theme: 'system',
       verify: null,
+      searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
     })
   })
 
@@ -40,6 +41,9 @@ describe('the settings schema', () => {
       verify: 'npm test',
     })
     expect(parseSettings({ verify: null }, defaults).verify).toBeNull()
+    // The search engines open-url offers (#124).
+    const engines = [{ keyword: 'fx', name: 'Fixture', url: 'http://127.0.0.1:1/?q=%s' }]
+    expect(parseSettings({ searchEngines: engines }, defaults).searchEngines).toEqual(engines)
   })
 
   it('expands a leading ~ in the sessions folder', () => {
@@ -68,12 +72,13 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ theme: true }, defaults)).toThrow(/"theme"/)
     expect(() => parseSettings({ verify: '' }, defaults)).toThrow(/"verify" is not a command/)
     expect(() => parseSettings({ verify: ['npm', 'test'] }, defaults)).toThrow(/"verify"/)
+    expect(() => parseSettings({ searchEngines: [] }, defaults)).toThrow(/"searchEngines"/)
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ]\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -111,6 +116,7 @@ describe('the settings file', () => {
       keyscheme: 'cockpit',
       theme: 'system',
       verify: null,
+      searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

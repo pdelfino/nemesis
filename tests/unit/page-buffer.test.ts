@@ -7,7 +7,6 @@ import {
   PageBuffers,
   parsePageBounds,
   pressFromInput,
-  urlFromInput,
   zoomPercent,
   type PageContents,
   type PageInput,
@@ -314,10 +313,24 @@ describe('loading, and what is refused (#119, SECURITY.org T3)', () => {
     expect(buffers.list().map((buffer) => buffer.kind)).toEqual(['transcript'])
     expect(notices).toHaveLength(1)
 
-    await pages.open('  example.test/docs ')
+    await pages.open('https://example.test/docs')
     expect(buffers.current?.kind).toBe('page')
     expect(only(views).webContents.loads).toEqual(['https://example.test/docs'])
-    expect(urlFromInput('http://localhost:5173')).toBe('http://localhost:5173')
+  })
+
+  it('reuses the current page buffer, and opens a new one when asked (#124)', async () => {
+    const { pages, buffers, views } = rig()
+    await pages.open('https://example.test/one')
+    await pages.open('https://example.test/two')
+    expect(views).toHaveLength(1)
+    expect(only(views).webContents.loads).toEqual([
+      'https://example.test/one',
+      'https://example.test/two',
+    ])
+    await pages.open('https://example.test/three', true)
+    expect(views).toHaveLength(2)
+    expect(buffers.list().filter((buffer) => buffer.kind === 'page')).toHaveLength(2)
+    expect(buffers.current?.id).toBe(pages.list().at(-1)?.id)
   })
 
   it('reloads, goes back and goes forward through the same checks', async () => {

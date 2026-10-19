@@ -120,6 +120,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'keyscheme',
   'theme',
   'verify',
+  'searchEngines',
 ]
 
 function settingKey(key: unknown): keyof Settings {

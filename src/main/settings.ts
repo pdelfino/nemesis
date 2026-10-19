@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, sep } from 'node:path'
+import { DEFAULT_SEARCH_ENGINES, parseSearchEngines, type SearchEngine } from './url-sources'
 
 /**
  * The app's settings, a JSON file in the user config dir (#64). Everything
@@ -32,6 +33,12 @@ export interface Settings {
    * the default, `npm run gate`.
    */
   readonly verify: string | null
+  /**
+   * The search engines `open-url` offers (#124): `kw query` searches the
+   * engine of keyword `kw`, and a bare word searches the first. `%s` in an
+   * engine's URL takes the query.
+   */
+  readonly searchEngines: readonly SearchEngine[]
 }
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -43,7 +50,14 @@ const KEYSCHEMES: readonly string[] = ['cockpit']
 
 const THEMES: readonly Theme[] = ['system', 'light', 'dark']
 
-const KNOWN_KEYS: readonly string[] = ['sessionsDir', 'model', 'keyscheme', 'theme', 'verify']
+const KNOWN_KEYS: readonly string[] = [
+  'sessionsDir',
+  'model',
+  'keyscheme',
+  'theme',
+  'verify',
+  'searchEngines',
+]
 
 export class SettingsError extends Error {
   override readonly name = 'SettingsError'
@@ -57,6 +71,7 @@ export function defaultSettings(documentsDir: string): Settings {
     keyscheme: 'cockpit',
     theme: 'system',
     verify: null,
+    searchEngines: DEFAULT_SEARCH_ENGINES,
   }
 }
 
@@ -104,7 +119,16 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError('Setting "verify" is not a command or null')
   }
 
-  return { sessionsDir: expanded, model, keyscheme, theme, verify }
+  let searchEngines = defaults.searchEngines
+  if (value['searchEngines'] !== undefined) {
+    try {
+      searchEngines = parseSearchEngines(value['searchEngines'])
+    } catch (error) {
+      throw new SettingsError(`Setting "searchEngines": ${describe(error)}`)
+    }
+  }
+
+  return { sessionsDir: expanded, model, keyscheme, theme, verify, searchEngines }
 }
 
 /**
@@ -139,6 +163,7 @@ export function serializeSettings(settings: Settings): string {
     keyscheme: settings.keyscheme,
     theme: settings.theme,
     verify: settings.verify,
+    searchEngines: settings.searchEngines,
   }
   return `${JSON.stringify(body, null, 2)}\n`
 }

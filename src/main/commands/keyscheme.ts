@@ -33,6 +33,7 @@ import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
+import { DEFAULT_URL_SOURCES, resolveUrl, urlCandidates, type UrlSources } from '../url-sources'
 import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
 import { Worktrees, type Worktree } from '../worktrees'
@@ -185,6 +186,8 @@ export interface CockpitDeps {
   readonly worktrees: Worktrees
   /** The window's page buffers, as open-url opens one (#119). */
   readonly pages: PageCommands
+  /** What open-url reads over: bookmarks, history and the search engines (#124). */
+  readonly urls: UrlSources
 }
 
 /** A buffer of another window, as the palette's `buffers` source lists it (#70). */
@@ -330,6 +333,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     reviews: partial.reviews ?? new ReviewBuffers(buffers),
     worktrees: partial.worktrees ?? new Worktrees(),
     pages: partial.pages ?? NO_PAGES,
+    urls: partial.urls ?? DEFAULT_URL_SOURCES,
   }
 }
 
@@ -369,6 +373,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     reviews,
     worktrees,
     pages,
+    urls,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -1019,10 +1024,21 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       name: 'open-url',
       // An outside client opens no page in the user's window (ADR 0008).
       mcp: 'never',
-      doc: 'Read a URL and open it in a new page buffer, made current; http: and https: only, plain http: off loopback upgraded.',
+      doc: 'Read a URL, a bookmark, a history entry or "kw query" for a search engine, and open it in the current page buffer, or a new one when the current buffer is not a page; http: and https: only, plain http: off loopback upgraded.',
       run: () => {
-        prompter.read({ source: 'page-url', prompt: 'Open URL:', freeText: true }, (url) =>
-          pages.open(url),
+        prompter.read({ source: 'page-url', prompt: 'Open URL:', freeText: true }, (text) =>
+          pages.open(resolveUrl(text, urls.engines())),
+        )
+      },
+    }),
+    defineCommand({
+      name: 'open-url-in-new-buffer',
+      mcp: 'never',
+      doc: 'Read a URL as open-url does and open it in a new page buffer, made current.',
+      run: () => {
+        prompter.read(
+          { source: 'page-url', prompt: 'Open URL in new buffer:', freeText: true },
+          (text) => pages.open(resolveUrl(text, urls.engines()), true),
         )
       },
     }),
@@ -1213,7 +1229,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * panel lists (#86), in the panel's order, for `RET` there; and the two
  * reads of eval (#72): a form, over nothing, and the journal's entries in
  * file order; and the task name of a worktree window (#87), over nothing;
- * and the URL open-url reads (#119), over nothing.
+ * and the URL open-url reads (#119), over the bookmarks, the history and
+ * the search engines (#124).
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -1229,6 +1246,7 @@ export function cockpitSources(
   environment: EnvironmentBuffers,
   repl: Repl,
   windows: CockpitWindows,
+  urls: UrlSources,
 ): readonly PaletteSource[] {
   return [
     {
@@ -1376,10 +1394,11 @@ export function cockpitSources(
       name: 'worktree-name',
       candidates: () => [],
     },
-    // The URL open-url reads (#119), over nothing until history lands (M4.7).
+    // The URL open-url reads (#119, #124): bookmarks, history, search
+    // engines, and the text typed as the read's free text.
     {
       name: 'page-url',
-      candidates: () => [],
+      candidates: () => urlCandidates(urls),
     },
     // The text find-in-page reads (#120); nothing to choose from.
     {
@@ -1462,12 +1481,15 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     ),
   }),
   // C-x C-f opens a URL in a page buffer (#119), from a page or the
-  // transcript; `o` stays free for the sources of #124.
+  // transcript, and C-x 4 C-f, Emacs's find-file-other-window, in a new
+  // one (#124).
   transcript: defineKeymap('transcript', {
     'C-x C-f': 'open-url',
+    'C-x 4 C-f': 'open-url-in-new-buffer',
   }),
   page: defineKeymap('page', {
     'C-x C-f': 'open-url',
+    'C-x 4 C-f': 'open-url-in-new-buffer',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {
@@ -1596,6 +1618,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.environment,
     deps.repl,
     deps.windows,
+    deps.urls,
   )) {
     deps.prompter.addSource(source)
   }

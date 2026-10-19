@@ -196,8 +196,12 @@ export interface PageBuffersOptions<V extends PageView> {
 
 /** What the commands ask of the page buffers; a window without them refuses (keyscheme.ts). */
 export interface PageCommands {
-  /** Opens `text` as a page buffer and makes it current; a refused URL opens nothing. */
-  open(text: string): Promise<void>
+  /**
+   * Opens `url`, as url-sources.ts resolved it (#124): in the current page
+   * buffer when the current buffer is a page and `newBuffer` is not set,
+   * else in a new page buffer made current. A refused URL opens nothing.
+   */
+  open(url: string, newBuffer?: boolean): Promise<void>
   /** The current page buffer reloads, goes back or goes forward. */
   reload(): void
   back(): void
@@ -297,15 +301,6 @@ function schemeOf(url: string): string {
   } catch {
     return 'not a URL'
   }
-}
-
-/**
- * What the user typed at `open-url`, as a URL: kept when it names a scheme,
- * else read as an `https:` host, as a browser's address bar does.
- */
-export function urlFromInput(text: string): string {
-  const trimmed = text.trim()
-  return /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`
 }
 
 /**
@@ -453,9 +448,13 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     this.show()
   }
 
-  async open(text: string): Promise<void> {
-    const url = urlFromInput(text)
+  async open(url: string, newBuffer = false): Promise<void> {
     if (this.allowed(url) === null) return
+    const current = this.options.buffers.current
+    if (!newBuffer && current !== null && this.pages.has(current.id)) {
+      await this.load(current.id, url)
+      return
+    }
     const buffer = this.createPage()
     this.options.buffers.switchTo(buffer.id)
     await this.load(buffer.id, url)

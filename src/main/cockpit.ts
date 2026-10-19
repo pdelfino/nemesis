@@ -38,6 +38,7 @@ import type { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
+import { EMPTY_STORE } from './url-sources'
 import { Verifier, verifyQuestion } from './verify'
 import { Worktrees } from './worktrees'
 
@@ -341,6 +342,14 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
+    // What open-url reads over (#124): the stores are empty until M4.7
+    // (#125), and the engines are the settings', read on every read so a
+    // reload-config's are the next read's.
+    urls: {
+      bookmarks: EMPTY_STORE,
+      history: EMPTY_STORE,
+      engines: () => config.settings.searchEngines,
+    },
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({

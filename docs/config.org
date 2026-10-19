@@ -94,7 +94,8 @@ exist, an unknown setting), and only a load that runs to its end replaces the
 previous one. On success the previous load's commands and bindings are
 dropped, the new ones registered, the palette and the menu bar follow, and
 one line in the transcript gives the counts. =theme= applies at once,
-=model= on the next session and =verify= on the next check; =sessionsDir=
+=model= on the next session, =verify= on the next check and
+=searchEngines= on the next =open-url=; =sessionsDir=
 and =keyscheme= are read once at start, and the line names them when they
 need a restart. A top-level loop is stopped after two seconds.
 
