@@ -24,6 +24,7 @@
     "test:security": "npm run build && playwright test --project=security",
     "test:package": "playwright test --project=package",
     "test:release": "playwright test --project=release",
+    "test:real": "npm run build && NEMESIS_REAL_SDK=1 playwright test --project=real",
     "release:check": "npm run test:release && node scripts/release-check.mjs",
     "test": "npm run test:unit && npm run test:e2e && npm run test:security",
     "check-deps": "node scripts/check-deps.mjs",

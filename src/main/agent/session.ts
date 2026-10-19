@@ -674,9 +674,12 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 /**
  * The mock is honored only under test. Everywhere else the real SDK is loaded,
  * lazily, so neither the mock nor the SDK is pulled in until a session starts.
+ * The opt-in real harness (#146, `make real`) keeps the rest of the test
+ * seams and asks for the real SDK with NEMESIS_REAL_SDK=1; it can only take
+ * the mock away, never put it in a run that is not a test.
  */
 export async function resolveDriver(): Promise<AgentDriver> {
-  if (process.env['NODE_ENV'] === 'test') {
+  if (process.env['NODE_ENV'] === 'test' && process.env['NEMESIS_REAL_SDK'] !== '1') {
     const { mockDriver } = await import('./mock.ts')
     return mockDriver()
   }

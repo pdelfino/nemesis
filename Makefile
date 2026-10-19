@@ -3,7 +3,7 @@
 # what dev and gate mean.
 
 .DEFAULT_GOAL := help
-.PHONY: help node-version setup dev gate app ci
+.PHONY: help node-version setup dev gate app ci real
 
 # Make runs /bin/sh, where nvm is a shell function and not a command, so a
 # fresh terminal has no `nvm use` in effect. Source nvm.sh here and put the
@@ -50,6 +50,14 @@ gate: node-version ## Run the gate, the same as npm run gate
 ci: ## Run the CI workflow's gate job locally with act, before a push
 	@command -v act >/dev/null || { echo "make ci needs act: brew install act"; exit 1; }
 	GITHUB_TOKEN="$$(gh auth token)" act pull_request -W .github/workflows/ci.yml -j gate -P macos-latest=-self-hosted -s GITHUB_TOKEN
+
+# The real Agent SDK through the cockpit's paths (#146): tests/real/ with
+# Haiku through the `claude` CLI login, a throwaway profile and folder. It
+# spends a few Haiku turns of the logged-in account on every run, so it is
+# opt-in: never part of the gate or CI, which have no login.
+real: node-version node_modules/electron/dist ## Run tests/real/ against the real SDK with Haiku (uses your Claude login)
+	@command -v claude >/dev/null || { echo "make real needs the claude CLI, logged in: claude /login"; exit 1; }
+	$(NPM) run test:real
 
 app: node-version node_modules/electron/dist ## Build the unsigned release/mac-arm64/Nemesis.app (#35)
 	$(NPM) run package
