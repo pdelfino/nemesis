@@ -215,6 +215,21 @@ export const EVENTS_RESOURCE = {
     "The cockpit's current agent session as its event log: every AgentEvent recorded, one JSON object per line, oldest first. Empty before the session's first event. Subscribe for an update after every event.",
 } as const
 
+/**
+ * The key the cockpit's own session gives this server in its `mcpServers`,
+ * so its tools reach the agent as `mcp__nemesis__<name>`.
+ */
+export const IN_APP_SERVER = 'nemesis'
+
+/**
+ * The rows the in-app session is offered whose class is `free`: read-only,
+ * so the page boundary (#132; SECURITY.org T4) lets them through while a page
+ * is open, where every other MCP tool asks.
+ */
+export const FREE_IN_APP_TOOLS: ReadonlySet<string> = new Set(
+  CATALOG.filter((tool) => tool.inApp && tool.confirmation === 'free').map((tool) => tool.name),
+)
+
 export function catalogTool(name: string): CatalogTool | undefined {
   return CATALOG.find((tool) => tool.name === name)
 }

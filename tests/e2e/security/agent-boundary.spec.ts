@@ -12,7 +12,8 @@ import { fixtureServer, launchNemesis } from './_harness'
  * 2. A side-effect tool needs a yes while a page buffer is open: a mocked
  *    Bash call becomes a request in the transcript, with the tool name and
  *    its arguments, and does not run until answered; a no keeps it from
- *    running.
+ *    running. An MCP tool that is not one of the cockpit's free tools asks
+ *    the same way (#132).
  * 3. The hook denies without a user decision while a page is the current
  *    buffer: the same call is refused, no request is ever shown.
  */
@@ -143,6 +144,23 @@ test('page text reaches the agent wrapped, and a side-effect tool asks while a p
       .toBe('Did not run Bash.')
     expect((await ofType(window, 'tool-result')).at(-1)).toMatchObject({ isError: true })
 
+    // 2b. An MCP tool another server serves asks too, whatever its name (#132).
+    const mcpTool = 'mcp__github__create_issue'
+    await expect(window.locator('#prompt .cm-content')).toBeFocused()
+    await window.keyboard.type(`tool: ${mcpTool}`)
+    await window.keyboard.press('Control+c')
+    await window.keyboard.press('Control+c')
+    await expect(request).toBeVisible()
+    expect(
+      (await ofType(window, 'notice')).some((event) =>
+        (event.text ?? '').includes(`Page boundary: ${mcpTool}`),
+      ),
+    ).toBe(true)
+    await window.keyboard.press('n')
+    await expect
+      .poll(async () => (await ofType(window, 'assistant-text')).at(-1)?.text)
+      .toBe(`Did not run ${mcpTool}.`)
+
     // 3. A page current: the hook denies, and nobody is asked.
     const second = await nemesis.openPageBuffer(fixtures.secureUrl('injection.html'))
     const secondIds = second.ids
@@ -152,7 +170,7 @@ test('page text reaches the agent wrapped, and a side-effect tool asks while a p
     await expect(window.locator('#palette-prompt')).toHaveText('Ask the codebase:')
     await window.keyboard.type('tool: Bash')
     await window.keyboard.press('Enter')
-    await expect.poll(async () => (await ofType(window, 'turn-end')).length).toBe(3)
+    await expect.poll(async () => (await ofType(window, 'turn-end')).length).toBe(4)
     expect((await ofType(window, 'assistant-text')).at(-1)?.text).toBe('Did not run Bash.')
     const denied = (await ofType(window, 'tool-result')).at(-1)
     expect(denied).toMatchObject({ isError: true })
