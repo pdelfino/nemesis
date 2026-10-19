@@ -355,11 +355,14 @@ test("the door's query and select hold against a hostile page", async () => {
       arguments: { selector: '#injected, #country' },
     })
     expect(found.isError, texts(found).join(' ')).toBeFalsy()
-    expect(found.structuredContent).toEqual({ page: pageId, origin, matched: 2, truncated: false })
     const [line, block, ...rest] = texts(found)
+    // The block's one structured copy is `untrusted` (#151); no other field holds page text.
+    const { untrusted, ...own } = found.structuredContent as Record<string, unknown>
+    expect(own).toEqual({ page: pageId, origin, matched: 2, truncated: false })
+    expect(untrusted).toBe(block)
     expect(rest).toEqual([])
     expect(line).not.toContain('NEMESIS-QUERY-CANARY')
-    expect(JSON.stringify(found.structuredContent)).not.toContain('NEMESIS-QUERY-CANARY')
+    expect(JSON.stringify(own)).not.toContain('NEMESIS-QUERY-CANARY')
     expect(block?.startsWith(header)).toBe(true)
     expect(block?.endsWith(footer)).toBe(true)
     expect(block).toContain('<p id="injected">')
@@ -421,7 +424,13 @@ test("the door's query and select hold against a hostile page", async () => {
     await window.keyboard.press('Enter')
     const chosen = await chose
     expect(chosen.isError, texts(chosen).join(' ')).toBeFalsy()
-    expect(chosen.structuredContent).toEqual({ page: pageId, origin, ref: country, selected: 1 })
+    expect(chosen.structuredContent).toEqual({
+      page: pageId,
+      origin,
+      ref: country,
+      selected: 1,
+      untrusted: texts(chosen)[1],
+    })
     expect(await buffer.page.locator('#country').inputValue()).toBe('fr')
     await expect(buffer.page.locator('#chosen')).toHaveText('input change fr')
 

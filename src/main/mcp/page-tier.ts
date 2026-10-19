@@ -78,8 +78,10 @@ import {
  * The label rule of ADR 0008: what Nemesis controls (the buffer id, the
  * origin of the committed top-frame URL main holds, counts, flags, times,
  * refs) is the structure; every string the page controls (title, full URL,
- * tree, element text, console text) goes in one `wrapUntrusted` block, so a
- * client that reads only the structure is never steered by the page.
+ * tree, element text, console text) goes in one `wrapUntrusted` block. The
+ * server sends that block as a text item and as the structure's `untrusted`
+ * field (#151), the one field a page string may reach, always inside its
+ * header and footer; no field this file builds holds one.
  *
  * Plain data and no Electron types, so the unit tests drive it on fakes.
  */

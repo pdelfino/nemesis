@@ -52,8 +52,11 @@ import { ACTING_TOOLS, PageTier, type PageTierDeps } from './page-tier'
  *
  * The page tier's tools (#138, #139) relay to page-tier.ts. Their result
  * is the structure, a line of it as text, and the page's own strings as one
- * more text item, the `wrapUntrusted` block, so a client that reads only the
- * structure never sees a word the page wrote. A navigation tool's socket
+ * more text item, the `wrapUntrusted` block. The same block is the
+ * structure's `untrusted` field and no other field holds a page string
+ * (#151): the real Claude Code CLI hands the model the structure alone, so
+ * a client that reads only the structure still reads the page labeled, and
+ * only under that name. A navigation tool's socket
  * question is page-tier.ts's: the tool, the origin of the page and the URL
  * the client named, quoted, never a string the page wrote; a refusal comes
  * back before anything is asked.
@@ -126,7 +129,8 @@ interface Call {
 
 /**
  * What a relay returns: the structure the return schema describes, and its
- * text; a page tool adds the page's own strings as one wrapped block.
+ * text; a page tool adds the page's own strings as one wrapped block, which
+ * goes out both as a text item and as the structure's `untrusted` field.
  */
 interface Answer {
   readonly structured: Record<string, unknown>
@@ -348,7 +352,10 @@ export class CockpitMcp {
             ? []
             : [{ type: 'image' as const, data: answer.image, mimeType: 'image/png' }]),
         ],
-        structuredContent: answer.structured,
+        structuredContent:
+          answer.block === undefined
+            ? answer.structured
+            : { ...answer.structured, untrusted: answer.block },
       }
     } catch (error) {
       return failure(error instanceof Error ? error.message : String(error))

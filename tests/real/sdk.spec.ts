@@ -315,12 +315,10 @@ test('a real browser_snapshot over the injection fixture: asked, y runs it, the 
 
 // Found by this harness on 2026-OCTOBER-19: when an MCP result carries
 // structuredContent, the real CLI (2.1.302) hands the model that JSON and
-// drops the content items, so the untrusted block with the page's text never
-// reaches the model. The mock SDK passes the content through, so no mock
-// spec sees it. Expected to fail until the page tier's results are fixed;
-// Playwright turns this red when it passes, and then `test.fail` goes.
+// drops the content items. The mock SDK passes the content through, so no
+// mock spec saw it. Since #151 the structure's `untrusted` field holds the
+// same labeled block, so the page's text reaches the model inside it.
 test('a real browser_snapshot: the page text reaches the model inside the untrusted block', async () => {
-  test.fail(true, 'The CLI gives the model structuredContent only (found by #146)')
   const snapshot = await snapshotTurn()
   const { open, close } = blockOf(snapshot)
   expect(open, snapshot.text).toBeGreaterThanOrEqual(0)

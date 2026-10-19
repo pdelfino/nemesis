@@ -93,8 +93,11 @@ test('a client navigates, goes back and forward, opens and closes a page, each a
       await pick(window, 'Allow this one call')
       const result = await call
       expect(result.isError, `${name} ${items(result).join(' ')}`).toBeFalsy()
-      // The structure is Nemesis's own; the page's strings are in the block.
-      expect(JSON.stringify(result.structuredContent), name).not.toContain('NEMESIS-')
+      // The structure is Nemesis's own; the page's strings are in the block,
+      // and in its one copy, `untrusted` (#151).
+      const { untrusted, ...own } = result.structuredContent as Record<string, unknown>
+      expect(JSON.stringify(own), name).not.toContain('NEMESIS-')
+      expect(untrusted, name).toBe(items(result)[1])
       return result
     }
 
@@ -105,7 +108,12 @@ test('a client navigates, goes back and forward, opens and closes a page, each a
       { url: second, page: pageId },
       `browser_navigate on ${origin}: load "${second}" in ${pageId}?`,
     )
-    expect(navigated.structuredContent).toEqual({ page: pageId, origin, status: 'loaded' })
+    expect(navigated.structuredContent).toEqual({
+      page: pageId,
+      origin,
+      status: 'loaded',
+      untrusted: items(navigated)[1],
+    })
     expect(items(navigated)[1]?.startsWith(header)).toBe(true)
     expect(items(navigated)[1]).toContain('NEMESIS-INJECTION-CANARY')
     expect(await prompt.textContent()).not.toContain('NEMESIS-')
@@ -116,14 +124,24 @@ test('a client navigates, goes back and forward, opens and closes a page, each a
       { page: pageId },
       `browser_go_back on ${origin}: go back in ${pageId}?`,
     )
-    expect(back.structuredContent).toEqual({ page: pageId, origin, moved: true })
+    expect(back.structuredContent).toEqual({
+      page: pageId,
+      origin,
+      moved: true,
+      untrusted: items(back)[1],
+    })
     expect(items(back)[1]).toContain('NEMESIS-MCP-PAGE-CANARY')
     const forward = await allowed(
       'browser_go_forward',
       { page: pageId },
       `browser_go_forward on ${origin}: go forward in ${pageId}?`,
     )
-    expect(forward.structuredContent).toEqual({ page: pageId, origin, moved: true })
+    expect(forward.structuredContent).toEqual({
+      page: pageId,
+      origin,
+      moved: true,
+      untrusted: items(forward)[1],
+    })
     expect(items(forward)[1]).toContain('NEMESIS-INJECTION-CANARY')
 
     // A new page buffer, which does not take the point, then closed by id.
@@ -134,7 +152,12 @@ test('a client navigates, goes back and forward, opens and closes a page, each a
     )
     const fresh = (opened.structuredContent as { page: string }).page
     expect(fresh).not.toBe(pageId)
-    expect(opened.structuredContent).toEqual({ page: fresh, origin, status: 'loaded' })
+    expect(opened.structuredContent).toEqual({
+      page: fresh,
+      origin,
+      status: 'loaded',
+      untrusted: items(opened)[1],
+    })
     expect(items(opened)[1]).toContain('NEMESIS-MCP-PAGE-CANARY')
     const listed = await client.callTool({ name: 'cockpit_list_buffers', arguments: {} })
     const buffers = (listed.structuredContent as { buffers: { id: string; current: boolean }[] })

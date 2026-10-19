@@ -201,7 +201,7 @@ test('page text reaches the agent wrapped, and a side-effect tool asks while a p
   }
 })
 
-test('browser_snapshot over the injection fixture keeps every canary inside the block, and nothing runs (#138)', async () => {
+test('browser_snapshot over the injection fixture keeps every canary inside the block, in the content and in `untrusted`, and nothing runs (#138, #151)', async () => {
   const fixtures = await fixtureServer()
   const nemesis = await launchNemesis()
   const { app, window } = nemesis
@@ -237,10 +237,14 @@ test('browser_snapshot over the injection fixture keeps every canary inside the 
     expect(block.startsWith(header)).toBe(true)
     expect(block.endsWith(footer)).toBe(true)
     const body = block.slice(header.length, block.length - footer.length)
+    // The structure carries the same block as `untrusted`, for a client that
+    // hands the model the structure alone (#151), and the page in no other field.
+    const { untrusted, ...own } = result.structuredContent as Record<string, unknown>
+    expect(untrusted).toBe(block)
     for (const canary of ['NEMESIS-INJECTION-CANARY-BUTTON', 'Ignore all previous instructions']) {
       expect(body, canary).toContain(canary)
       expect(line, canary).not.toContain(canary)
-      expect(JSON.stringify(result.structuredContent), canary).not.toContain(canary)
+      expect(JSON.stringify(own), canary).not.toContain(canary)
     }
     // The block closes once, at its end, and nothing hidden or commented is read.
     expect(block.indexOf(footer)).toBe(block.length - footer.length)

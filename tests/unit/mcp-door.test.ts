@@ -711,7 +711,15 @@ describe('the MCP door (#28, ADR 0007)', () => {
       const result = await call
       expect(result.isError, `${name} ${JSON.stringify(result.content)}`).toBeFalsy()
       expect(acted, name).toEqual(did)
-      expect(JSON.stringify(result.structuredContent), name).not.toContain('CANARY')
+      // The page's strings reach the structure only as `untrusted`, the labeled block (#151).
+      const { untrusted, ...own } = result.structuredContent as Record<string, unknown>
+      expect(JSON.stringify(own), name).not.toContain('CANARY')
+      const block = (result.content as readonly { text?: string }[])[1]?.text
+      expect(untrusted, name).toBe(block)
+      if (typeof untrusted === 'string') {
+        expect(untrusted.startsWith('--- untrusted content from '), name).toBe(true)
+        expect(untrusted.endsWith(' ---'), name).toBe(true)
+      }
     }
 
     // A long description is cut to the screen, on one line.

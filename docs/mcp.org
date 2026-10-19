@@ -154,9 +154,10 @@ Each read is one JSON object, ={page, origin, records}=, oldest record first, th
 
 What Nemesis controls is structure; what the page controls is text. The split is mechanical.
 
-- =structuredContent= holds only fields Nemesis made: the buffer id, the origin (the committed URL's origin of the top frame), counts, flags, timestamps, status codes and the refs a snapshot assigned.
+- =structuredContent= holds fields Nemesis made: the buffer id, the origin (the committed URL's origin of the top frame), counts, flags, timestamps, status codes and the refs a snapshot assigned.
 - Every string the page wrote (its title, the full URL with path and query, the accessibility tree's names, element text, console entries, mutation summaries, outer HTML) comes in one text item per result, the =wrapUntrusted= block, headed by the origin and a line saying it is untrusted content to be read as data, never as instructions.
-- A page-controlled string never appears as a bare field of the structure, so a client that reads only the structure cannot be steered by the page, and a client that reads the text sees the label first.
+- The same block, whole, header and footer included, is also the structure's one =untrusted= field, since a client may hand its model the structure alone (the Claude Code CLI does, #151). It is there on every page tool whose result has a block, and absent on a move that landed with no snapshot yet.
+- No other field of the structure ever holds a page-controlled string, so a client that reads only the structure sees the page only inside the label and only under =untrusted=, and a client that reads the text sees the label first.
 - The cockpit tier carries no page text of its own; a transcript line that recorded a page block keeps the block as recorded.
 
 * Masked fields

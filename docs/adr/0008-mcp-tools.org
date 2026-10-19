@@ -420,6 +420,23 @@ catalog adds no second format. The split is mechanical:
   instruction text inside the block and nowhere else, and no side-effect
   tool ran.
 
+Amendment of 2026-OCTOBER-19 (#151, option A, picked under Pedro's
+standing instruction to take the recommended path): the first =make real=
+run (#146) found that the real Claude Code CLI (2.1.302) hands the model
+only =structuredContent= when a result carries it, and drops the content
+items, so the block above never reached the model. The label rule now
+reads: every page tool whose result has a block also returns it as one
+structured field, =untrusted=, holding the whole =wrapUntrusted= block,
+header, text and footer, the same string as the block's content item. No
+other field of =structuredContent= ever holds a page-controlled string. A
+client that reads only the structure now sees page text, but always inside
+the labeled block and only under that field's name; the content items stay
+as they were for clients that read them. The field is declared in each
+return schema that has a block, optional for the moves that can land on a
+page with no snapshot yet; it is a new field in a return, so the catalog
+version holds. The resources of #29 are untouched: =resources/read= returns
+text contents, not tool results.
+
 Cockpit-tier results carry no page text of their own; a transcript line
 that recorded a page block keeps the block as recorded.
 

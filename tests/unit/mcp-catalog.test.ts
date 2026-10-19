@@ -542,6 +542,13 @@ function hostilePages(rig: Partial<PageRig> = {}): {
 
 type Result = Awaited<ReturnType<Awaited<ReturnType<typeof connectClient>>['callTool']>>
 
+/** The structure without `untrusted`, the one field a page string may reach (#151). */
+function ownFields(result: Result): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(result.structuredContent ?? {}).filter(([key]) => key !== 'untrusted'),
+  )
+}
+
 function items(result: Result): string[] {
   return (result.content as readonly { type: string; text?: string }[]).map(
     (item) => item.text ?? '',
@@ -552,7 +559,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
   const header = `--- untrusted content from ${ORIGIN} ---`
   const footer = `--- end of untrusted content from ${ORIGIN} ---`
 
-  it('puts every page-controlled string in one wrapped block, and none in the structure', async () => {
+  it('puts every page-controlled string in one wrapped block, and none in the structure but its copy in `untrusted` (#151)', async () => {
     const { build, rig } = hostilePages()
     const client = await connectClient(fakeCockpit(undefined, build).mcp)
     rig.console.record(rig.pageId, 'error', CANARY)
@@ -569,12 +576,15 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       expect(result.isError, name).toBeFalsy()
       const [line, block, ...rest] = items(result)
       expect(rest, name).toEqual([])
-      expect(JSON.stringify(result.structuredContent), name).not.toContain('NEMESIS-MCP-CANARY')
-      expect(JSON.stringify(result.structuredContent), name).not.toContain('/a/')
+      expect(JSON.stringify(ownFields(result)), name).not.toContain('NEMESIS-MCP-CANARY')
+      expect(JSON.stringify(ownFields(result)), name).not.toContain('/a/')
       expect(line, name).not.toContain('NEMESIS-MCP-CANARY')
       expect(block?.startsWith(header), name).toBe(true)
       expect(block?.endsWith(footer), name).toBe(true)
       expect(block, name).toContain(CANARY)
+      // A client that reads only the structure reads the same labeled block.
+      const untrusted = (result.structuredContent as { untrusted?: unknown }).untrusted
+      expect(untrusted, name).toBe(block)
       expect(result.structuredContent, name).toMatchObject({ page: rig.pageId, origin: ORIGIN })
     }
   })
@@ -588,6 +598,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       origin: ORIGIN,
       refs: 2,
       truncated: false,
+      untrusted: items(snapshot)[1],
     })
     expect(items(snapshot)[1]).toContain('[d7e2] textbox "Password" (masked)')
 
@@ -597,6 +608,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       origin: ORIGIN,
       fields: 2,
       focused: 'd7e3',
+      untrusted: items(form)[1],
     })
     expect(items(form)[1]).toContain('[d7e2] password "Password" name "password" (masked, filled)')
 
@@ -609,6 +621,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       origin: ORIGIN,
       chars: 5,
       truncated: true,
+      untrusted: items(piece)[1],
     })
     expect(items(piece)[1]).toContain(CANARY.slice(3, 8))
   })
@@ -656,6 +669,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       origin: ORIGIN,
       matched: 3,
       truncated: true,
+      untrusted: items(found)[1],
     })
     const block = items(found)[1] ?? ''
     expect(block).toContain(`[d7e1]\n<h1 title="${CANARY}">${CANARY}</h1>`)
@@ -764,6 +778,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       origin: ORIGIN,
       entries: 2,
       truncated: true,
+      untrusted: items(last)[1],
     })
     expect(items(last)[1]).toContain('warning: entry 600')
     expect(items(last)[1]).not.toContain('entry 598')
@@ -783,8 +798,13 @@ describe('the page tier, navigation (#139, ADR 0008)', () => {
     const result = await mcp.call('browser_navigate', { url: ' next.example/b ' }, inApp)
     expect(result.isError, JSON.stringify(result.content)).toBeFalsy()
     expect(rig.moves).toEqual([`load ${rig.pageId} https://next.example/b`])
-    expect(result.structuredContent).toEqual({ page: rig.pageId, origin: ORIGIN, status: 'loaded' })
     const [line, block] = items(result)
+    expect(result.structuredContent).toEqual({
+      page: rig.pageId,
+      origin: ORIGIN,
+      status: 'loaded',
+      untrusted: block,
+    })
     expect(line).not.toContain('NEMESIS-MCP-CANARY')
     expect(block?.startsWith(header)).toBe(true)
     expect(block).toContain('[d7e2] textbox "Password" (masked)')
@@ -832,7 +852,12 @@ describe('the page tier, navigation (#139, ADR 0008)', () => {
     const { build, rig } = hostilePages()
     const { mcp } = fakeCockpit(undefined, build)
     const back = await mcp.call('browser_go_back', {}, inApp)
-    expect(back.structuredContent).toEqual({ page: rig.pageId, origin: ORIGIN, moved: true })
+    expect(back.structuredContent).toEqual({
+      page: rig.pageId,
+      origin: ORIGIN,
+      moved: true,
+      untrusted: items(back)[1],
+    })
     expect(items(back)[1]?.startsWith(header)).toBe(true)
     const forward = await mcp.call('browser_go_forward', { page: rig.pageId }, inApp)
     expect(forward.structuredContent).toMatchObject({ moved: true })

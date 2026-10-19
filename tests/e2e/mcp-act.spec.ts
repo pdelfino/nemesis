@@ -125,6 +125,7 @@ test('a client clicks, types, submits, hovers, drags and captures, each after it
       origin: fixtures.httpsOrigin,
       ref: refs.name,
       submitted: false,
+      untrusted: texts(typed)[1],
     })
     await expect(page.locator('#echo')).toHaveText('Ada Lovelace')
 
@@ -206,6 +207,7 @@ test('a client clicks, types, submits, hovers, drags and captures, each after it
       page: pageId,
       origin: fixtures.httpsOrigin,
       ref: refs.next,
+      untrusted: texts(clicked)[1],
     })
     await expect.poll(() => page.url()).toBe(fixtures.secureUrl('mcp-page.html'))
     const stale = await client.callTool({

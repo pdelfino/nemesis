@@ -66,14 +66,16 @@ test('a client reads a page buffer through the page tier: structure apart, page 
     const origin = fixtures.httpsOrigin
     const header = `--- untrusted content from ${origin} ---`
     const footer = `--- end of untrusted content from ${origin} ---`
-    /** The call's result: no error, the structure free of page text, the block wrapped. */
+    /** The call's result: no error, the structure free of page text but its `untrusted` copy of the block, the block wrapped. */
     const read = async (name: string, args: Record<string, unknown> = {}): Promise<Result> => {
       const result = await client.callTool({ name, arguments: args })
       expect(result.isError, `${name} ${items(result).join(' ')}`).toBeFalsy()
-      const structure = JSON.stringify(result.structuredContent)
+      const { untrusted, ...own } = result.structuredContent as Record<string, unknown>
+      const structure = JSON.stringify(own)
       expect(structure, name).not.toContain('NEMESIS-')
       expect(structure, name).not.toContain('mcp-page.html')
       const [line, block] = items(result)
+      expect(untrusted, name).toBe(block)
       expect(line, name).not.toContain('NEMESIS-')
       if (block !== undefined) {
         expect(block.startsWith(header), name).toBe(true)
@@ -109,6 +111,7 @@ test('a client reads a page buffer through the page tier: structure apart, page 
       origin,
       chars: canary.length,
       truncated: false,
+      untrusted: items(whole)[1],
     })
     expect(items(whole)[1]).toContain(canary)
     const piece = await read('browser_read_text', { ref: heading, from: 8, chars: 3 })
