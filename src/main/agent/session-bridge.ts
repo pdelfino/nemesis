@@ -57,10 +57,12 @@ export interface SessionBridgeOptions {
   readonly recorder: SessionRecorder
   /** The cockpit's own notices, shown and recorded like any event. */
   readonly notices?: EventSource | undefined
+  /** Runs a cleanup once, when the window goes: the cockpit's one hook (#136). */
+  readonly onDestroyed: (dispose: () => void) => void
 }
 
 export function installSessionBridge(options: SessionBridgeOptions): PromptQueue {
-  const { contents, agent, permissions, recorder } = options
+  const { contents, agent, permissions, recorder, onDestroyed } = options
   const queue = new PromptQueue(agent)
   const broadcast = (channel: string, payload: unknown): void => {
     if (!contents.isDestroyed()) contents.send(channel, payload)
@@ -83,7 +85,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
     recorder.record(event)
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
-  if (offNotices !== undefined) contents.once('destroyed', offNotices)
+  if (offNotices !== undefined) onDestroyed(offNotices)
   queue.subscribe((state) => broadcast(PROMPT_QUEUE_CHANNEL, state))
   queue.onInsert((insert) => broadcast(PROMPT_INSERT_CHANNEL, insert))
 
@@ -103,7 +105,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   app.once('before-quit', () => {
     void agent.stop()
   })
-  contents.once('destroyed', () => {
+  onDestroyed(() => {
     void agent.stop()
   })
 

@@ -160,8 +160,28 @@ export function handleIn<C extends InvokeChannel>(
     )
     owners = table
   }
+  owners.set(owner.id, run as (payload: never) => unknown)
+  forgetOnDestroyed(owner, channel)
+}
+
+/**
+ * The channels each WebContents registered through `handleIn`, keyed by its
+ * id (#136). One `destroyed` listener per WebContents clears them all, added
+ * the first time it registers anything, so the listener count of a window
+ * does not grow with its channels.
+ */
+const channelsOf = new Map<number, Set<string>>()
+
+function forgetOnDestroyed(owner: WebContents, channel: string): void {
   const id = owner.id
-  const table = owners
-  table.set(id, run as (payload: never) => unknown)
-  owner.once('destroyed', () => table.delete(id))
+  const known = channelsOf.get(id)
+  if (known !== undefined) {
+    known.add(channel)
+    return
+  }
+  channelsOf.set(id, new Set([channel]))
+  owner.once('destroyed', () => {
+    for (const name of channelsOf.get(id) ?? []) perWindow.get(name)?.delete(id)
+    channelsOf.delete(id)
+  })
 }

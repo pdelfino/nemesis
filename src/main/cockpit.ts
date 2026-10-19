@@ -160,6 +160,15 @@ export function createCockpit(
   const { config, journal } = shared
   const contents = window.webContents
   const settings = config.settings
+  // The bridges' cleanups run from one `destroyed` listener, so the window's
+  // listener count stays flat however many bridges it has (#136).
+  const disposers: Array<() => void> = []
+  const onDestroyed = (dispose: () => void): void => {
+    disposers.push(dispose)
+  }
+  contents.once('destroyed', () => {
+    for (const dispose of disposers.splice(0)) dispose()
+  })
   // The buffer list is the spine: the keymap and the palette act on it, so it
   // exists before the page that shows it (#60).
   const buffers = createCockpitBuffers()
@@ -513,6 +522,7 @@ export function createCockpit(
   })
   const prompts = installSessionBridge({
     contents,
+    onDestroyed,
     agent,
     permissions,
     recorder,
@@ -598,6 +608,7 @@ export function createCockpit(
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
     contents,
+    onDestroyed,
     prompter,
     help: deps.help,
     transcripts,

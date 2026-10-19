@@ -42,6 +42,13 @@ test('launch, prompt, reply, permission, file on disk, quit', async () => {
     expect(app.windows()).toHaveLength(1)
     await expect(page.locator('#prompt .cm-content')).toBeFocused()
     expect(existsSync(sessionsDir)).toBe(false)
+    // One `destroyed` listener per bridge, not per channel (#136): the
+    // cockpit stays under Node's default limit of ten whatever its channels.
+    const destroyedListeners = await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().map((win) => win.webContents.listenerCount('destroyed')),
+    )
+    expect(destroyedListeners).toHaveLength(1)
+    expect(destroyedListeners[0]).toBeLessThan(10)
 
     // Prompt and reply: the mock echoes, the transcript shows it, the prompt
     // is empty again and ready for the next one.

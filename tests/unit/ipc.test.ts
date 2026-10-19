@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The wrapper registers through Electron's ipcMain, which does not exist
@@ -9,7 +10,7 @@ vi.mock('electron', () => ({
   ipcMain: { handle: registered },
 }))
 
-const { describeOrigin, guard, handle, isInternalPage, parseNothing, topFrameUrl } =
+const { describeOrigin, guard, handle, handleIn, isInternalPage, parseNothing, topFrameUrl } =
   await import('../../src/main/ipc')
 const { BUFFERS_CHANNEL } = await import('../../src/shared/buffers')
 const { KEY_CHANNEL } = await import('../../src/shared/keys')
@@ -152,5 +153,34 @@ describe('the guarded handler', () => {
   it('registers on ipcMain under the channel name', () => {
     handle(BUFFERS_CHANNEL, parseNothing, () => ({ buffers: [], currentId: null }))
     expect(registered).toHaveBeenCalledWith(BUFFERS_CHANNEL, expect.any(Function))
+  })
+})
+
+describe('the per-window handlers (#70, #136)', () => {
+  /** The listener `handleIn` registered on ipcMain for a channel. */
+  function registeredFor(channel: string) {
+    const call = registered.mock.calls.find(([name]) => name === channel)
+    if (call === undefined) throw new Error(`nothing registered on ${channel}`)
+    return call[1] as (event: unknown, payload: unknown) => Promise<unknown>
+  }
+
+  it('adds one destroyed listener for twenty channels, and destroying it removes every handler', async () => {
+    const owner = Object.assign(new EventEmitter(), { id: 4242 })
+    const channels = Array.from({ length: 20 }, (_, index) => `nemesis:test-${index}`)
+    for (const channel of channels) {
+      handleIn(owner as never, channel as never, parseNothing as never, (() => channel) as never)
+    }
+    expect(owner.listenerCount('destroyed')).toBe(1)
+
+    const event = { ...frame(COCKPIT), sender: { id: owner.id } }
+    for (const channel of channels) {
+      await expect(registeredFor(channel)(event, undefined)).resolves.toBe(channel)
+    }
+
+    owner.emit('destroyed')
+    expect(owner.listenerCount('destroyed')).toBe(0)
+    for (const channel of channels) {
+      await expect(registeredFor(channel)(event, undefined)).rejects.toThrow(/has no cockpit/)
+    }
   })
 })

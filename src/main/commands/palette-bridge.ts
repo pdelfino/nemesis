@@ -57,6 +57,8 @@ export interface PaletteBridgeOptions {
    * by the reader buffer's id, so reader mode needs no channel of its own.
    */
   readonly readers?: ReaderBuffers
+  /** Runs a cleanup once, when the window goes: the cockpit's one hook (#136). */
+  readonly onDestroyed: (dispose: () => void) => void
 }
 
 export function installPaletteBridge(options: PaletteBridgeOptions): void {
@@ -73,6 +75,7 @@ export function installPaletteBridge(options: PaletteBridgeOptions): void {
     repl,
     journal,
     readers,
+    onDestroyed,
   } = options
   const send = (channel: string, payload: unknown): void => {
     if (!contents.isDestroyed()) contents.send(channel, payload)
@@ -89,7 +92,7 @@ export function installPaletteBridge(options: PaletteBridgeOptions): void {
   readers?.onShown(({ bufferId, text }) => send(HELP_SHOWN_CHANNEL, { bufferId, text }))
   // The journal is the app's, not the window's: its subscription goes with the window.
   const offJournal = journal?.on((unpromoted) => send(JOURNAL_CHANGED_CHANNEL, { unpromoted }))
-  if (offJournal !== undefined) contents.once('destroyed', offJournal)
+  if (offJournal !== undefined) onDestroyed(offJournal)
 
   handleIn(contents, PALETTE_ANSWER_CHANNEL, parsePaletteAnswer, (answer) =>
     prompter.answer(answer),
