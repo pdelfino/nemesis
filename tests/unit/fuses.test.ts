@@ -2,13 +2,15 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error -- a packaging hook electron-builder loads by path, so plain
 // ESM JavaScript rather than a typed module in src/.
-import { electronBinaryPath, FUSE_CONFIG } from '../../scripts/after-pack.mjs'
+import * as afterPack from '../../scripts/after-pack.mjs'
+
+const { electronBinaryPath, FUSE_CONFIG, fuseConfigFor, willBeSigned } = afterPack
 
 /**
- * The fuses half of T1 (#47). Reading the wire back off a packaged binary is an
- * M5 test, because there is nothing packaged until then; what is testable now
- * is that the configuration the hook hands to @electron/fuses says what
- * SECURITY.org says, and that the hook aims at the right file.
+ * The fuses half of T1 (#47): the configuration the hook hands to
+ * @electron/fuses says what SECURITY.org says, and the hook aims at the right
+ * file. The wire is read back off the packaged binary in
+ * tests/package/launch.spec.ts (#35).
  */
 
 describe('Electron fuses configuration (SECURITY.org T1)', () => {
@@ -50,6 +52,32 @@ describe('Electron fuses configuration (SECURITY.org T1)', () => {
         .map(String)
         .sort(),
     )
+  })
+})
+
+describe('the signature after the flip (#35)', () => {
+  const context = (identity?: string | null) => ({
+    packager: { platformSpecificBuildOptions: identity === undefined ? {} : { identity } },
+  })
+
+  it('re-signs ad hoc when nothing signs after the hook, so the unsigned app launches', () => {
+    expect(willBeSigned(context(), { CSC_IDENTITY_AUTO_DISCOVERY: 'false' })).toBe(false)
+    expect(willBeSigned(context(null), {})).toBe(false)
+    expect(fuseConfigFor(false).resetAdHocDarwinSignature).toBe(true)
+  })
+
+  it('leaves the signature to electron-builder when an identity is named or discovered', () => {
+    expect(willBeSigned(context(), { CSC_NAME: 'Developer ID Application: X' })).toBe(true)
+    expect(willBeSigned(context(), { CSC_LINK: '/cert.p12' })).toBe(true)
+    expect(willBeSigned(context('Developer ID Application: X'), {})).toBe(true)
+    expect(willBeSigned(context(), {})).toBe(true)
+    expect(fuseConfigFor(true).resetAdHocDarwinSignature).toBe(false)
+  })
+
+  it('never changes the fuse list', () => {
+    for (const signed of [true, false]) {
+      expect({ ...fuseConfigFor(signed), resetAdHocDarwinSignature: false }).toEqual(FUSE_CONFIG)
+    }
   })
 })
 

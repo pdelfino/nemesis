@@ -8,6 +8,8 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type {
   AgentEvent,
   AgentEventListener,
@@ -644,5 +646,32 @@ export async function resolveDriver(): Promise<AgentDriver> {
     return mockDriver()
   }
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
-  return { query: (params) => query(params) }
+  const executable = unpackedClaudeExecutable()
+  if (executable === undefined) return { query: (params) => query(params) }
+  return {
+    query: (params) =>
+      query({ ...params, options: { ...params.options, pathToClaudeCodeExecutable: executable } }),
+  }
+}
+
+/**
+ * In the packaged app the SDK resolves its CLI binary to a path inside
+ * app.asar, which cannot be executed. electron-builder.yml unpacks it next to
+ * the asar (#35), so point the SDK there. In development and in the headless
+ * harness the unpacked copy does not exist and the SDK's own lookup is used.
+ */
+export function unpackedClaudeExecutable(
+  resourcesPath: string | undefined = process.resourcesPath,
+): string | undefined {
+  if (resourcesPath === undefined) return undefined
+  const binary = process.platform === 'win32' ? 'claude.exe' : 'claude'
+  const path = join(
+    resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    '@anthropic-ai',
+    `claude-agent-sdk-${process.platform}-${process.arch}`,
+    binary,
+  )
+  return existsSync(path) ? path : undefined
 }
