@@ -248,6 +248,31 @@ describe('creating a page buffer (#119)', () => {
     expect(only(views).webPreferences.partition).toBe('ephemeral')
   })
 
+  it('answers the partition of each page, as the history asks it (#125)', () => {
+    const { pages } = rig()
+    const kept = pages.createPage()
+    const forgotten = pages.createPage({ partition: 'ephemeral' })
+    expect(pages.partitionOf(kept.id)).toBe('persistent')
+    expect(pages.partitionOf(forgotten.id)).toBe('ephemeral')
+    pages.destroyPage(kept.id)
+    expect(pages.partitionOf(kept.id)).toBeUndefined()
+  })
+
+  it("answers the current page's committed URL and title for bookmark-page (#125)", () => {
+    const { pages, buffers, views } = rig()
+    expect(() => pages.currentPage()).toThrow('The current buffer is not a page')
+    const buffer = pages.createPage()
+    buffers.switchTo(buffer.id)
+    expect(() => pages.currentPage()).toThrow('has not loaded a URL yet')
+    only(views).webContents.emit('did-navigate', {}, 'https://example.test/')
+    only(views).webContents.emit('page-title-updated', {}, 'Example')
+    expect(pages.currentPage()).toEqual({
+      url: 'https://example.test/',
+      title: 'Example',
+      partition: 'persistent',
+    })
+  })
+
   it('applies the navigation, transport and permission policies before the first load', async () => {
     const { pages, views, log } = rig()
     pages.createPage({ url: 'https://example.test/' })

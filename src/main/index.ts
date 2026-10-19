@@ -58,6 +58,9 @@ import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
+import { Bookmarks } from './bookmarks'
+import { History } from './history'
+import { openStore, STORE_FILE } from './store'
 import { Worktrees, type Worktree } from './worktrees'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
@@ -368,10 +371,13 @@ void app.whenReady().then(() => {
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
     ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
     ;(globalThis as { [PAGE_DOOR]?: unknown })[PAGE_DOOR] = {
-      open: async (url: string): Promise<OpenedPage> => {
+      open: async (
+        url: string,
+        partition: 'persistent' | 'ephemeral' = 'persistent',
+      ): Promise<OpenedPage> => {
         const cockpit = focusedCockpit()
         if (cockpit === undefined) throw new Error('No cockpit to open a page buffer in')
-        const buffer = cockpit.pages.createPage()
+        const buffer = cockpit.pages.createPage({ partition })
         cockpit.buffers.switchTo(buffer.id)
         const contentsId = cockpit.pages.viewOf(buffer.id)?.webContents.id ?? -1
         const loadError = await cockpit.pages.load(buffer.id, url)
@@ -384,6 +390,21 @@ void app.whenReady().then(() => {
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
+  // The history and the bookmarks (#125): one node:sqlite file in the
+  // profile, opened once here and closed at quit. A file that will not open
+  // is reported and the cockpit runs without the two stores.
+  let stores: { readonly history: History; readonly bookmarks: Bookmarks } | null = null
+  try {
+    const db = openStore(join(app.getPath('userData'), STORE_FILE))
+    stores = { history: new History(db), bookmarks: new Bookmarks(db) }
+    app.on('will-quit', () => {
+      if (db.isOpen) db.close()
+    })
+  } catch (error) {
+    console.error(
+      `History and bookmarks are off: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   // The config file (#71, ADR 0006): run and checked whole before anything
   // reads a setting, against the cockpit's command names, so the settings it
   // overrides are in force from the start and a failing file changes
@@ -628,6 +649,7 @@ void app.whenReady().then(() => {
         windows: windowsFor(id),
         commands: (help) => [reloadConfig(help)],
         pagePolicies,
+        stores,
       },
       place.cwd,
     )

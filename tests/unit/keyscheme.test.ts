@@ -240,6 +240,7 @@ describe('the page layer and its modes (#120)', () => {
     expect(inPage('C-z')).toBe('toggle-passthrough')
     expect(inPage('C-x C-f')).toBe('open-url')
     expect(inPage('C-x 4 C-f')).toBe('open-url-in-new-buffer')
+    expect(inPage('C-x r m')).toBe('bookmark-page')
     // The cockpit's own chords keep their meaning in a page.
     expect(inPage('C-x b')).toBe('switch-buffer')
     expect(inPage('C-x k')).toBe('kill-buffer')

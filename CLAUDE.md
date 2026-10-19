@@ -4,7 +4,7 @@ Read `README.org` for what this is and `SECURITY.org` before touching anything u
 
 ## Stack (do not substitute)
 
-Electron (current stable, pinned), TypeScript strict, CodeMirror 6 with the Replit Emacs keymap for every text surface, the Claude Agent SDK in the main process, better-sqlite3, Vitest, Playwright for Electron, electron-vite, electron-builder. The M0 agent-shell week (#44) runs alongside the code: Pedro lifted the no-code-before-November rule on 2026-10-17.
+Electron (current stable, pinned), TypeScript strict, CodeMirror 6 with the Replit Emacs keymap for every text surface, the Claude Agent SDK in the main process, `node:sqlite` (built into the Node that Electron ships, #125), Vitest, Playwright for Electron, electron-vite, electron-builder. The M0 agent-shell week (#44) runs alongside the code: Pedro lifted the no-code-before-November rule on 2026-10-17.
 
 ## Layout (created by the M1 scaffold issue; keep it)
 

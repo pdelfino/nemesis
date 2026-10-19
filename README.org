@@ -61,7 +61,7 @@ What this rules out, knowingly: the deepest macOS integration (Swift with AppKit
 | Language        | TypeScript, strict                                         |
 | Text surfaces   | CodeMirror 6 with the Replit Emacs keymap                  |
 | Agent           | Claude Agent SDK (TypeScript) in the main process          |
-| Storage         | Org transcripts on disk, SQLite via better-sqlite3         |
+| Storage         | Org transcripts on disk, SQLite via node:sqlite (built in) |
 | Tests           | Vitest for units, Playwright for Electron end to end       |
 | Build           | electron-vite, electron-builder for the =.app=             |
 | Agent door      | MCP server over stdio exposing the command table           |

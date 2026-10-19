@@ -194,6 +194,13 @@ export interface PageBuffersOptions<V extends PageView> {
   readonly keys?: (press: KeyPress, modes: readonly string[]) => boolean
 }
 
+/** The current page as bookmark-page reads it (#125). */
+export interface CurrentPage {
+  readonly url: string
+  readonly title: string
+  readonly partition: NonNullable<PageSpec['partition']>
+}
+
 /** What the commands ask of the page buffers; a window without them refuses (keyscheme.ts). */
 export interface PageCommands {
   /**
@@ -216,6 +223,8 @@ export interface PageCommands {
   copy(): void
   /** Puts `passthrough` in front of `document`, or takes it off. */
   togglePassthrough(): void
+  /** The current page buffer's committed URL, its title and its partition (#125). */
+  currentPage(): CurrentPage
 }
 
 const noPages = (): never => {
@@ -233,6 +242,7 @@ export const NO_PAGES: PageCommands = {
   zoom: noPages,
   copy: noPages,
   togglePassthrough: noPages,
+  currentPage: noPages,
 }
 
 export type PageEventListener = (event: PageEvent) => void
@@ -247,6 +257,8 @@ interface Page<V extends PageView> {
   modes: readonly string[]
   /** The text of the last find, so a repeat steps to the next match. */
   found: string
+  /** The partition of #54 the page lives in; the history never records `ephemeral` (#125). */
+  readonly partition: NonNullable<PageSpec['partition']>
 }
 
 /** A zoom level as the percentage the mode line shows. */
@@ -370,7 +382,8 @@ export class PageBuffers<V extends PageView> implements PageCommands {
    * loads it. The buffer is not made current here; `open` does that.
    */
   createPage(spec: PageSpec = {}): BufferInfo {
-    const partition = PARTITIONS[spec.partition ?? 'persistent']
+    const partitionName = spec.partition ?? 'persistent'
+    const partition = PARTITIONS[partitionName]
     // No preload: the bridge belongs to internal pages only (T1, ADR 0009 for any later door).
     const view = this.options.createView({ ...HARDENED_WEB_PREFERENCES, partition })
     const contents = view.webContents
@@ -391,6 +404,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       attached: false,
       modes: [DOCUMENT_MODE],
       found: '',
+      partition: partitionName,
     }
     this.pages.set(buffer.id, page)
     this.options.buffers.update(buffer.id, {
@@ -516,6 +530,19 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       ? page.modes.filter((mode) => mode !== PASSTHROUGH_MODE)
       : [PASSTHROUGH_MODE, ...page.modes]
     this.options.buffers.update(page.id, { modes: page.modes })
+  }
+
+  /** The partition of a page buffer, or undefined for an id that holds no page. */
+  partitionOf(id: string): NonNullable<PageSpec['partition']> | undefined {
+    return this.pages.get(id)?.partition
+  }
+
+  /** The URL, title and partition of the current page buffer, for bookmark-page (#125). */
+  currentPage(): CurrentPage {
+    const page = this.current()
+    const buffer = this.options.buffers.get(page.id)
+    if (buffer?.url === undefined) throw new CommandError('The page has not loaded a URL yet')
+    return { url: buffer.url, title: buffer.title, partition: page.partition }
   }
 
   /** The modes of a page buffer, first wins; empty for an id that holds no page. */

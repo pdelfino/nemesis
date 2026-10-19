@@ -34,6 +34,14 @@ import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
 import { DEFAULT_URL_SOURCES, resolveUrl, urlCandidates, type UrlSources } from '../url-sources'
+import {
+  bookmarkCandidates,
+  bookmarksText,
+  parseTags,
+  tagCandidates,
+  type Bookmarks,
+} from '../bookmarks'
+import { historyCandidates, historyText, type History } from '../history'
 import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
 import { Worktrees, type Worktree } from '../worktrees'
@@ -188,6 +196,16 @@ export interface CockpitDeps {
   readonly pages: PageCommands
   /** What open-url reads over: bookmarks, history and the search engines (#124). */
   readonly urls: UrlSources
+  /** The profile's history and bookmarks (#125); null when the database did not open. */
+  readonly stores: PageStores | null
+}
+
+/** The history and the bookmarks of the profile's database (#125), and where the export goes. */
+export interface PageStores {
+  readonly history: Pick<History, 'visits' | 'entries'>
+  readonly bookmarks: Pick<Bookmarks, 'add' | 'list' | 'tags' | 'exportOrg'>
+  /** The Org file export-bookmarks writes, in the sessions folder. */
+  readonly exportPath: string
 }
 
 /** A buffer of another window, as the palette's `buffers` source lists it (#70). */
@@ -334,6 +352,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     worktrees: partial.worktrees ?? new Worktrees(),
     pages: partial.pages ?? NO_PAGES,
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
+    stores: partial.stores ?? null,
   }
 }
 
@@ -374,7 +393,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     worktrees,
     pages,
     urls,
+    stores,
   } = deps
+  /** The profile's stores, or a CommandError when the database did not open (#125). */
+  const profile = (): PageStores => {
+    if (stores === null)
+      throw new CommandError('No history or bookmarks: the profile database is not open')
+    return stores
+  }
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
     const prompt = buffers.list().find((buffer) => buffer.kind === 'prompt')
@@ -1117,6 +1143,76 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'bookmark-page',
+      mcp: 'never',
+      doc: 'Keep the current page as a bookmark, with the tags read in the palette (words separated by spaces); a page kept again takes the new tags.',
+      run: () => {
+        const store = profile().bookmarks
+        const page = pages.currentPage()
+        // Nothing of the ephemeral partition is ever written (#125).
+        if (page.partition === 'ephemeral') {
+          help.show('Not bookmarked: an ephemeral page leaves nothing in the profile.')
+          return
+        }
+        prompter.read(
+          { source: 'bookmark-tags', prompt: 'Bookmark tags:', freeText: true },
+          (text) => {
+            let tags: readonly string[]
+            try {
+              tags = parseTags(text)
+            } catch (error) {
+              help.show(`Not bookmarked: ${error instanceof Error ? error.message : String(error)}`)
+              return
+            }
+            store.add(page.url, page.title, tags)
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'open-bookmark',
+      mcp: 'never',
+      doc: 'Read a bookmark, filtered by its title, URL or tags, and open it as open-url does.',
+      run: () => {
+        profile()
+        prompter.read({ source: 'bookmarks', prompt: 'Open bookmark:' }, (url) => pages.open(url))
+      },
+    }),
+    defineCommand({
+      name: 'open-from-history',
+      mcp: 'never',
+      doc: 'Read a page of the history, the last visited first, and open it as open-url does.',
+      run: () => {
+        profile()
+        prompter.read({ source: 'history', prompt: 'Open from history:' }, (url) => pages.open(url))
+      },
+    }),
+    defineCommand({
+      name: 'show-history',
+      mcp: 'never',
+      doc: 'Show the history in a buffer: every page visited, the most recent first.',
+      run: () => {
+        help.show(historyText(profile().history.visits()))
+      },
+    }),
+    defineCommand({
+      name: 'show-bookmarks',
+      mcp: 'never',
+      doc: 'Show the bookmarks in a buffer, the newest first, with their tags.',
+      run: () => {
+        help.show(bookmarksText(profile().bookmarks.list()))
+      },
+    }),
+    defineCommand({
+      name: 'export-bookmarks',
+      mcp: 'never',
+      doc: 'Write every bookmark to bookmarks.org in the sessions folder, one Org heading each with its tags.',
+      run: () => {
+        const { bookmarks, exportPath } = profile()
+        help.show(`Bookmarks exported to ${bookmarks.exportOrg(exportPath)}`)
+      },
+    }),
+    defineCommand({
       name: 'find-in-page',
       mcp: 'never',
       doc: 'Read a text and find it in the current page buffer; the same text again finds the next match, an empty one clears.',
@@ -1247,6 +1343,7 @@ export function cockpitSources(
   repl: Repl,
   windows: CockpitWindows,
   urls: UrlSources,
+  stores: PageStores | null = null,
 ): readonly PaletteSource[] {
   return [
     {
@@ -1400,6 +1497,20 @@ export function cockpitSources(
       name: 'page-url',
       candidates: () => urlCandidates(urls),
     },
+    // The stores of #125: the tags in use for bookmark-page, the bookmarks
+    // and the history for the commands that read over them alone.
+    {
+      name: 'bookmark-tags',
+      candidates: () => tagCandidates(stores?.bookmarks.tags() ?? []),
+    },
+    {
+      name: 'bookmarks',
+      candidates: () => bookmarkCandidates(stores?.bookmarks.list() ?? []),
+    },
+    {
+      name: 'history',
+      candidates: () => historyCandidates(stores?.history ?? { entries: () => [] }),
+    },
     // The text find-in-page reads (#120); nothing to choose from.
     {
       name: 'find-in-page',
@@ -1490,6 +1601,8 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   page: defineKeymap('page', {
     'C-x C-f': 'open-url',
     'C-x 4 C-f': 'open-url-in-new-buffer',
+    // Emacs's bookmark-set (#125).
+    'C-x r m': 'bookmark-page',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {
@@ -1619,6 +1732,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.repl,
     deps.windows,
     deps.urls,
+    deps.stores,
   )) {
     deps.prompter.addSource(source)
   }

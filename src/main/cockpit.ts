@@ -39,6 +39,8 @@ import { SpecBuffers } from './specs'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
 import { EMPTY_STORE } from './url-sources'
+import { BOOKMARKS_EXPORT, type Bookmarks } from './bookmarks'
+import { recordHistory, type History } from './history'
 import { Verifier, verifyQuestion } from './verify'
 import { Worktrees } from './worktrees'
 
@@ -101,6 +103,8 @@ export interface CockpitShared {
   readonly commands: (help: HelpBuffers) => readonly Command[]
   /** The baseline every page buffer runs under before its first load (#119). */
   readonly pagePolicies: PagePolicies<WebContentsView>
+  /** The profile's history and bookmarks (#125), null when the database did not open. */
+  readonly stores: { readonly history: History; readonly bookmarks: Bookmarks } | null
 }
 
 /** One stream of notices out of several sources. */
@@ -265,7 +269,14 @@ export function createCockpit(
     keys: (press, modes) => dispatcher.take(press, modes).consumed,
   })
   installPageBridge(pages, contents)
-  window.on('closed', () => pages.destroyAll())
+  // Every committed top-frame navigation of a persistent page is a visit in
+  // the profile's history (#125); an ephemeral page is never recorded.
+  const stopHistory =
+    shared.stores === null ? (): void => {} : recordHistory(pages, shared.stores.history)
+  window.on('closed', () => {
+    stopHistory()
+    pages.destroyAll()
+  })
   const notices = mergeNotices(
     shared.notices,
     diffs,
@@ -342,14 +353,18 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
-    // What open-url reads over (#124): the stores are empty until M4.7
-    // (#125), and the engines are the settings', read on every read so a
+    // What open-url reads over (#124): the profile's bookmarks and history
+    // (#125), and the engines of the settings, read on every read so a
     // reload-config's are the next read's.
     urls: {
-      bookmarks: EMPTY_STORE,
-      history: EMPTY_STORE,
+      bookmarks: shared.stores?.bookmarks ?? EMPTY_STORE,
+      history: shared.stores?.history ?? EMPTY_STORE,
       engines: () => config.settings.searchEngines,
     },
+    stores:
+      shared.stores === null
+        ? null
+        : { ...shared.stores, exportPath: join(settings.sessionsDir, BOOKMARKS_EXPORT) },
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
