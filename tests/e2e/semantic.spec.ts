@@ -283,3 +283,52 @@ test('a snapshot reaches the agent only inside the labeled block', async () => {
     await fixtures.close()
   }
 })
+
+test('the snapshot sees into open shadow roots, a slotted link once, and nothing of a closed one', async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const { app } = nemesis
+  try {
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('shadow.html'))
+    expect(buffer.loadError).toBeNull()
+    const ids = buffer.ids
+    if (ids === undefined) throw new Error('The page buffer has no ids')
+
+    const shot = await snapshot(app, ids)
+    const nodes = flat(shot.nodes)
+    // The flat tree, in render order: the slotted link where its slot is, once.
+    expect(nodes.map((node) => `${node.role} ${node.name}`)).toEqual([
+      'main ',
+      'heading Components',
+      'link Light link',
+      'link Shadow link',
+      'button Shadow button text',
+      'textbox Shadow field',
+      'textbox Shadow password',
+      'link Slotted link',
+    ])
+    for (const node of nodes) {
+      expect(node.ref).toMatch(/^d\d+e\d+$/)
+      expect(node.rect.width).toBeGreaterThan(0)
+      expect(await resolveRef(app, ids.windowId, node.ref)).not.toBeNull()
+    }
+    expect(new Set(nodes.map((node) => node.ref)).size).toBe(nodes.length)
+    // A shadow field carries its value; a shadow secret is masked the same way.
+    expect(nodes.find((node) => node.name === 'Shadow field')?.value).toBe('shadow value')
+    expect(nodes.find((node) => node.name === 'Shadow password')).toMatchObject({
+      value: '',
+      state: ['masked'],
+    })
+    const text = JSON.stringify(shot)
+    expect(text).not.toContain('NEMESIS-SECRET-VALUE')
+    expect(text).not.toContain('NEMESIS-CLOSED-SECRET')
+    expect(text).not.toContain('NEMESIS-UNSLOTTED')
+    // A second snapshot names the shadow elements the same.
+    expect(flat((await snapshot(app, ids)).nodes).map((node) => node.ref)).toEqual(
+      nodes.map((node) => node.ref),
+    )
+  } finally {
+    await nemesis.close()
+    await fixtures.close()
+  }
+})

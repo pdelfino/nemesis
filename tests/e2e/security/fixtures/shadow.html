@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>shadow</title>
+    <style>
+      body {
+        font: 16px sans-serif;
+        margin: 40px;
+      }
+      input {
+        width: 320px;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Open and closed shadow roots (#143), declared in the markup so no script
+      builds them: a light link, then a web component whose open root holds a
+      link, a button, a field, a password and a paragraph, and a slot that
+      renders a light link the component's host carries; a light child no
+      slot takes is not rendered. Last, a component whose closed root holds
+      a secret: the isolated world cannot see into it.
+    -->
+    <main>
+      <h1>Components</h1>
+      <p><a id="light" href="/semantic.html">Light link</a></p>
+      <shadow-card id="card">
+        <template shadowrootmode="open">
+          <p><a id="inner" href="/hints.html">Shadow link</a></p>
+          <p><button id="press" type="button">Shadow button text</button></p>
+          <p><input id="field" aria-labelledby="field-label" value="shadow value" /></p>
+          <span id="field-label">Shadow field</span>
+          <p>
+            <input
+              id="secret"
+              type="password"
+              aria-label="Shadow password"
+              value="NEMESIS-SECRET-VALUE"
+            />
+          </p>
+          <p>A paragraph inside the shadow root, for the reader.</p>
+          <p><slot name="extra">Fallback never shown</slot></p>
+        </template>
+        <a id="slotted" slot="extra" href="/reader.html">Slotted link</a>
+        <span>NEMESIS-UNSLOTTED</span>
+      </shadow-card>
+      <secret-box>
+        <template shadowrootmode="closed">
+          <p><a href="/injection.html">NEMESIS-CLOSED-SECRET</a></p>
+        </template>
+      </secret-box>
+    </main>
+  </body>
+</html>

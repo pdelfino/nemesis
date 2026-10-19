@@ -288,3 +288,55 @@ test('a label on a field focuses it; a stray key does nothing; C-g leaves', asyn
     await fixtures.close()
   }
 })
+
+test('labels go up over the targets inside an open shadow root, and a slotted link once', async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const { app } = nemesis
+  try {
+    const url = fixtures.secureUrl('shadow.html')
+    const buffer = await nemesis.openPageBuffer(url)
+    expect(buffer.loadError).toBeNull()
+    const ids = buffer.ids
+    if (ids === undefined) throw new Error('The page buffer has no ids')
+
+    await press(app, buffer.contentsId, 'f')
+    await expect.poll(async () => (await targets(app, ids)).length).toBe(6)
+    const labelled = await targets(app, ids)
+    expect(labelled.map((target) => [target.role, target.href])).toEqual([
+      ['link', fixtures.secureUrl('semantic.html')],
+      ['link', fixtures.secureUrl('hints.html')],
+      ['button', ''],
+      ['textbox', ''],
+      ['textbox', ''],
+      ['link', fixtures.secureUrl('reader.html')],
+    ])
+    // Nothing of the closed root is a target.
+    expect(labelled.map((target) => target.href)).not.toContain(
+      fixtures.secureUrl('injection.html'),
+    )
+
+    // Each label sits at its target's corner; the locators pierce the open root.
+    const labels = await drawn(app, ids)
+    expect(labels).toHaveLength(6)
+    const boxes = await Promise.all(
+      ['#light', '#inner', '#press', '#field', '#secret', '#slotted'].map((selector) =>
+        buffer.page.locator(selector).boundingBox(),
+      ),
+    )
+    labels.forEach((label, index) => {
+      const box = boxes[index]
+      if (box === null || box === undefined) throw new Error('a target has no box')
+      expect(Math.abs(label.x - box.x)).toBeLessThanOrEqual(1)
+      expect(Math.abs(label.y - box.y)).toBeLessThanOrEqual(1)
+    })
+
+    // Typing the shadow link's label follows it.
+    const inner = labelled[1]?.label ?? ''
+    for (const key of inner) await press(app, buffer.contentsId, key)
+    await expect.poll(() => buffer.page.url()).toBe(fixtures.secureUrl('hints.html'))
+  } finally {
+    await nemesis.close()
+    await fixtures.close()
+  }
+})

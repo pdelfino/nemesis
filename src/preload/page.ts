@@ -88,6 +88,12 @@ interface PageElement {
   getAttribute(name: string): string | null
   hasAttribute(name: string): boolean
   querySelectorAll?(selector: string): ArrayLike<PageElement>
+  /** An open shadow root; null on an element with none, or with a closed one (#143). */
+  readonly shadowRoot?: { readonly children: ArrayLike<PageElement> } | null
+  /** On a `<slot>`: what the page assigned to it, text nodes included, and the elements of that. */
+  assignedNodes?(): ArrayLike<unknown>
+  assignedElements?(): ArrayLike<PageElement>
+  getRootNode?(): { getElementById?(id: string): PageElement | null }
   readonly href?: unknown
   getBoundingClientRect(): PageRect
   checkVisibility?(): boolean
@@ -148,7 +154,7 @@ interface PageWorld {
   readonly document: {
     readonly title: string
     readonly body: PageElement | null
-    readonly documentElement: { append(node: OverlayHost): void } | null
+    readonly documentElement: (PageElement & { append(node: OverlayHost): void }) | null
     getElementById(id: string): PageElement | null
     createElement(tag: string): unknown
     querySelectorAll(selector: string): ArrayLike<PageElement>
@@ -213,6 +219,69 @@ function elementId(element: PageElement): number {
   return id
 }
 
+// The flat tree (#143). Every walk of the page follows the tree as it
+// renders: a host with an open shadow root is walked through its root, and a
+// `<slot>` the page assigned nodes to through those nodes, so a slotted
+// element is met once, where it renders; a slot with nothing assigned shows
+// its own children. A closed shadow root, the hint overlay's own included,
+// reads as null in this world and stays closed: its host's light children
+// are walked instead.
+
+/** What an element renders as its children, in the flat tree. */
+function flatChildren(element: PageElement): ArrayLike<PageElement> {
+  const root = element.shadowRoot
+  if (root !== undefined && root !== null) return root.children
+  if (
+    element.tagName === 'SLOT' &&
+    typeof element.assignedNodes === 'function' &&
+    typeof element.assignedElements === 'function' &&
+    element.assignedNodes().length > 0
+  ) {
+    return element.assignedElements()
+  }
+  return element.children
+}
+
+/** Every element under `root`, the root first, in flat-tree order. */
+function flatElements(root: PageElement): PageElement[] {
+  const found: PageElement[] = []
+  const stack: PageElement[] = [root]
+  while (stack.length > 0) {
+    const element = stack.pop()
+    if (element === undefined) break
+    found.push(element)
+    const children = flatChildren(element)
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index]
+      if (child !== undefined) stack.push(child)
+    }
+  }
+  return found
+}
+
+/**
+ * Every element under `root`, the root first: its light children and those
+ * of every open shadow root both, rendered or not, so an element a selector
+ * matched outside the flat tree is found as surely as one a walk met.
+ */
+function reachableElements(root: PageElement): PageElement[] {
+  const found: PageElement[] = []
+  const stack: PageElement[] = [root]
+  while (stack.length > 0) {
+    const element = stack.pop()
+    if (element === undefined) break
+    found.push(element)
+    const shadow = element.shadowRoot
+    for (const children of [shadow?.children ?? [], element.children]) {
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        const child = children[index]
+        if (child !== undefined) stack.push(child)
+      }
+    }
+  }
+  return found
+}
+
 const ROLES: ReadonlySet<string> = new Set(SEMANTIC_ROLES)
 
 /** Where a header or footer is not the page's banner or contentinfo. */
@@ -238,6 +307,9 @@ const VALUED: ReadonlySet<SemanticRole> = new Set([
   'slider',
   'spinbutton',
 ])
+
+/** The form fields, by tag. */
+const FIELD_TAGS: ReadonlySet<string> = new Set(['INPUT', 'SELECT', 'TEXTAREA'])
 
 /** One line, bounded: what every string of a snapshot is cut to. */
 function line(text: string | null | undefined): string {
@@ -328,8 +400,13 @@ function nameOf(element: PageElement, role: SemanticRole): string {
   const labelledBy = (element.getAttribute('aria-labelledby') ?? '').trim()
   if (labelledBy.length > 0) {
     const parts: string[] = []
+    // An id names an element of the element's own tree: the document, or its shadow root.
+    const scope = element.getRootNode?.()
     for (const id of labelledBy.split(/\s+/)) {
-      const label = world.document.getElementById(id)
+      const label =
+        typeof scope?.getElementById === 'function'
+          ? scope.getElementById(id)
+          : world.document.getElementById(id)
       if (label !== null) parts.push(textOf(label))
     }
     const joined = line(parts.join(' '))
@@ -430,6 +507,9 @@ function headingLevel(element: PageElement): number {
 /** Whether a subtree is out of the page as a reader sees it. */
 function isHidden(element: PageElement): boolean {
   if (element.getAttribute('aria-hidden') === 'true') return true
+  // A slot is `display: contents`, which `checkVisibility` calls hidden; what
+  // it renders answers for itself, and is hidden when the slot is (#143).
+  if (element.tagName === 'SLOT') return false
   return typeof element.checkVisibility === 'function' && !element.checkVisibility()
 }
 
@@ -451,7 +531,7 @@ function snapshot(): SnapshotAnswer {
     if (role !== null) nodes.push(nodeOf(element, role, depth))
     const below = role === null ? depth : Math.min(depth + 1, MAX_SNAPSHOT_DEPTH)
     const inside = sectioned || SECTIONING.has(element.tagName)
-    const children = element.children
+    const children = flatChildren(element)
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index]
       if (child !== undefined) stack.push({ element: child, depth: below, sectioned: inside })
@@ -537,7 +617,7 @@ function hints(): HintsAnswer {
       }
     }
     const inside = sectioned || SECTIONING.has(element.tagName)
-    const children = element.children
+    const children = flatChildren(element)
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index]
       if (child !== undefined) stack.push({ element: child, sectioned: inside })
@@ -683,11 +763,27 @@ function hintsShow(args: readonly number[]): HintsShowAnswer {
 // src/shared/reader.ts over the live DOM. It reads; it writes nothing to the
 // page, and what crosses is text, never the page's HTML.
 
+/** What a node renders as its child nodes, text included, in the flat tree. */
+function flatChildNodes(node: ReaderNode): ArrayLike<ReaderNode> {
+  const element = node as unknown as {
+    readonly shadowRoot?: { readonly childNodes: ArrayLike<ReaderNode> } | null
+    assignedNodes?(): ArrayLike<ReaderNode>
+  }
+  const root = element.shadowRoot
+  if (root !== undefined && root !== null) return root.childNodes
+  if (node.nodeName === 'SLOT' && typeof element.assignedNodes === 'function') {
+    const assigned = element.assignedNodes()
+    if (assigned.length > 0) return assigned
+  }
+  return node.childNodes
+}
+
 function reader(): ReaderAnswer {
   return extractReader(
     world.document.title,
     world.document.body as unknown as ReaderNode | null,
     (element) => isHidden(element as unknown as PageElement),
+    flatChildNodes,
   )
 }
 
@@ -731,10 +827,17 @@ function watchForm(): void {
 /** The visible alerts of the page: error banners and assertive live regions. */
 function formAlerts(): FormAlert[] {
   const alerts: FormAlert[] = []
-  const found = world.document.querySelectorAll('[role="alert"], [aria-live="assertive"]')
+  const body = world.document.body
+  const found = body === null ? [] : flatElements(body)
   for (let index = 0; index < found.length && alerts.length < MAX_FORM_ALERTS; index += 1) {
     const element = found[index]
-    if (element === undefined || isHidden(element)) continue
+    if (element === undefined) continue
+    if (
+      element.getAttribute('role') !== 'alert' &&
+      element.getAttribute('aria-live') !== 'assertive'
+    )
+      continue
+    if (isHidden(element)) continue
     const text = textOf(element)
     if (text.length > 0) alerts.push({ text })
   }
@@ -753,7 +856,10 @@ function form(args: readonly number[]): FormAnswer {
   const fields: FormField[] = []
   const active = world.document.activeElement
   let focused = 0
-  const controls = world.document.querySelectorAll('input, select, textarea')
+  const body = world.document.body
+  const controls = (body === null ? [] : flatElements(body)).filter((element) =>
+    FIELD_TAGS.has(element.tagName),
+  )
   for (let index = 0; index < controls.length && fields.length < MAX_FORM_FIELDS; index += 1) {
     const element = controls[index]
     if (element === undefined || isHidden(element)) continue
@@ -778,7 +884,8 @@ function form(args: readonly number[]): FormAnswer {
 
 /** The element this document numbered `id`, or null: never numbered, or gone from the document. */
 function elementById(id: number): PageElement | null {
-  const all = world.document.querySelectorAll('*')
+  const top = world.document.documentElement
+  const all = top === null ? [] : reachableElements(top)
   for (let index = 0; index < all.length; index += 1) {
     const element = all[index]
     if (element !== undefined && elementIds.get(element) === id) return element
@@ -786,16 +893,19 @@ function elementById(id: number): PageElement | null {
   return null
 }
 
-const FIELD_TAGS: ReadonlySet<string> = new Set(['INPUT', 'SELECT', 'TEXTAREA'])
-
 /**
  * Whether the element is a secret field, or holds one: the snapshot's own
  * mask (a valued role the masking list matches), on the element and on every
  * field and editable inside it, read by attributes and labels, never by value.
  */
 function holdsSecret(element: PageElement): boolean {
-  const inside = element.querySelectorAll?.('input, select, textarea, [contenteditable]') ?? []
-  return [element, ...Array.from(inside)].some((field) => {
+  return reachableElements(element).some((field) => {
+    if (
+      field !== element &&
+      !FIELD_TAGS.has(field.tagName) &&
+      !field.hasAttribute('contenteditable')
+    )
+      return false
     const role = roleOf(field, false)
     return role !== null && VALUED.has(role) && isSecret(field, role)
   })

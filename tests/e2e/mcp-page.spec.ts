@@ -159,3 +159,55 @@ test('a client reads a page buffer through the page tier: structure apart, page 
     await fixtures.close()
   }
 })
+
+test('the page tier reads inside open shadow roots and nothing of a closed one', async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const client = new Client({ name: 'e2e-page-client', version: '1.0.0' })
+  try {
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('shadow.html'))
+    expect(buffer.loadError).toBeNull()
+    const socket = join(nemesis.userData, 'mcp.sock')
+    await expect.poll(() => existsSync(socket)).toBe(true)
+    await client.connect(
+      new StdioClientTransport({ command: process.execPath, args: [SHIM, '--socket', socket] }),
+    )
+    const read = async (name: string, args: Record<string, unknown> = {}): Promise<string> => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, `${name} ${items(result).join(' ')}`).toBeFalsy()
+      const whole = JSON.stringify(result)
+      expect(whole, name).not.toContain('NEMESIS-SECRET-VALUE')
+      expect(whole, name).not.toContain('NEMESIS-CLOSED-SECRET')
+      return items(result)[1] ?? ''
+    }
+
+    // The shadow button is a ref, the slotted link appears once, `text` reads the button.
+    const block = await read('browser_snapshot')
+    const button = /\[(d\d+e\d+)\] button "Shadow button text"/.exec(block)?.[1]
+    const secret = /\[(d\d+e\d+)\] textbox "Shadow password" \(masked\)/.exec(block)?.[1]
+    expect(button).toBeDefined()
+    expect(secret).toBeDefined()
+    expect(block.split('"Slotted link"')).toHaveLength(2)
+    expect(await read('browser_read_text', { ref: button })).toContain('\nShadow button text\n')
+    // The mask applies to a shadow secret the same way.
+    const masked = await client.callTool({ name: 'browser_read_text', arguments: { ref: secret } })
+    expect(masked.isError).toBe(true)
+    expect(items(masked)).toEqual(['masked field: the human reads it'])
+
+    // Reader text follows the flat tree: the shadow paragraph and the slotted link, once.
+    const page = await read('browser_read_text')
+    expect(page).toContain('A paragraph inside the shadow root, for the reader.')
+    expect(page.split('Slotted link')).toHaveLength(2)
+    expect(page).not.toContain('NEMESIS-UNSLOTTED')
+    expect(page).not.toContain('Fallback never shown')
+
+    // The form guide reads the fields inside the open root.
+    const form = await read('browser_form_state')
+    expect(form).toContain('value "shadow value"')
+    expect(form).toMatch(/password "Shadow password".*\(masked, filled\)/)
+  } finally {
+    await client.close().catch(() => undefined)
+    await nemesis.close()
+    await fixtures.close()
+  }
+})

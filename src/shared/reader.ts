@@ -118,6 +118,11 @@ interface Context {
 
 const TOP: Context = { quote: false, lists: 0, item: 0, raw: false }
 
+/** What a node's children are to the walk: its child nodes, or the page preload's flat tree (#143). */
+export type ReaderChildren = (node: ReaderNode) => ArrayLike<ReaderNode>
+
+const childNodes: ReaderChildren = (node) => node.childNodes
+
 function tagOf(node: ReaderNode): string {
   return node.nodeName.toUpperCase()
 }
@@ -136,6 +141,7 @@ class Extraction {
     private readonly hidden: (element: ReaderNode) => boolean,
     /** Whether the root is the whole body, where a banner is chrome. */
     private readonly whole: boolean,
+    private readonly childrenOf: ReaderChildren,
   ) {}
 
   get full(): boolean {
@@ -221,7 +227,7 @@ class Extraction {
   }
 
   private children(node: ReaderNode, context: Context, depth: number): void {
-    const children = node.childNodes
+    const children = this.childrenOf(node)
     for (let index = 0; index < children.length && !this.full; index += 1) {
       const child = children[index]
       if (child !== undefined) this.walk(child, context, depth + 1)
@@ -259,6 +265,7 @@ function find(
   root: ReaderNode,
   matches: (node: ReaderNode) => boolean,
   hidden: (element: ReaderNode) => boolean,
+  childrenOf: ReaderChildren,
 ): ReaderNode[] {
   const found: ReaderNode[] = []
   const stack: { node: ReaderNode; depth: number }[] = [{ node: root, depth: 0 }]
@@ -272,8 +279,9 @@ function find(
       found.push(node)
       continue
     }
-    for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
-      const child = node.childNodes[index]
+    const children = childrenOf(node)
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index]
       if (child !== undefined) stack.push({ node: child, depth: depth + 1 })
     }
   }
@@ -287,10 +295,16 @@ function find(
 export function readerRoot(
   body: ReaderNode,
   hidden: (element: ReaderNode) => boolean = () => false,
+  childrenOf: ReaderChildren = childNodes,
 ): ReaderNode {
   const main =
-    find(body, (node) => tagOf(node) === 'MAIN' || roleOf(node) === 'main', hidden)[0] ?? body
-  const articles = find(main, (node) => tagOf(node) === 'ARTICLE', hidden)
+    find(
+      body,
+      (node) => tagOf(node) === 'MAIN' || roleOf(node) === 'main',
+      hidden,
+      childrenOf,
+    )[0] ?? body
+  const articles = find(main, (node) => tagOf(node) === 'ARTICLE', hidden, childrenOf)
   return articles.length === 1 && articles[0] !== undefined ? articles[0] : main
 }
 
@@ -303,11 +317,12 @@ export function extractReader(
   title: string,
   body: ReaderNode | null,
   hidden: (element: ReaderNode) => boolean = () => false,
+  childrenOf: ReaderChildren = childNodes,
 ): ReaderAnswer {
   const heading = title.replace(/\s+/g, ' ').trim().slice(0, MAX_PAGE_TITLE)
   if (body === null) return { title: heading, blocks: [], links: [] }
-  const root = readerRoot(body, hidden)
-  const extraction = new Extraction(hidden, root === body)
+  const root = readerRoot(body, hidden, childrenOf)
+  const extraction = new Extraction(hidden, root === body, childrenOf)
   extraction.walk(root, TOP, 0)
   extraction.flush(TOP)
   return { title: heading, blocks: extraction.blocks, links: extraction.links }
