@@ -69,4 +69,15 @@ describe('warnLimited (SECURITY.org T1, T2, T6)', () => {
     warn('ipc nemesis:key', 'other key')
     expect(lines.slice(WARN_LIMIT)).toEqual(['suppressed 2 more for navigation file:', 'other key'])
   })
+
+  it('flush writes each pending summary once and never again', () => {
+    const { lines, warn } = setUp()
+    for (let n = 1; n <= 8; n += 1) warn('ipc nemesis:key', `line ${n}`)
+    for (let n = 1; n <= WARN_LIMIT; n += 1) warn('navigation https:', `nav ${n}`)
+    warn.flush()
+    expect(lines.slice(-1)).toEqual(['suppressed 3 more for ipc nemesis:key'])
+    const written = lines.length
+    warn.flush()
+    expect(lines).toHaveLength(written)
+  })
 })

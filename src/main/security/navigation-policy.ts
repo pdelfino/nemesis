@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import { originOf } from './permissions'
 import { warnLimited } from './warn-limited'
 
 /**
@@ -47,16 +48,6 @@ export interface NavigationHost {
 function schemeOf(url: string): string | null {
   try {
     return new URL(url).protocol
-  } catch {
-    return null
-  }
-}
-
-/** The origin of a URL as `originOf` in permissions.ts spells it, or null. */
-function originOf(url: string): string | null {
-  try {
-    const parsed = new URL(url)
-    return `${parsed.protocol}//${parsed.host}`
   } catch {
     return null
   }
