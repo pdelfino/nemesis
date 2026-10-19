@@ -906,9 +906,14 @@ function holdsSecret(element: PageElement): boolean {
       !field.hasAttribute('contenteditable')
     )
       return false
-    const role = roleOf(field, false)
-    return role !== null && VALUED.has(role) && isSecret(field, role)
+    return isOwnSecret(field)
   })
+}
+
+/** Whether the element itself is a secret field: the snapshot's own mask on that one element. */
+function isOwnSecret(element: PageElement): boolean {
+  const role = roleOf(element, false)
+  return role !== null && VALUED.has(role) && isSecret(element, role)
 }
 
 /** A field's value, or any other element's rendered text. */
@@ -944,7 +949,9 @@ function text(args: readonly number[]): TextAnswer {
 // first `mutations` request asks, also keeps the last MUTATION_RING changes
 // it sees, each a kind, the element's number and a one-line summary: a tag,
 // an attribute's name, a cut of the text. An attribute's value is left out
-// on a secret field and for `value`, by the masking list of #94, and a
+// on a secret field and for `value`, by the masking list of #94 on the
+// element itself (a child's value is never in its ancestor's attribute, so
+// its descendants are not scanned on every change, #150), and a
 // field's typed value is never in the document's mutations at all. The
 // hint overlay's own host is not a change of the page. It records; it writes
 // nothing to the page.
@@ -1004,7 +1011,7 @@ function recordMutations(records: readonly ChangeRecord[]): void {
     } else if (record.type === 'attributes' && parent !== null) {
       const name = record.attributeName ?? ''
       const tag = `<${parent.tagName.toLowerCase()}>`
-      const value = name === 'value' || holdsSecret(parent) ? null : parent.getAttribute(name)
+      const value = name === 'value' || isOwnSecret(parent) ? null : parent.getAttribute(name)
       pushMutation(
         'attribute',
         parent,

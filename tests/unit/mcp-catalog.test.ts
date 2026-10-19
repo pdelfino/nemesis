@@ -23,7 +23,12 @@ import {
   parsePageFeedUri,
   TIER_PREFIX,
 } from '../../src/main/mcp/catalog'
-import { MASKED_QUERY, type PageTierDeps } from '../../src/main/mcp/page-tier'
+import {
+  MASKED_QUERY,
+  QUERY_BUSY,
+  QUERY_GAP_MS,
+  type PageTierDeps,
+} from '../../src/main/mcp/page-tier'
 import type { BufferRegistry } from '../../src/main/buffers'
 import { CONSOLE_RING, ConsoleLog } from '../../src/main/pages/console'
 import { NETWORK_RING, NetworkLog } from '../../src/main/pages/network'
@@ -343,6 +348,9 @@ interface PageRig {
   /** What the door's `query` answers (#141), and every selector and limit it was asked. */
   query: QueryAnswer
   queried: string[]
+  /** When each query reached the door, and a door that holds its answer until released (#150). */
+  queriedAt: number[]
+  hold: Promise<void> | null
 }
 
 function hostilePages(rig: Partial<PageRig> = {}): {
@@ -375,6 +383,8 @@ function hostilePages(rig: Partial<PageRig> = {}): {
       ],
     },
     queried: [],
+    queriedAt: [],
+    hold: null,
     ...rig,
   }
   const emit = (event: PageEvent): void => {
@@ -478,6 +488,8 @@ function hostilePages(rig: Partial<PageRig> = {}): {
       console: state.console,
       query: async (_id, selector, limit) => {
         state.queried.push(`${limit} ${selector}`)
+        state.queriedAt.push(state.clock.now)
+        if (state.hold !== null) await state.hold
         return { answer: state.query, document }
       },
       events: (listener) => {
@@ -702,6 +714,32 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
     })
     expect(refused.isError).toBe(true)
     expect(items(refused)).toEqual([MASKED_QUERY])
+  })
+
+  it('runs one query at a time per page, a quarter second apart, and refuses one that would wait past 5 s (#150)', async () => {
+    const { build, rig } = hostilePages()
+    const client = await connectClient(fakeCockpit(undefined, build).mcp)
+    await client.callTool({ name: 'browser_query', arguments: { selector: 'h1' } })
+    rig.clock.now += 10
+    await client.callTool({ name: 'browser_query', arguments: { selector: 'h2' } })
+    const [at, next] = rig.queriedAt
+    expect((next ?? 0) - (at ?? 0)).toBe(QUERY_GAP_MS)
+
+    // A query that holds the page's turn: the next waits, and is refused at the cap.
+    let release = (): void => undefined
+    rig.hold = new Promise((resolve) => {
+      release = resolve
+    })
+    rig.clock.now += QUERY_GAP_MS
+    const first = client.callTool({ name: 'browser_query', arguments: { selector: 'h3' } })
+    await vi.waitFor(() => expect(rig.queried).toHaveLength(3))
+    const second = await client.callTool({ name: 'browser_query', arguments: { selector: 'h4' } })
+    expect(second.isError).toBe(true)
+    expect(items(second)).toEqual([QUERY_BUSY])
+    expect(rig.queried).toHaveLength(3)
+    rig.hold = null
+    release()
+    expect((await first).isError).toBeFalsy()
   })
 
   it('answers isError on a cockpit with no page tier', async () => {

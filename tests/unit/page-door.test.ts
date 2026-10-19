@@ -283,6 +283,15 @@ describe("the options and select answers (#141, the door's one write)", () => {
     expect(preload.match(/querySelectorAll\(selector\)/g)).toHaveLength(1)
     expect(preload).not.toMatch(/\.matches\(selector\)|closest\(selector\)/)
   })
+
+  it("masks an attribute's value by the element's own field mask, never a scan of its descendants (#150)", () => {
+    const preload = readFileSync(resolve(ROOT, 'src/preload/page.ts'), 'utf8')
+    // An attribute change on a container that holds a password reports its
+    // value; one on the password field itself does not. The e2e feeds spec
+    // (mcp-feeds.spec.ts) proves both on a real page.
+    expect(preload).toContain("name === 'value' || isOwnSecret(parent) ? null")
+    expect(preload).not.toContain('holdsSecret(parent)')
+  })
 })
 
 describe('the reply check', () => {

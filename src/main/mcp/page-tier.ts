@@ -219,6 +219,16 @@ export const MASKED_SELECT = 'masked field: the human chooses it'
 export const MASKED_QUERY =
   'masked field: a secret field of this page carries a value attribute, which a selector could test, so no selector is answered here; the human reads it'
 
+/** The least time between one `browser_query` on a page ending and the next starting (#150). */
+export const QUERY_GAP_MS = 250
+
+/** The longest a `browser_query` waits for its turn on a page before it is refused (#150). */
+export const QUERY_WAIT_CAP_MS = 5000
+
+/** What `browser_query` answers when its turn would come past QUERY_WAIT_CAP_MS (#150). */
+export const QUERY_BUSY =
+  'Refused: this page is answering other queries, one at a time and a quarter second apart, and this one would wait past 5 s; ask again in a moment'
+
 /** How many of `browser_select_option`'s values its question quotes. */
 const QUOTED_VALUES = 5
 
@@ -271,6 +281,8 @@ interface Resolved {
 export class PageTier {
   /** The page buffer that was current last, the default when the current buffer is no page. */
   private lastPage: string | null = null
+  /** Per page, the `browser_query` running or last queued, and when the last one ended (#150). */
+  private readonly queries = new Map<string, { tail: Promise<void>; busy: number; ended: number }>()
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>
   private readonly now: () => number
 
@@ -1153,8 +1165,11 @@ export class PageTier {
     limit: number,
   ): Promise<PageAnswer> {
     if (this.deps.query === undefined) throw new Error('This cockpit does not query pages')
+    const query = this.deps.query
     const { pageId, url, origin } = this.resolve(given)
-    const { answer, document } = await this.deps.query(pageId, selector, limit)
+    const { answer, document } = await this.inQueryTurn(pageId, () =>
+      query(pageId, selector, limit),
+    )
     if (this.deps.committedUrl(pageId) !== url) {
       throw new Error('The page navigated while it was queried')
     }
@@ -1171,6 +1186,52 @@ export class PageTier {
       structured: { page: pageId, origin, matched: answer.matched, truncated },
       text: `${answer.matched} elements of ${pageId} on ${origin} match${truncated ? `, the first ${answer.matches.length} given` : ''}.`,
       block: wrapUntrusted(origin, parts.length === 0 ? 'No element matches.' : parts.join('\n\n')),
+    }
+  }
+
+  /**
+   * `run` in its page's turn (#150): `querySelectorAll` is synchronous on the
+   * page's main thread, so one query runs at a time per page, QUERY_GAP_MS
+   * after the last one ended. A call whose turn would come past
+   * QUERY_WAIT_CAP_MS after it arrived is refused with QUERY_BUSY.
+   */
+  private async inQueryTurn<T>(pageId: string, run: () => Promise<T>): Promise<T> {
+    const arrived = this.now()
+    const state = this.queries.get(pageId) ?? { tail: Promise.resolve(), busy: 0, ended: 0 }
+    this.queries.set(pageId, state)
+    const previous = state.tail
+    let release = (): void => undefined
+    const mine = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    // The next call waits for this one and for every one before it.
+    state.tail = previous.then(() => mine)
+    const waiting = state.busy > 0
+    state.busy += 1
+    try {
+      if (waiting) {
+        const controller = new AbortController()
+        const timedOut = await Promise.race([
+          previous.then(() => false),
+          this.sleep(QUERY_WAIT_CAP_MS, controller.signal).then(
+            () => true,
+            () => false,
+          ),
+        ])
+        controller.abort()
+        if (timedOut) throw new Error(QUERY_BUSY)
+      }
+      const start = Math.max(this.now(), state.ended + QUERY_GAP_MS)
+      if (start - arrived > QUERY_WAIT_CAP_MS) throw new Error(QUERY_BUSY)
+      if (start > this.now()) await this.sleep(start - this.now())
+      try {
+        return await run()
+      } finally {
+        state.ended = this.now()
+      }
+    } finally {
+      state.busy -= 1
+      release()
     }
   }
 
