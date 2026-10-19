@@ -3,6 +3,13 @@ import { join } from 'node:path'
 import { expect, test, type Page } from './_test'
 import { launchApp } from './_launch'
 
+/** What the native sink would have shown (#90), read off the main process through the spy. */
+interface NotificationRecord {
+  readonly type: string
+  readonly title: string
+  readonly body: string
+}
+
 /**
  * The M1 acceptance test (#66): one walk through the cockpit against the mock
  * SDK, run by the gate on every commit. It asserts the whole path at once,
@@ -47,6 +54,20 @@ test('launch, prompt, reply, permission, file on disk, quit', async () => {
     await send(page, 'tool: Read')
     await expect(page.locator('#request')).toBeFocused()
     await expect(page.locator('#request-title')).toHaveText('Read wants to run')
+    // Walking away (#90): the request raised one "needs you" notification,
+    // with the session's name, the elapsed time and the tool-call count only.
+    const needsYou = async (): Promise<NotificationRecord[]> =>
+      (
+        await app.evaluate(
+          () =>
+            (globalThis as { __nemesisNotifications?: NotificationRecord[] })
+              .__nemesisNotifications ?? [],
+        )
+      ).filter((record) => record.type === 'session-needs-you')
+    await expect.poll(needsYou).toHaveLength(1)
+    const [notification] = await needsYou()
+    expect(notification?.title).toBe('Nemesis: session mock-ses')
+    expect(notification?.body).toMatch(/^Needs you after \d+s, 1 tool call\.$/)
     await expect(page.locator('#buffer-list')).toHaveText('Transcript Prompt [Permission: Read]')
     await page.keyboard.press('y')
     await expect(transcript).toContainText('Ran Read.')

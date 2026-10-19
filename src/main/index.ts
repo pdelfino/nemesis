@@ -43,6 +43,7 @@ import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installMenu } from './menu'
+import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
 import { Repl } from './repl'
 import { Screenshots, SCREENSHOTS_FOLDER } from './screenshots'
@@ -364,7 +365,12 @@ void app.whenReady().then(() => {
       return config.settings.model
     },
     permissionHandler: plans,
+    requests: permissions,
   })
+  // Walking away (#90): a finished turn, a request or an error is a macOS
+  // notification, and a Telegram push when its two variables are set, with
+  // the session's name, the elapsed time and the tool-call count only.
+  installNotifications({ agent, permissions, buffers, env: process.env })
   // The Edit and Write calls of the session, listed and opened as diff
   // buffers (#68). The collector reads the live events and a resumed
   // session's history before the bridge pushes them, so list-diffs is never

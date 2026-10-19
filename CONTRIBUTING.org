@@ -23,6 +23,25 @@ The same port serves the chrome-devtools MCP server for live inspection from a C
 claude mcp add --scope local chrome-devtools -- npx chrome-devtools-mcp@1.11.0 --browserUrl http://127.0.0.1:9222
 #+end_src
 
+** Notifications: macOS, phone and watch
+
+When a session finishes its turn, needs a permission answer or an AskUserQuestion, or hits an error, the main process raises a notification (#90, =src/main/notify/=). The text is the session name, the moment, the elapsed time and the tool-call count, and nothing else: no prompt, reply, file path or page content. A click on the macOS notification brings the window forward on the pending request, or on the transcript.
+
+Everything is read from the environment once, at startup:
+
+| Variable                     | Values                       | Default                                        |
+|------------------------------+------------------------------+------------------------------------------------|
+| =NEMESIS_TELEGRAM_BOT_TOKEN= | the bot's token              | unset: no phone push                           |
+| =NEMESIS_TELEGRAM_CHAT_ID=   | the chat the bot writes to   | unset: no phone push                           |
+| =NEMESIS_NOTIFY_FINISHED=    | =always=, =unfocused=, =off= | =unfocused=: only when the window has no focus |
+| =NEMESIS_NOTIFY_NEEDS_YOU=   | =on=, =off=                  | =on=                                           |
+| =NEMESIS_NOTIFY_ERROR=       | =on=, =off=                  | =on=                                           |
+| =NEMESIS_NOTIFY_SOUND=       | =on=, =off=                  | =off=                                          |
+
+The phone push needs both Telegram variables; with one of them missing nothing is sent. Export them from your own shell profile or a file outside the repository, never from a file in it, and never paste the token into a transcript. Under test (=NODE_ENV=test=) the macOS sink is a spy the smoke reads and no push leaves the machine, whatever the shell exports. In =make dev= the notification shows under the Electron binary's identity; the packaged app needs its bundle identifier and signing (M5).
+
+The Garmin watch needs no Garmin API: Garmin Connect mirrors the iPhone's notifications. In the Garmin Connect app, open the watch's settings, then Notifications and Alerts, then Smart Notifications, and allow Telegram (Apps, Telegram on). The iPhone's own Settings, Notifications, Telegram must allow notifications too, or there is nothing to mirror.
+
 * The gate
 
 =npm run gate= runs the dependency script check (=scripts/check-deps.mjs=, SECURITY.org T5), typecheck, lint, unit tests, the end-to-end smoke and the security specs. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.
