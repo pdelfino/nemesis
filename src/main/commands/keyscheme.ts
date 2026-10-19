@@ -205,6 +205,11 @@ export interface CockpitDeps {
    * it rejects when the current buffer is not a page.
    */
   readonly pageText: () => Promise<FetchedPage>
+  /**
+   * The current page buffer's semantic view as text, for show-semantic-view
+   * (#122); it rejects when the current buffer is not a page.
+   */
+  readonly semanticText: () => Promise<string>
   /** What open-url reads over: bookmarks, history and the search engines (#124). */
   readonly urls: UrlSources
   /** The profile's history and bookmarks (#125); null when the database did not open. */
@@ -365,6 +370,9 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     pageText:
       partial.pageText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
+    semanticText:
+      partial.semanticText ??
+      (() => Promise.reject(new CommandError('No page buffers in this window'))),
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
     stores: partial.stores ?? null,
   }
@@ -400,6 +408,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     clipboard,
     fetcher,
     pageText,
+    semanticText,
     environment,
     repl,
     windows,
@@ -1296,6 +1305,19 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'show-semantic-view',
+      mcp: 'never',
+      doc: "Show the current page buffer's semantic view in a read-only buffer: its landmarks, headings, links, buttons and fields, each with its ref.",
+      run: () => {
+        // The page's strings are shown as data, quoted, never run (#122).
+        semanticText()
+          .then((text) => help.show(text))
+          .catch((error: unknown) => {
+            help.show(`No semantic view: ${error instanceof Error ? error.message : String(error)}`)
+          })
+      },
+    }),
+    defineCommand({
       name: 'toggle-blocker',
       mcp: 'never',
       doc: 'Turn blocker mode off for the current page buffer, so requests to listed hosts go through, or back on; reload to fetch what was blocked.',
@@ -1652,6 +1674,8 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-x 4 C-f': 'open-url-in-new-buffer',
     // Emacs's bookmark-set (#125).
     'C-x r m': 'bookmark-page',
+    // The semantic view of the page, refs shown (#122).
+    'C-c C-s': 'show-semantic-view',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {

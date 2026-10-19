@@ -35,6 +35,7 @@ import type { HelpBuffers } from './help'
 import { McpDoor } from './mcp/socket'
 import type { PagePolicies } from './page-buffer'
 import { installPageDoor, PageScriptDoor, pingPrompt } from './page-door'
+import { snapshotPrompt } from './pages/semantic'
 import { installMenu } from './menu'
 import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
 import type { WindowCapturer } from './screenshots'
@@ -336,6 +337,13 @@ const pageDoor = new PageScriptDoor({ isPage: (id) => pageBufferOf(id) !== null 
  * under test only.
  */
 const PAGE_SCRIPT_DOOR = '__nemesisPageDoor'
+
+/**
+ * How the semantic spec reads a page buffer's snapshot, asks whether a ref
+ * is still live and sends a snapshot to the agent (#122), through
+ * `app.evaluate`. Main process only, under test only.
+ */
+const SEMANTIC_VIEW = '__nemesisSemantic'
 /** The window focused last, for the app's notices and questions while no window has focus. */
 let lastFocused: number | null = null
 /** How many windows were opened, for the next window's name. */
@@ -513,6 +521,25 @@ void app.whenReady().then(() => {
         const contents = pageContents(windowId, bufferId)
         const answer = await pageDoor.request(contents, 'ping')
         await cockpit.prompts.submit(pingPrompt(instruction, contents.getURL(), answer))
+      },
+    }
+    // The semantic view's spec (#122): a snapshot as show-semantic-view reads
+    // it, a ref checked against the page's current document, and a snapshot
+    // sent to the agent as T4 sends it.
+    const semanticOf = (windowId: number): Cockpit['semantic'] => {
+      const cockpit = cockpits.get(windowId)
+      if (cockpit === undefined) throw new Error(`No window ${windowId}`)
+      return cockpit.semantic
+    }
+    ;(globalThis as { [SEMANTIC_VIEW]?: unknown })[SEMANTIC_VIEW] = {
+      snapshot: (windowId: number, bufferId: string) =>
+        outcome(semanticOf(windowId).snapshot(bufferId)),
+      resolve: (windowId: number, ref: string) => semanticOf(windowId).resolve(ref),
+      prompt: async (windowId: number, bufferId: string, instruction: string): Promise<void> => {
+        const cockpit = cockpits.get(windowId)
+        if (cockpit === undefined) throw new Error(`No window ${windowId}`)
+        const snapshot = await cockpit.semantic.snapshot(bufferId)
+        await cockpit.prompts.submit(snapshotPrompt(instruction, snapshot))
       },
     }
   }
@@ -779,6 +806,7 @@ void app.whenReady().then(() => {
         pagePolicies,
         stores,
         blocker,
+        pageDoor,
       },
       place.cwd,
     )

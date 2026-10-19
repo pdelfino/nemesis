@@ -34,7 +34,9 @@ import { CockpitMcp } from './mcp/server'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
 import { PageBuffers, type PagePolicies } from './page-buffer'
+import type { PageScriptDoor } from './page-door'
 import type { PageBlocker } from './pages/blocker'
+import { SemanticView, semanticText } from './pages/semantic'
 import { Repl } from './repl'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -83,6 +85,8 @@ export interface Cockpit {
   readonly worktrees: Worktrees
   /** The window's page buffers, one WebContentsView each (#119). */
   readonly pages: PageBuffers<WebContentsView>
+  /** The semantic view of those pages, through the page-script door (#122). */
+  readonly semantic: SemanticView
 }
 
 export interface CockpitShared {
@@ -111,6 +115,8 @@ export interface CockpitShared {
   readonly stores: { readonly history: History; readonly bookmarks: Bookmarks } | null
   /** The app's blocker (#126): every page buffer is attached to it in blocker mode. */
   readonly blocker?: PageBlocker
+  /** The page-script door of ADR 0009 (#130), the app's one, which the semantic view asks (#122). */
+  readonly pageDoor: PageScriptDoor
 }
 
 /** One stream of notices out of several sources. */
@@ -314,6 +320,18 @@ export function createCockpit(
     ...(shared.blocker === undefined ? {} : { blocker: shared.blocker }),
   })
   installPageBridge(pages, contents)
+  // The semantic view (#122): each page's snapshot through the door, its
+  // refs retired on every committed navigation of the page.
+  const semantic = new SemanticView({
+    ask: (pageId) => {
+      const view = pages.viewOf(pageId)
+      if (view === undefined) return Promise.reject(new Error('The page is gone'))
+      return shared.pageDoor.request(view.webContents, 'snapshot')
+    },
+    committedUrl: (pageId) =>
+      pages.viewOf(pageId) === undefined ? undefined : buffers.get(pageId)?.url,
+    events: (listener) => pages.onPageEvent(listener),
+  })
   // Every committed top-frame navigation of a persistent page is a visit in
   // the profile's history (#125); an ephemeral page is never recorded.
   const stopHistory =
@@ -425,6 +443,13 @@ export function createCockpit(
       })
       return reader.fetchText(url)
     },
+    // The current page's semantic view as the human reads it (#122).
+    semanticText: async () => {
+      const current = buffers.current
+      if (current === null || pages.viewOf(current.id) === undefined)
+        throw new CommandError('The current buffer is not a page')
+      return semanticText(await semantic.snapshot(current.id))
+    },
     // What open-url reads over (#124): the profile's bookmarks and history
     // (#125), and the engines of the settings, read on every read so a
     // reload-config's are the next read's.
@@ -471,5 +496,6 @@ export function createCockpit(
     cwd,
     worktrees,
     pages,
+    semantic,
   }
 }
