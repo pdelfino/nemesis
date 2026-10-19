@@ -102,6 +102,22 @@ Hint labels are drawn by the cockpit outside the page (#123 decides where),
 and clicks and typing stay where ADR 0008 puts them, in main, not in the
 script.
 
+Amendment of 2026-OCTOBER-19 (#123, #128 and #94 landed with the browser
+stack): hint labels are drawn inside the page after all, as #123 asked.
+While labels are up, the page preload adds one host element to the top
+document and draws the labels in a closed shadow root on it, styled by a
+constructed sheet and raised into the top layer; the host goes when the
+labels go. That host is the only node the door adds. The page can see it
+and can remove or restyle it; the preload puts it back at most 50 times per
+draw, and a page that wins only hides the labels, because which label names
+which ref, and what a typed label does, stay in main's table. The request
+names landed as =ping= (#130), =snapshot= (#122), =hints= and =hints-show=
+(#123), =reader= (#128) and =form= (#94). The form watch is a change count
+kept by the listeners the first =form= request installs for the document's
+life, which main polls, so =watch-form= and =unwatch-form= were not needed.
+=hints-show= and =form= carry the door's only arguments, numbers alone
+(labels travel as code points), as the next rule allows.
+
 ** Rule: main asks by name, the script answers data
 
 - Requests flow one way: main sends ={id, name}= on one channel to the page's
