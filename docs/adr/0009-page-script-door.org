@@ -1,0 +1,290 @@
+#+TITLE: ADR 0009: the page-script door, an isolated-world preload with one typed bridge
+#+OPTIONS: toc:nil
+
+- Status: accepted (picked by Pedro on 2026-OCTOBER-19, in session, on #121: option A)
+- Date: 2026-OCTOBER-19
+- Threat or Pillar: SECURITY.org T1, a page tries to reach the app, for what
+  the page may see of the door; SECURITY.org T4, page content steering the
+  agent, for every string the door carries out of a page
+- Issue: #121 (study 07 item 7, =docs/nyxt-study/07-renderer.org=; the page
+  buffer #73 and #119 (M4.1); the semantic view #122 (M4.4); hint mode #123
+  (M4.5); the form guide #94; the resources #29; the boundary #55 and its
+  first use #83; the tool catalog ADR 0008; the plan #43)
+
+* Context
+
+** What wants to read a page
+
+Four consumers, all in M4, all needing the cockpit to look inside a page
+buffer:
+
+- *The semantic view* (#122, M4.4): a tree of the page's landmarks,
+  headings, links, buttons and fields, each with a stable reference, shown
+  in a buffer and read by the agent.
+- *Hint mode* (#123, M4.5): every interactive element in the viewport with
+  its rectangle, so a label can be drawn over it and a key sequence can
+  pick it.
+- *The form guide* (#94): a form's fields with their labels, types and
+  whether they are filled, with secret values masked, and in watch mode the
+  live changes as the user types.
+- *The page tier of the MCP catalog* (ADR 0008): =browser_snapshot= returns
+  the same tree with the same references, =browser_form_state= returns #94's
+  form snapshot, and the =nemesis://page/{page}/mutations= resource of #29
+  streams mutation summaries.
+
+Study 07 found that Nyxt does all of its page scripting through one generic,
+=ffi-buffer-evaluate-javascript=, which evaluates a string in the page's own
+JavaScript world. It named that the baseline's gap: SECURITY.org has no row
+for "the app runs script in a page", and evaluating app code in the page's
+world puts app code and page code side by side, which page-content-is-data
+rules out. Item 7 of the study states the acceptable shape: a preload on
+page buffers, in an isolated world, one typed bridge, no =executeJavaScript=
+built from a string that includes page data, a SECURITY.org row and a spec
+before it ships.
+
+** What SECURITY.org already promises
+
+- *T1*: every renderer is sandboxed with =contextIsolation: true= and no
+  Node; a preload exposes only typed, allowlisted functions through
+  =contextBridge=; IPC handlers validate the sender frame before doing
+  anything.
+- *T4*: any text extracted from a page and handed to Claude is wrapped in a
+  delimited block labeled as untrusted content from a named origin, never
+  concatenated into instructions.
+
+** What the baseline already fixed
+
+- =src/main/security/web-preferences.ts= holds =HARDENED_WEB_PREFERENCES=
+  (=sandbox=, =contextIsolation=, no =nodeIntegration=), and
+  =src/main/security/assert-web-preferences.ts= reads them back at runtime;
+  =tests/e2e/security/webprefs-hardened.spec.ts= asserts them for every
+  =WebContents=.
+- A page buffer today has no preload at all, so it has no bridge;
+  =tests/e2e/security/no-node-in-pages.spec.ts= proves the page sees no Node
+  global.
+- =guard()= in =src/main/ipc.ts= drops any invoke whose top frame is not an
+  internal page, and =tests/e2e/security/ipc-sender-validated.spec.ts=
+  proves a hostile page holding the cockpit's preload is refused on origin
+  alone.
+- =wrapUntrusted(origin, text)= in =src/main/agent/boundary.ts= is the one
+  labeled block (#83), and ADR 0008 routes every page-controlled string of
+  the page tier through it.
+- =tests/e2e/security/fixtures/injection.html= is the hostile page the T4
+  specs already use: visible, hidden and commented instruction text.
+
+What is not fixed is how the cockpit reads a page at all. Every consumer
+above is blocked on that, and the answer changes what a page can see of
+Nemesis, so it is decided here before any of them is written.
+
+* Decision
+
+Proposed, as Option A below. Each rule is something a reviewer can check the
+code against.
+
+** Rule: one preload, for page contents only, in the isolated world
+
+A second preload, =src/preload/page.ts=, built as its own entry, is attached
+to page buffers and only to them; the cockpit's preload never is, and this
+one never reaches an internal page. It runs with the hardened preferences
+unchanged (=sandbox=, =contextIsolation=, no Node), so it lives in
+Chromium's isolated world for the page's top frame: it shares the DOM with
+the page and nothing else. The page's own scripts cannot read its
+variables, call its functions or replace the built-ins it captured.
+
+** Rule: the page sees no API
+
+The page preload calls =contextBridge.exposeInMainWorld= zero times and
+writes nothing to =window=. A page that looks for a bridge finds none, the
+same as today. In version 1 the door is read-only: it adds no node, style
+or attribute to the page's DOM, so nothing the page can observe changes
+because the door is there, beyond the listeners #94's watch mode installs.
+Hint labels are drawn by the cockpit outside the page (#123 decides where),
+and clicks and typing stay where ADR 0008 puts them, in main, not in the
+script.
+
+** Rule: main asks by name, the script answers data
+
+- Requests flow one way: main sends ={id, name}= on one channel to the page's
+  =WebContents=, where =name= is one of a closed set, =snapshot=, =hints=,
+  =form=, plus =watch-form= and =unwatch-form= for #94. A request carries no
+  code and no free text; arguments, where one exists, are numbers or
+  =ref= ids main itself issued.
+- The script answers ={id, name, data}= on one reply channel. Main accepts
+  the reply only when all of these hold, and drops it otherwise, with a
+  rate-limited warning naming the channel and the origin and nothing else:
+  the sender =WebContents= is a page buffer main created and still holds,
+  the sender frame is that buffer's top frame, =id= names a request main
+  sent to that buffer and has not yet settled, and =data= parses against
+  the schema for =name= in =src/shared/=.
+- The schema bounds what a hostile page can push through: a fixed set of
+  fields per answer, strings cut to a limit, counts and depth capped, roles
+  from a closed list, rectangles as finite numbers. An answer that fails it
+  is dropped whole, never partly used.
+- A request that is not answered in time settles as an error for the
+  consumer; a late reply finds no open =id= and is dropped.
+- The existing =guard()= path is unchanged: page buffers stay refused on
+  every invoke channel the cockpit uses. The door is a separate, narrower
+  handler, not a widening of that guard.
+
+** Rule: the script never evaluates text
+
+No =eval=, no =new Function=, no =setTimeout= with a string, no
+=executeJavaScript= or =executeJavaScriptInIsolatedWorld= anywhere in the
+door, on either side. The script's behaviour is fixed at build time and
+selected by =name=. A unit test greps the page preload and the door's main
+side for those names, the way =tests/unit/transport.test.ts= greps for a
+certificate handler that answers true.
+
+** Rule: page text in any answer is data, labeled when it reaches the agent
+
+Every string in an answer that the page controls (names, labels, text,
+titles, URLs past the origin) stays a field of the parsed answer in main.
+When it reaches the agent, the transcript or an MCP client, it goes through
+=wrapUntrusted(origin, text)= of #83, with the origin taken from the
+committed top-frame URL main holds, never from the answer. Fields Nemesis
+controls (the buffer id, =ref= ids, counts, rectangles) may travel outside
+the block, the split ADR 0008 already fixes. The masking list of #94 is
+applied inside the script, so a secret field's value never crosses the door.
+
+** Rule: the row and the spec ship with the door
+
+The issue that lands =src/preload/page.ts= carries, in the same pull
+request, this row for the non-negotiables table of SECURITY.org:
+
+| Rule                                                    | Test asserts                                                                                                                                          |
+|---------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| The page-script door exposes nothing and accepts only its schema | a page finds no bridge in its world; a reply from a hostile page that breaks the schema, names an unknown =id= or comes from a subframe is dropped; instruction text from a page reaches the agent only inside the labeled block |
+
+and a spec, =tests/e2e/security/page-script-door.spec.ts=, with three cases:
+
+1. *A page cannot see or call the bridge.* A fixture page enumerates its
+   =window= and looks for =ipcRenderer=, =nemesis= and any new global, and
+   finds the same set as a page buffer without the preload; sending on the
+   door's channels from the page's world is impossible because it holds no
+   handle to them.
+2. *A hostile page's answer cannot escape its schema.* A fixture page that
+   replaces =document.querySelectorAll=, =Element.prototype.getBoundingClientRect=
+   and =Array.prototype.map= in its own world still gets a well-formed
+   snapshot (the isolated world never saw the replacements); and a reply
+   forged through the test hook with an extra field, an oversized string, a
+   non-finite rectangle, an unknown =id= or a subframe sender is dropped
+   whole, with the consumer seeing an error and no partial data.
+3. *An instruction in page text reaches the agent only inside the labeled
+   block.* =snapshot= over =tests/e2e/security/fixtures/injection.html=
+   delivers the canary text to the agent inside =wrapUntrusted='s block,
+   headed by the fixture's origin, nowhere else in the prompt or in any
+   structured field, and no side-effect tool ran.
+
+SECURITY.org's T1 controls gain one sentence naming the door, and nothing
+in T1 or T4 is loosened.
+
+* Alternatives considered
+
+The three options were weighed on what the page can see or spoof, what
+survives a hostile page, cost per read, and what each rules out.
+
+** A. Isolated-world preload with typed requests (Recommended)
+
+What it is: the rules above.
+
+- *What the page can see or spoof.* It sees no API. It can see the DOM it
+  owns, so it can lie in its own markup (a fake label, an invisible button,
+  an =aria-label= that reads like an instruction), which every option
+  shares, and which T4's label handles. It cannot reach the script's
+  captured built-ins, so it cannot change how the script reads.
+- *What survives a hostile page.* Prototype tampering, getter traps and
+  replaced DOM methods in the main world do not reach the isolated world.
+  A compromised renderer (a Chromium exploit) can forge replies, which is
+  why main schema-checks and correlates every reply as if it came from the
+  page: the worst a forged reply does is put bounded, labeled, wrong data in
+  front of the user.
+- *Cost per read.* One IPC round trip and a DOM walk in the page's own
+  process; a snapshot of a large page is a few milliseconds of script, no
+  debugger session, no serialization of Chromium's whole tree.
+- *What it rules out.* Chromium's computed accessibility tree is not
+  reachable from a script, so the semantic view computes roles and names
+  from the DOM and ARIA itself, a reduced tree (landmarks, headings, links,
+  buttons, fields), not every node Chromium knows. It also adds one preload
+  to every page, which is code under =src/preload/= and reviewed as such.
+- *What it gives.* Element rectangles for hints, live =input= and =change=
+  events for #94's watch mode, and =MutationObserver= for #29's feed, all
+  from one place.
+
+Recommended because it is the only option that gives all four consumers
+what they need through one door that the page cannot see, with every
+answer checked at a boundary main owns.
+
+** B. =webContents.executeJavaScript= with fixed function sources, no preload
+
+What it is: main keeps a fixed source string per request and runs it with
+=executeJavaScript=, never splicing page data into the string; the result
+comes back structured-cloned.
+
+- *What the page can see or spoof.* Everything: the script runs in the
+  page's main world, so the page can replace =document.querySelectorAll=,
+  =getBoundingClientRect= or =Array.prototype.map= before the script runs
+  and shape the answer at will, detect the script, and trap any value the
+  script touches.
+- *What survives a hostile page.* Little; the answer is whatever the page
+  chose to return, and nothing but the main-side schema stands between it
+  and the consumer. The isolated-world variant
+  (=executeJavaScriptInIsolatedWorld=) removes the tampering but keeps a
+  string-evaluation call site in main, the pattern study 07 names as the
+  gap, one refactor away from a string that includes page data.
+- *Cost per read.* Similar to A, plus a compile of the source each call.
+- *What it rules out.* Live events: a script run on demand cannot keep a
+  listener that reports back without a channel, so #94's watch mode and
+  #29's feed would need a polling loop or a preload anyway.
+
+Lost because the page can spoof every answer in the main world, the variant
+that fixes that keeps the eval call site the study rules out, and it cannot
+serve watch mode.
+
+** C. Chromium's accessibility tree through =webContents.debugger=, no script
+
+What it is: main attaches the Chrome DevTools Protocol to the page with
+=webContents.debugger.attach()= and reads =Accessibility.getFullAXTree=,
+with =DOM.getBoxModel= for rectangles; no script runs in the page.
+
+- *What the page can see or spoof.* No script, so no API to find; the page
+  still controls its own markup and ARIA, which the tree reports as the
+  page wrote it.
+- *What survives a hostile page.* The read itself; Chromium computes the
+  tree, so prototype tricks do not apply.
+- *Cost per read.* A full accessibility tree is the heaviest read of the
+  three on a large page, and a box model is one more round trip per node,
+  so hints over a busy viewport are many calls.
+- *What it rules out.* Field values as the user types: CDP's DOM domain
+  reports node mutations, not a field's =input= events, and watching those
+  means =Runtime.addBinding= and a script in the page after all. It also
+  holds a debugger session open on every page buffer, which conflicts with
+  DevTools on the same contents, and the session can do far more than read
+  (=Runtime.evaluate=, =Network=, =Input=): a bug in main that sends the
+  wrong command has the whole protocol to misuse. That is a wider door than
+  the one this ADR is asked to make narrow.
+
+Lost because it cannot serve #94's watch mode without a script, and because
+the debugger is a general door into the page. It stays the best source for
+Chromium's real accessibility tree; if the reduced tree of A proves too
+thin for the semantic view, a read-only use of it is a later ADR, not part
+of this one.
+
+* Consequences
+
+- Easier: #122, #123, #94 and the page tier of ADR 0008 build on one
+  request table and one reply check, and each adds a =name= and a schema,
+  not a new channel or a new door.
+- Easier: a reviewer checks the door against five rules and one spec, not
+  against every consumer's script.
+- Harder: the semantic view's roles and names are computed by the script,
+  not taken from Chromium, so pages that rely on browser-computed
+  accessible names read thinner until that code matures.
+- Harder: every page buffer carries a preload, so page buffer creation in
+  #73 and #119 must attach it, and =tests/e2e/security/webprefs-hardened.spec.ts=
+  must keep passing with it attached (the preload changes no enforced key).
+- Out of reach: a general eval into a page, from the cockpit, the agent or
+  an MCP client. =eval= of #72 stays a main-process REPL; nothing here
+  becomes a page-side eval tool.
+- Follow-up: the landing issue for the door, labeled =security=, reviewed by
+  Pedro interactively as anything under =src/preload/=, carrying the
+  SECURITY.org row, the spec and the grep test above, test-first.

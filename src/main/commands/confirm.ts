@@ -135,3 +135,33 @@ export function confirm(prompter: Prompter, source: string, prompt: string): Pro
     })
   })
 }
+
+/**
+ * `confirm` for a caller that can go away (#117): when `signal` aborts before
+ * the answer, the read is withdrawn from the prompter, its own cancel is not
+ * taken as a no, and the promise resolves `withdrawn`.
+ */
+export function confirmWhile(
+  prompter: Prompter,
+  source: string,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<boolean | 'withdrawn'> {
+  if (signal.aborted) return Promise.resolve('withdrawn')
+  return new Promise((resolve) => {
+    let withdrawn = false
+    const settle = (outcome: boolean | 'withdrawn'): void => {
+      signal.removeEventListener('abort', gone)
+      resolve(outcome)
+    }
+    const request = prompter.read(
+      { source, prompt, confirm: true, onCancel: () => settle(withdrawn ? 'withdrawn' : false) },
+      (choice) => settle(choice === YES),
+    )
+    function gone(): void {
+      withdrawn = true
+      if (!prompter.withdraw(request.id)) withdrawn = false
+    }
+    signal.addEventListener('abort', gone, { once: true })
+  })
+}

@@ -3,6 +3,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  DEFAULT_NOTIFY_TOGGLES,
   defaultSettings,
   loadSettings,
   parseSettings,
@@ -21,6 +22,8 @@ describe('the settings schema', () => {
       theme: 'system',
       verify: null,
       searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
+      stopGateRetries: 3,
+      notify: null,
     })
   })
 
@@ -44,6 +47,58 @@ describe('the settings schema', () => {
     // The search engines open-url offers (#124).
     const engines = [{ keyword: 'fx', name: 'Fixture', url: 'http://127.0.0.1:1/?q=%s' }]
     expect(parseSettings({ searchEngines: engines }, defaults).searchEngines).toEqual(engines)
+    // How many red checks the stop gate sends back before the turn ends (#113).
+    expect(parseSettings({ stopGateRetries: 0 }, defaults).stopGateRetries).toBe(0)
+    expect(parseSettings({ stopGateRetries: 5 }, defaults).stopGateRetries).toBe(5)
+  })
+
+  it('reads the notify object, an absent toggle at its default, and keeps null for no key (#114)', () => {
+    // No key: null, so the environment variables still decide for one release.
+    expect(parseSettings({}, defaults).notify).toBeNull()
+    expect(parseSettings({ notify: null }, defaults).notify).toBeNull()
+    expect(parseSettings({ notify: {} }, defaults).notify).toEqual(DEFAULT_NOTIFY_TOGGLES)
+    expect(parseSettings({ notify: { finished: false, sound: true } }, defaults).notify).toEqual({
+      finished: false,
+      finishedOnlyWhenUnfocused: true,
+      needsYou: true,
+      error: true,
+      sound: true,
+    })
+    expect(
+      parseSettings(
+        {
+          notify: {
+            finished: true,
+            finishedOnlyWhenUnfocused: false,
+            needsYou: false,
+            error: false,
+            sound: false,
+          },
+        },
+        defaults,
+      ).notify,
+    ).toEqual({
+      finished: true,
+      finishedOnlyWhenUnfocused: false,
+      needsYou: false,
+      error: false,
+      sound: false,
+    })
+  })
+
+  it('rejects a notify object it cannot use, and never takes a Telegram key', () => {
+    expect(() => parseSettings({ notify: true }, defaults)).toThrow(/"notify" is not an object/)
+    expect(() => parseSettings({ notify: [] }, defaults)).toThrow(/"notify" is not an object/)
+    expect(() => parseSettings({ notify: { finished: 'on' } }, defaults)).toThrow(
+      /"notify.finished" is not true or false/,
+    )
+    expect(() => parseSettings({ notify: { needYou: true } }, defaults)).toThrow(
+      /Unknown setting "notify.needYou"/,
+    )
+    // The token is a secret: it keeps its environment variable, never a key here.
+    expect(() => parseSettings({ notify: { telegramToken: 'x' } }, defaults)).toThrow(
+      /Unknown setting "notify.telegramToken"/,
+    )
   })
 
   it('expands a leading ~ in the sessions folder', () => {
@@ -73,12 +128,16 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ verify: '' }, defaults)).toThrow(/"verify" is not a command/)
     expect(() => parseSettings({ verify: ['npm', 'test'] }, defaults)).toThrow(/"verify"/)
     expect(() => parseSettings({ searchEngines: [] }, defaults)).toThrow(/"searchEngines"/)
+    expect(() => parseSettings({ stopGateRetries: -1 }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ stopGateRetries: 1.5 }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ stopGateRetries: 21 }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ stopGateRetries: '3' }, defaults)).toThrow(/"stopGateRetries"/)
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ]\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ],\n  "stopGateRetries": 3\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -86,6 +145,11 @@ describe('the settings schema', () => {
     expect(JSON.parse(serializeSettings(defaults))).toMatchObject({
       sessionsDir: '/Users/someone/Documents/nemesis/sessions',
     })
+    // A notify object is written when there is one, and read back the same.
+    const notify = { ...DEFAULT_NOTIFY_TOGGLES, sound: true }
+    expect(
+      parseSettings(JSON.parse(serializeSettings({ ...defaults, notify })), defaults).notify,
+    ).toEqual(notify)
   })
 })
 
@@ -117,6 +181,7 @@ describe('the settings file', () => {
       theme: 'system',
       verify: null,
       searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
+      stopGateRetries: 3,
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

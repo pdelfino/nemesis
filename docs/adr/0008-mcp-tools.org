@@ -187,11 +187,22 @@ What each row means, where a row is not obvious:
   line; a confirm the command raises itself, a download's or an external
   link's under =src/main/security/=, is still asked, because the MCP layer
   never reaches those files (ADR 0007), and the double question is the cost
-  of that wall, paid rarely.
+  of that wall, paid rarely. A door's yes whose client disconnects before
+  the user answers is withdrawn: the prompter's read is cancelled, a notice
+  in the transcript names the client, nothing runs, and the next question in
+  line is asked (#117). The window's palette is not told to close, since
+  that would be a new preload channel; a late answer to it is ignored like
+  any stale read.
 - =cockpit_read_buffer= returns what the window shows, by kind: a transcript
   buffer gives the lines of its =session.org= rendering, the prompt buffer
-  gives the draft, a diff buffer gives the diff, and in M4 a page buffer
-  gives the page's text through the wrapper of the next section. A read is
+  gives the draft, a diff buffer gives the diff as its path then the old
+  lines with =-= and the new with =+=, a permission request gives the
+  question it asks now and its options (or the tool and its keys), and a
+  help, plan, spec, review, environment or =*repl*= buffer gives the text
+  the window was last pushed for it (=src/main/mcp/buffer-texts.ts=, #117);
+  a plan reads as the agent wrote it, not as edited in the window. An
+  unknown or killed id is an error. In M4 a page buffer gives the page's
+  text through the wrapper of the next section. A read is
   capped at 2000 lines or 200 KB per call, whichever comes first, with
   =truncated= set and =from= to continue; the cap keeps one tool call from
   being the whole transcript. The class is free because the transcript is
@@ -222,7 +233,12 @@ turn does: =nemesis://session/events=, the live =AgentEvent= stream of the
 current session, the same objects =events.jsonl= holds, subscribable through
 =resources/subscribe=. It is free, it carries the agent's own events, and a
 tool result inside it that came from a page keeps the wrapper it was
-recorded with.
+recorded with. As landed (#117): =resources/read= returns the current
+session folder's =events.jsonl= verbatim as =application/x-ndjson=, one
+JSON object per line, oldest first, empty before the session's first event;
+a subscriber gets =notifications/resources/updated= for the URI after every
+event the log took. Read-only: no tool writes it and no other URI is
+served.
 
 ** The page tier (M4): parity, verbatim
 

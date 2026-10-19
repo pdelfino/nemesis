@@ -27,7 +27,7 @@ claude mcp add --scope local chrome-devtools -- npx chrome-devtools-mcp@1.11.0 -
 
 When a session finishes its turn, needs a permission answer or an AskUserQuestion, or hits an error, the main process raises a notification (#90, =src/main/notify/=). The text is the session name, the moment, the elapsed time and the tool-call count, and nothing else: no prompt, reply, file path or page content. A click on the macOS notification brings the window forward on the pending request, or on the transcript.
 
-Everything is read from the environment once, at startup:
+The toggles live in the =notify= key of =settings.json=, or in the init file (#114, =docs/config.org=, "The notification toggles"). The Telegram pair is read from the environment once, at startup, and so are the four =NEMESIS_NOTIFY_*= toggles, which apply only while neither file has a =notify= key and are dropped in the next release:
 
 | Variable                     | Values                       | Default                                        |
 |------------------------------+------------------------------+------------------------------------------------|

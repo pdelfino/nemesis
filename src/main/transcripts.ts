@@ -252,6 +252,7 @@ export class OrgTranscript {
         return name === null ? '' : block(`#+property: session_name ${name}`)
       }
       case 'context-usage':
+      case 'stop-gate':
         // The log keeps the numbers; a person reading the Org file does not need them.
         return ''
     }

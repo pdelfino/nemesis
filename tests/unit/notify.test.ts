@@ -10,6 +10,7 @@ import { createCockpitBuffers } from '../../src/main/buffers'
 import {
   DEFAULT_NOTIFY_SETTINGS,
   Notifier,
+  notifySettings,
   notifySettingsFromEnv,
   NullSink,
   telegramFromEnv,
@@ -18,6 +19,7 @@ import {
 } from '../../src/main/notify/notifier'
 import { TelegramSink } from '../../src/main/notify/telegram'
 import { formatElapsed, notificationText } from '../../src/main/notify/text'
+import { DEFAULT_NOTIFY_TOGGLES } from '../../src/main/settings'
 import type { SessionAttentionEvent } from '../../src/shared/notify'
 
 // Walking away (#90): the three moments, the one text builder, the sinks.
@@ -312,6 +314,53 @@ describe('the notifier', () => {
     expect(
       telegramFromEnv({ NEMESIS_TELEGRAM_BOT_TOKEN: 'fake-token', NEMESIS_TELEGRAM_CHAT_ID: '42' }),
     ).toEqual({ token: 'fake-token', chatId: '42' })
+  })
+})
+
+describe('the settings.json notify key (#114)', () => {
+  const fromEnv = notifySettingsFromEnv({
+    NEMESIS_NOTIFY_FINISHED: 'always',
+    NEMESIS_NOTIFY_SOUND: 'on',
+  })
+
+  it('falls back to the environment only when the file has no notify key', () => {
+    expect(notifySettings(null, fromEnv)).toEqual({
+      finished: 'always',
+      needsYou: true,
+      error: true,
+      sound: true,
+    })
+    // The file says something: the environment is not read at all.
+    expect(notifySettings(DEFAULT_NOTIFY_TOGGLES, fromEnv)).toEqual(DEFAULT_NOTIFY_SETTINGS)
+  })
+
+  it('maps finished and finishedOnlyWhenUnfocused to always, unfocused and off', () => {
+    const t = DEFAULT_NOTIFY_TOGGLES
+    expect(notifySettings({ ...t, finishedOnlyWhenUnfocused: false }, fromEnv).finished).toBe(
+      'always',
+    )
+    expect(notifySettings(t, fromEnv).finished).toBe('unfocused')
+    expect(notifySettings({ ...t, finished: false }, fromEnv).finished).toBe('off')
+    expect(
+      notifySettings({ ...t, needsYou: false, error: false, sound: true }, fromEnv),
+    ).toMatchObject({ needsYou: false, error: false, sound: true })
+  })
+
+  it('reads the settings at every event, so a reload applies them', async () => {
+    const sink = new NullSink()
+    let toggles = DEFAULT_NOTIFY_TOGGLES
+    const n = new Notifier({
+      sinks: [sink],
+      get settings() {
+        return notifySettings(toggles, fromEnv)
+      },
+      isFocused: () => false,
+    })
+    await n.notify(finished())
+    expect(sink.sent).toHaveLength(1)
+    toggles = { ...toggles, finished: false }
+    await n.notify(finished())
+    expect(sink.sent).toHaveLength(1)
   })
 })
 

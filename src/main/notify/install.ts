@@ -3,9 +3,11 @@ import type { SessionAttentionEvent } from '../../shared/notify'
 import type { PermissionBridge } from '../agent/permission-bridge'
 import type { SessionManager } from '../agent/session-manager'
 import type { BufferRegistry } from '../buffers'
+import type { NotifyToggles } from '../settings'
 import { NativeSink } from './native'
 import {
   Notifier,
+  notifySettings,
   notifySettingsFromEnv,
   telegramFromEnv,
   type NotificationMessage,
@@ -16,8 +18,11 @@ import { TelegramSink } from './telegram'
 /**
  * The notifications wired to the cockpit (#90): the manager's attention
  * stream in, the macOS notification and, when its two variables are set,
- * the Telegram push out. Everything is read from the environment once, at
- * startup; the token is never logged, shown or written anywhere.
+ * the Telegram push out. The toggles are the `notify` object of the
+ * settings in force, read at every event so a reload applies them (#114);
+ * without one, the environment's, for one release. The Telegram pair is
+ * read from the environment once, at startup; the token is never logged,
+ * shown or written anywhere.
  *
  * Under test the native sink is a spy: the specs read what would have been
  * shown off the main process, the developer's desktop gets nothing, and no
@@ -30,6 +35,8 @@ export interface NotificationsOptions {
   readonly agent: SessionManager
   readonly permissions: PermissionBridge
   readonly buffers: BufferRegistry
+  /** The `notify` key of the settings in force, null when the file has none. */
+  readonly toggles: () => NotifyToggles | null
   readonly env: Readonly<Record<string, string | undefined>>
 }
 
@@ -57,7 +64,7 @@ class SpySink implements NotificationSink {
 }
 
 export function installNotifications(options: NotificationsOptions): Notifier {
-  const { window, agent, permissions, buffers, env } = options
+  const { window, agent, permissions, buffers, toggles, env } = options
   const report = (problem: string): void => console.error(problem)
   const sinks: NotificationSink[] = []
   if (env['NODE_ENV'] === 'test') {
@@ -71,9 +78,13 @@ export function installNotifications(options: NotificationsOptions): Notifier {
     const telegram = telegramFromEnv(env)
     if (telegram !== null) sinks.push(new TelegramSink(telegram))
   }
+  // Read once, so a typo in a variable is reported once, not at every event.
+  const fromEnv = notifySettingsFromEnv(env, report)
   const notifier = new Notifier({
     sinks,
-    settings: notifySettingsFromEnv(env, report),
+    get settings() {
+      return notifySettings(toggles(), fromEnv)
+    },
     isFocused: () => !window.isDestroyed() && window.isFocused(),
     onError: report,
   })

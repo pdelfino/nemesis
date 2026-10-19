@@ -6,6 +6,7 @@ import type {
   AgentEvidenceEvent,
   VerifySource,
 } from './agent/events'
+import { checkEvidenceHeader } from '../shared/evidence'
 import { CommandError } from './commands/registry'
 
 /**
@@ -149,6 +150,37 @@ export function runCheckInShell(command: string, cwd: string): Promise<CheckOutc
       settle({ exitCode: code, signal, output: chunks.join('') })
     })
   })
+}
+
+/** How much of a red check's output the stop gate's prompt carries: the tail, where the verdict is. */
+const GATE_OUTPUT_LIMIT = 20_000
+
+/** Green is exit 0; a signal, a check that never started or any other code is red. */
+export function checkPassed(evidence: AgentEvidenceEvent): boolean {
+  return evidence.exitCode === 0
+}
+
+/**
+ * The stop gate's next prompt (#113): the guide's "set the check as a goal"
+ * as an ordinary user message, the evidence block's header and the tail of
+ * its output in a fence longer than any backtick run in it.
+ */
+export function gatePrompt(evidence: AgentEvidenceEvent): string {
+  const output =
+    evidence.output.length > GATE_OUTPUT_LIMIT
+      ? evidence.output.slice(evidence.output.length - GATE_OUTPUT_LIMIT)
+      : evidence.output
+  const longest = Math.max(0, ...(output.match(/`+/g) ?? []).map((run) => run.length))
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return [
+    'The check failed, fix it:',
+    '',
+    checkEvidenceHeader(evidence.command, evidence),
+    '',
+    fence,
+    output.replace(/\n$/, ''),
+    fence,
+  ].join('\n')
 }
 
 /** A yes is to one command of one issue body: the same issue fetched again with another Verify section asks again. */

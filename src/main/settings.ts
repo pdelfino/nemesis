@@ -39,7 +39,45 @@ export interface Settings {
    * engine's URL takes the query.
    */
   readonly searchEngines: readonly SearchEngine[]
+  /**
+   * How many times the stop gate (#113) sends a red check back to the
+   * session as the next prompt before the turn ends for the user anyway.
+   */
+  readonly stopGateRetries: number
+  /**
+   * The notification toggles (#90, #114), or `null` when the file has no
+   * `notify` key: then, for one release, the NEMESIS_NOTIFY_* variables are
+   * read instead. The Telegram token is a secret and never a setting.
+   */
+  readonly notify: NotifyToggles | null
 }
+
+/** The `notify` object of settings.json: every event on or off, and the sound. */
+export interface NotifyToggles {
+  readonly finished: boolean
+  /** With `finished` on: only when the window has no focus. */
+  readonly finishedOnlyWhenUnfocused: boolean
+  readonly needsYou: boolean
+  readonly error: boolean
+  readonly sound: boolean
+}
+
+/** What an absent toggle in the `notify` object takes. */
+export const DEFAULT_NOTIFY_TOGGLES: NotifyToggles = {
+  finished: true,
+  finishedOnlyWhenUnfocused: true,
+  needsYou: true,
+  error: true,
+  sound: false,
+}
+
+export const NOTIFY_KEYS: readonly (keyof NotifyToggles)[] = [
+  'finished',
+  'finishedOnlyWhenUnfocused',
+  'needsYou',
+  'error',
+  'sound',
+]
 
 export type Theme = 'system' | 'light' | 'dark'
 
@@ -57,7 +95,12 @@ const KNOWN_KEYS: readonly string[] = [
   'theme',
   'verify',
   'searchEngines',
+  'stopGateRetries',
+  'notify',
 ]
+
+/** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
+export const MAX_STOP_GATE_RETRIES = 20
 
 export class SettingsError extends Error {
   override readonly name = 'SettingsError'
@@ -72,6 +115,8 @@ export function defaultSettings(documentsDir: string): Settings {
     theme: 'system',
     verify: null,
     searchEngines: DEFAULT_SEARCH_ENGINES,
+    stopGateRetries: 3,
+    notify: null,
   }
 }
 
@@ -128,7 +173,58 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     }
   }
 
-  return { sessionsDir: expanded, model, keyscheme, theme, verify, searchEngines }
+  const stopGateRetries = value['stopGateRetries'] ?? defaults.stopGateRetries
+  if (
+    typeof stopGateRetries !== 'number' ||
+    !Number.isInteger(stopGateRetries) ||
+    stopGateRetries < 0 ||
+    stopGateRetries > MAX_STOP_GATE_RETRIES
+  ) {
+    throw new SettingsError(
+      `Setting "stopGateRetries" is not a whole number from 0 to ${MAX_STOP_GATE_RETRIES}`,
+    )
+  }
+
+  const notify = parseNotify(value['notify'] ?? defaults.notify)
+
+  return {
+    sessionsDir: expanded,
+    model,
+    keyscheme,
+    theme,
+    verify,
+    searchEngines,
+    stopGateRetries,
+    notify,
+  }
+}
+
+/** The `notify` object: known toggles only, each a boolean, an absent one at its default. */
+function parseNotify(payload: unknown): NotifyToggles | null {
+  if (payload === null) return null
+  if (typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new SettingsError('Setting "notify" is not an object')
+  }
+  const value = payload as Record<string, unknown>
+  for (const key of Object.keys(value)) {
+    if (!(NOTIFY_KEYS as readonly string[]).includes(key)) {
+      throw new SettingsError(`Unknown setting "notify.${key}"`)
+    }
+  }
+  const toggle = (key: keyof NotifyToggles): boolean => {
+    const set = value[key] ?? DEFAULT_NOTIFY_TOGGLES[key]
+    if (typeof set !== 'boolean') {
+      throw new SettingsError(`Setting "notify.${key}" is not true or false`)
+    }
+    return set
+  }
+  return {
+    finished: toggle('finished'),
+    finishedOnlyWhenUnfocused: toggle('finishedOnlyWhenUnfocused'),
+    needsYou: toggle('needsYou'),
+    error: toggle('error'),
+    sound: toggle('sound'),
+  }
 }
 
 /**
@@ -164,6 +260,8 @@ export function serializeSettings(settings: Settings): string {
     theme: settings.theme,
     verify: settings.verify,
     searchEngines: settings.searchEngines,
+    stopGateRetries: settings.stopGateRetries,
+    ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`
 }
