@@ -15,7 +15,14 @@ the same ground:
   cockpit window, and deletes the profile on =close()=. It passes Chromium
   =--use-fake-device-for-media-stream= so a camera or microphone request
   reaches the app's permission handler instead of stalling in the real
-  audio capture stack on macOS (#49); the switch grants nothing.
+  audio capture stack on macOS (#49); the switch grants nothing. It writes
+  the run's fixture certificate to a throwaway file and names it in
+  =NEMESIS_TEST_CA=, the test-only trust anchor of #52, so a page served
+  over HTTPS loads at all; =launchNemesis({ trustFixtures: false })= is the
+  launch without it, for the spec that watches the certificate error be
+  fatal. It also maps =nemesis.test= to loopback through
+  =--host-resolver-rules=, port kept, so a spec has a plain =http= URL off
+  loopback for the upgrade of #52 to act on.
 - =openPageBuffer(url)= loads a URL in its own hardened, preload-free
   =WebContents=, the way a page buffer will hold one, and reports Chromium's
   refusal in =loadError= when the load never commits. =openPageBuffer(url,
@@ -26,7 +33,12 @@ the same ground:
   and on another over HTTPS, with a self-signed certificate issued at test time
   by =_certificate.ts= (=node:crypto= signs but does not issue, so that file
   encodes the X.509 structure in DER by hand rather than adding a dependency).
-  Both ports are printed when the server starts.
+  Both ports are printed when the server starts. A spec loads its hostile page
+  from =secureUrl(...)=: the app is HTTPS-only off loopback (#52), and the
+  launch trusts this certificate on purpose. =url(...)= is the plain loopback
+  origin, allowed by the product rule; =upgradableUrl(...)= and
+  =offLoopbackUrl(...)= are plain =http= on =nemesis.test=, on the HTTPS port
+  and on the plain port, for the upgrade that lands and the one that cannot.
 
 =example.spec.ts= is that shape end to end. Copy it.
 

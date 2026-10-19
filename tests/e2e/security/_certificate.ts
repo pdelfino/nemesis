@@ -6,10 +6,12 @@ import { generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:cry
  * signs but does not issue certificates. So this file encodes the one X.509
  * structure the harness needs, by hand, in DER.
  *
- * The certificate is valid for `localhost` and `127.0.0.1`, lives for a week,
- * and is generated fresh on every run. It is never trusted by the system store:
- * the HTTPS fixtures exist so a spec can watch Nemesis reject an untrusted
- * certificate (SECURITY.org T3), and the harness itself trusts it explicitly.
+ * The certificate is valid for `127.0.0.1` and the DNS names the caller lists
+ * (`localhost` by default), lives for a week, and is generated fresh on every
+ * run. It is never trusted by the system store: a launch without the test-only
+ * anchor of #52 rejects it, which is how a spec watches Nemesis refuse an
+ * untrusted certificate (SECURITY.org T3), and the harness trusts it on
+ * purpose, through `NEMESIS_TEST_CA`, for every other spec.
  */
 
 export interface SelfSignedCertificate {
@@ -91,12 +93,12 @@ function extension(oid: string, critical: boolean, value: Buffer): Buffer {
     : sequence(objectIdentifier(oid), octetString(value))
 }
 
-/** subjectAltName: DNS:localhost plus IP:127.0.0.1, the two names the server answers on. */
-function subjectAltName(): Buffer {
+/** subjectAltName: the DNS names given plus IP:127.0.0.1, the names the server answers on. */
+function subjectAltName(dnsNames: readonly string[]): Buffer {
   const dns = (name: string): Buffer => tagged(0x82, Buffer.from(name, 'ascii'))
   const ip = (address: string): Buffer =>
     tagged(0x87, Buffer.from(address.split('.').map((part) => Number.parseInt(part, 10))))
-  return extension('2.5.29.17', false, sequence(dns('localhost'), ip('127.0.0.1')))
+  return extension('2.5.29.17', false, sequence(...dnsNames.map(dns), ip('127.0.0.1')))
 }
 
 function pem(label: string, der: Buffer): string {
@@ -115,7 +117,10 @@ function subjectPublicKeyInfo(publicKey: KeyObject): Buffer {
  * Issues a fresh P-256 certificate. ECDSA keeps key generation instant, so the
  * harness can issue one per test run without anybody noticing.
  */
-export function selfSignedCertificate(subject = 'nemesis-fixtures'): SelfSignedCertificate {
+export function selfSignedCertificate(
+  subject = 'nemesis-fixtures',
+  dnsNames: readonly string[] = ['localhost'],
+): SelfSignedCertificate {
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
 
   // ecdsa-with-SHA256 takes no parameters, unlike the RSA identifiers.
@@ -138,7 +143,7 @@ export function selfSignedCertificate(subject = 'nemesis-fixtures'): SelfSignedC
       sequence(
         extension('2.5.29.19', true, sequence(asnBoolean(true))), // basicConstraints: CA
         extension('2.5.29.37', false, sequence(objectIdentifier('1.3.6.1.5.5.7.3.1'))), // EKU: serverAuth
-        subjectAltName(),
+        subjectAltName(dnsNames),
       ),
     ),
   )

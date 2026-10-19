@@ -88,7 +88,7 @@ test('every WebContents reports the hardened preferences at runtime', async () =
     for (const contents of atStartup) assertHardened(contents)
 
     // A page buffer holding hostile content is held to the same policy.
-    const buffer = await nemesis.openPageBuffer(fixtures.url('node-probe.html'))
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('node-probe.html'))
     expect(buffer.loadError).toBeNull()
 
     const withPage = await reportOurs(nemesis)

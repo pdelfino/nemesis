@@ -58,6 +58,7 @@ import {
   type RequestRecord,
 } from './security/partitions'
 import { originOf, PermissionPolicy } from './security/permissions'
+import { TransportPolicy } from './security/transport'
 import { internalPagePreferences } from './security/web-preferences'
 import { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
@@ -113,6 +114,12 @@ const external = new ExternalPolicy({
 })
 // A yes for a download is good for one request within 30 seconds (#100); on quit none survives.
 app.on('will-quit', () => downloads.clear())
+// T3 (#52): plain http: off loopback is upgraded or refused, and a certificate
+// error is fatal, with a notice naming the host and the code. The test-only
+// trust anchor is read from the environment here, once, and never outside a
+// test run.
+const transport = new TransportPolicy()
+transport.guardCertificates(app)
 
 app.on('web-contents-created', (_event, contents) => {
   // T6 (#49): whatever partition this WebContents uses gets the deny-by-default
@@ -133,6 +140,13 @@ app.on('web-contents-created', (_event, contents) => {
   // supplies openPage once a page buffer exists (M4, #73); until then a window
   // a page asks for is denied with nothing in its place.
   applyNavigationPolicy(contents, 'page')
+  // T3 (#52): a page's plain http: navigation off loopback is re-issued on
+  // https: once, after the policy above has let the scheme through. The
+  // internal page corrects its kind in createWindow, so it is never upgraded
+  // around the policy's refusal. The anchor seam covers whatever session
+  // this WebContents uses, a partition created later included.
+  transport.watch(contents, 'page')
+  transport.apply(contents.session)
   // T1 (#47): read the preferences back off every WebContents the app creates,
   // the cockpit window included. The walk waits for the first load because
   // getLastWebPreferences() answers for the page that committed.
@@ -168,6 +182,7 @@ function createWindow(): BrowserWindow {
   // navigation of the page to itself, lands (#96); a packaged run, or a run
   // without the variable, adds nothing.
   applyNavigationPolicy(win.webContents, 'internal', {}, devOrigin === null ? [] : [devOrigin])
+  transport.watch(win.webContents, 'internal')
 
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devServer) {
@@ -262,6 +277,7 @@ void app.whenReady().then(() => {
   const partitions = createPartitions(permissionPolicy)
   for (const one of [session.defaultSession, partitions.persistent, partitions.ephemeral]) {
     downloads.apply(one)
+    transport.apply(one)
   }
   if (process.env['NODE_ENV'] === 'test') {
     // Installed before the cockpit window loads, so the first request the
@@ -404,6 +420,7 @@ void app.whenReady().then(() => {
       screenshots,
       fetcher,
       environment,
+      transport,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);

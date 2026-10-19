@@ -35,7 +35,7 @@ test('a web page sees no Node global, in the page, a worker or a subframe', asyn
   const fixtures = await fixtureServer()
   const nemesis = await launchNemesis()
   try {
-    const buffer = await nemesis.openPageBuffer(fixtures.url('node-probe.html'))
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('node-probe.html'))
     expect(buffer.loadError).toBeNull()
 
     // The two names the issue names, read straight out of the page.
@@ -89,10 +89,10 @@ test('a web page sees no Node global, in the page, a worker or a subframe', asyn
     // its parent window, so an embedded probe would shadow the `nemesis` the
     // assertions above read. Harmless here, and a reason never to trust a
     // global by name on a page that embeds another.
-    const probes = await nemesis.openPageBuffer(fixtures.url('node-probe.html'))
+    const probes = await nemesis.openPageBuffer(fixtures.secureUrl('node-probe.html'))
     await probes.page.setContent(`
       <p id="worker">pending</p>
-      <iframe id="child" src="${fixtures.url('node-probe.html')}"></iframe>
+      <iframe id="child" src="${fixtures.secureUrl('node-probe.html')}"></iframe>
       <script>
         var source = 'postMessage([typeof process, typeof require].join(","))'
         var worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })))

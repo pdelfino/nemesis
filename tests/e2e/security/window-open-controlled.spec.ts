@@ -47,7 +47,7 @@ test('window.open from a page yields a controlled buffer or nothing, never a bar
     const buffersBefore = await buffers()
     expect(buffersBefore.length).toBeGreaterThan(0)
 
-    const buffer = await nemesis.openPageBuffer(fixtures.url('window-open.html'))
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('window-open.html'))
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('window open')
     // The page buffer is itself one window in the harness; nothing else may appear.
@@ -65,7 +65,7 @@ test('window.open from a page yields a controlled buffer or nothing, never a bar
     expect(await windows()).toBe(windowsBefore)
     // The link did not navigate the page in place either.
     await expect(buffer.page).toHaveTitle('window open')
-    expect(buffer.page.url()).toBe(fixtures.url('window-open.html'))
+    expect(buffer.page.url()).toBe(fixtures.secureUrl('window-open.html'))
 
     // file: is refused by the renderer before the main process hears of it;
     // still null, still no window.
@@ -111,7 +111,7 @@ test('window.open from a page yields a controlled buffer or nothing, never a bar
 
     for (const line of stderr.split('\n').filter((one) => one.startsWith('navigation:'))) {
       expect(line).not.toContain('/etc/hosts')
-      expect(line).not.toContain(fixtures.httpOrigin)
+      expect(line).not.toContain(fixtures.httpsOrigin)
     }
 
     await buffer.close()

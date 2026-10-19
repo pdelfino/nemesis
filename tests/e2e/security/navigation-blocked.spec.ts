@@ -93,7 +93,7 @@ test('a page cannot navigate itself or the app to file:, javascript: or a top-le
       match[3] ?? '',
     ])
   try {
-    const url = fixtures.url('navigation.html')
+    const url = fixtures.secureUrl('navigation.html')
     const buffer = await nemesis.openPageBuffer(url)
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('navigation')
@@ -168,7 +168,7 @@ test('a page cannot navigate itself or the app to file:, javascript: or a top-le
     expect(buffer.page.url()).toBe(url)
     expect(
       await buffer.page.evaluate(() => (globalThis as NavigationWindow).location?.origin ?? null),
-    ).toBe(fixtures.httpOrigin)
+    ).toBe(fixtures.httpsOrigin)
     expect(fixtures.requested).toEqual(['/navigation.html'])
     expect(blocked().length).toBe(refusalsBefore)
 
@@ -213,7 +213,7 @@ test('a page cannot navigate itself or the app to file:, javascript: or a top-le
     for (const line of stderr.split('\n').filter((one) => one.startsWith('navigation:'))) {
       expect(line).not.toContain('/etc/hosts')
       expect(line).not.toContain('example.test')
-      expect(line).not.toContain(fixtures.httpOrigin)
+      expect(line).not.toContain(fixtures.httpsOrigin)
     }
 
     // The drag-and-drop navigation (T2) is a creation-time preference (#47).
