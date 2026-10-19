@@ -274,6 +274,8 @@ interface Page<V extends PageView> {
   blocker: boolean
   /** Requests the blocker cancelled since the page last committed a URL. */
   blocked: number
+  /** A restored page's URL, loaded when the page is first shown (#127); null once loaded. */
+  pending: string | null
 }
 
 /** A zoom level as the percentage the mode line shows. */
@@ -422,6 +424,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       partition: partitionName,
       blocker: this.options.blocker !== undefined,
       blocked: 0,
+      pending: null,
     }
     this.pages.set(buffer.id, page)
     this.options.buffers.update(buffer.id, {
@@ -440,6 +443,19 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     this.listen(page)
     if (spec.url !== undefined) void this.load(buffer.id, spec.url)
     return buffer
+  }
+
+  /**
+   * A page buffer restored at start (#127): its URL and title in the list at
+   * once, its load deferred until the page is first shown, so thirty restored
+   * pages cost nothing until they are looked at. Always persistent: an
+   * ephemeral page is never saved.
+   */
+  restorePage(saved: { readonly url: string; readonly title: string }): BufferInfo {
+    const buffer = this.createPage()
+    const page = this.pages.get(buffer.id)
+    if (page !== undefined) page.pending = saved.url
+    return this.options.buffers.update(buffer.id, { url: saved.url, title: saved.title })
   }
 
   /** Closes the page's contents, takes its view off the window and every listener off the contents. */
@@ -473,6 +489,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   async load(id: string, url: string): Promise<string | null> {
     const page = this.pages.get(id)
     if (page === undefined) return `No page buffer with id "${id}"`
+    page.pending = null
     const target = this.allowed(url)
     if (target === null) return 'refused'
     try {
@@ -670,6 +687,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       shown.attached = true
     }
     shown.view.setBounds(this.bounds)
+    if (shown.pending !== null) void this.load(shown.id, shown.pending)
     if (this.focused !== shown.id) {
       this.focused = shown.id
       shown.view.webContents.focus()

@@ -57,6 +57,12 @@ export interface Settings {
    * lists already on disk.
    */
   readonly blockerUpdates: BlockerUpdates
+  /**
+   * Session restore (#127): each window's page buffers and folder are saved
+   * at quit and reopened at the next start. `false` neither saves nor
+   * restores; a start with `--no-restore` skips the restore once.
+   */
+  readonly restore: boolean
 }
 
 /** The `notify` object of settings.json: every event on or off, and the sound. */
@@ -110,6 +116,7 @@ const KNOWN_KEYS: readonly string[] = [
   'stopGateRetries',
   'notify',
   'blockerUpdates',
+  'restore',
 ]
 
 /** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
@@ -131,6 +138,7 @@ export function defaultSettings(documentsDir: string): Settings {
     stopGateRetries: 3,
     notify: null,
     blockerUpdates: 'weekly',
+    restore: true,
   }
 }
 
@@ -209,6 +217,11 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError(`Setting "blockerUpdates" is not one of ${BLOCKER_UPDATES.join(', ')}`)
   }
 
+  const restore = value['restore'] ?? defaults.restore
+  if (typeof restore !== 'boolean') {
+    throw new SettingsError('Setting "restore" is not true or false')
+  }
+
   return {
     sessionsDir: expanded,
     model,
@@ -219,6 +232,7 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     stopGateRetries,
     notify,
     blockerUpdates: blockerUpdates as BlockerUpdates,
+    restore,
   }
 }
 
@@ -285,6 +299,7 @@ export function serializeSettings(settings: Settings): string {
     searchEngines: settings.searchEngines,
     stopGateRetries: settings.stopGateRetries,
     blockerUpdates: settings.blockerUpdates,
+    restore: settings.restore,
     ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`

@@ -124,6 +124,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'stopGateRetries',
   'notify',
   'blockerUpdates',
+  'restore',
 ]
 
 /** `notify.finished` and the like: one toggle of the `notify` object (#114), or null. */

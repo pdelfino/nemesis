@@ -508,6 +508,31 @@ describe('showing and hiding (#119)', () => {
   })
 })
 
+describe('a restored page (#127)', () => {
+  it('lists its URL and title at once and loads only when first shown, once', () => {
+    const { pages, buffers, views } = rig()
+    const one = pages.restorePage({ url: 'https://example.com/a', title: 'Example A' })
+    const two = pages.restorePage({ url: 'https://example.com/b', title: 'Example B' })
+    const [first, second] = views
+    if (first === undefined || second === undefined) throw new Error('two views')
+    expect(buffers.get(one.id)).toMatchObject({ url: 'https://example.com/a', title: 'Example A' })
+    expect(pages.partitionOf(two.id)).toBe('persistent')
+    expect(first.webContents.loads).toEqual([])
+    expect(second.webContents.loads).toEqual([])
+
+    buffers.switchTo(two.id)
+    pages.setBounds({ x: 0, y: 40, width: 1200, height: 600 })
+    expect(second.webContents.loads).toEqual(['https://example.com/b'])
+    expect(first.webContents.loads).toEqual([])
+
+    // Shown again, it does not load again.
+    buffers.switchTo(one.id)
+    buffers.switchTo(two.id)
+    expect(first.webContents.loads).toEqual(['https://example.com/a'])
+    expect(second.webContents.loads).toEqual(['https://example.com/b'])
+  })
+})
+
 describe('focus follows the shown page (#120)', () => {
   it('gives the keyboard to a page when it shows and back to the cockpit when none shows', () => {
     const { pages, buffers, views, log } = rig()

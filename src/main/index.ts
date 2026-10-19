@@ -9,6 +9,7 @@ import {
   session,
   type WebContentsView,
 } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
 import type { EventSource } from './agent/session-bridge'
@@ -58,6 +59,14 @@ import { TransportPolicy } from './security/transport'
 import { internalPagePreferences } from './security/web-preferences'
 import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { warnLimited } from './security/warn-limited'
+import {
+  loadWindows,
+  restoreSkipped,
+  savedWindow,
+  saveWindows,
+  WINDOWS_FILE,
+  type SavedWindow,
+} from './restore'
 import { SessionIndex } from './sessions'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { Bookmarks } from './bookmarks'
@@ -395,8 +404,10 @@ void app.whenReady().then(() => {
       open: async (
         url: string,
         partition: 'persistent' | 'ephemeral' = 'persistent',
+        // A window by id instead of the focused one, for the restore spec (#127).
+        windowId?: number,
       ): Promise<OpenedPage> => {
-        const cockpit = focusedCockpit()
+        const cockpit = windowId === undefined ? focusedCockpit() : cockpits.get(windowId)
         if (cockpit === undefined) throw new Error('No cockpit to open a page buffer in')
         const buffer = cockpit.pages.createPage({ partition })
         cockpit.buffers.switchTo(buffer.id)
@@ -413,6 +424,21 @@ void app.whenReady().then(() => {
       run: (windowId: number, name: string): Promise<void> =>
         cockpits.get(windowId)?.registry.run(name, { source: 'test' }) ??
         Promise.reject(new Error(`No window ${windowId}`)),
+      // Every window's folder and page buffers, with the URL each page's
+      // contents hold, empty until it loads, for the restore spec (#127).
+      windows: () =>
+        [...cockpits.values()].map((cockpit) => ({
+          id: cockpit.id,
+          cwd: cockpit.cwd,
+          currentId: cockpit.buffers.current?.id ?? null,
+          pages: cockpit.pages.list().map((buffer) => ({
+            id: buffer.id,
+            url: buffer.url ?? null,
+            title: buffer.title,
+            partition: cockpit.pages.partitionOf(buffer.id),
+            loaded: cockpit.pages.viewOf(buffer.id)?.webContents.getURL() ?? '',
+          })),
+        })),
     }
   }
   // app.dock exists on macOS only.
@@ -724,7 +750,59 @@ void app.whenReady().then(() => {
     console.error(`No MCP door: ${error instanceof Error ? error.message : String(error)}`)
   })
   app.on('will-quit', () => door.close())
-  const first = openCockpit()
+  // Session restore (#127): at quit, before any window closes, each window's
+  // persistent pages (URL and title only) and its folder go to windows.json
+  // in the profile; at start the same windows reopen, each page loaded when
+  // it is first shown, and no agent session is resumed (that is #67). The
+  // `restore` setting off neither saves nor restores; --no-restore skips the
+  // restore once.
+  const windowsFile = join(app.getPath('userData'), WINDOWS_FILE)
+  app.on('before-quit', () => {
+    if (!config.settings.restore) return
+    try {
+      saveWindows(
+        windowsFile,
+        [...cockpits.values()].map((cockpit) =>
+          savedWindow(
+            cockpit.cwd,
+            cockpit.pages.list().map((buffer) => ({
+              id: buffer.id,
+              url: buffer.url,
+              title: buffer.title,
+              partition: cockpit.pages.partitionOf(buffer.id),
+            })),
+            cockpit.buffers.current?.id ?? null,
+          ),
+        ),
+      )
+    } catch (error) {
+      console.error(`Windows not saved: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+  const restoreWindows = (): Cockpit | undefined => {
+    if (restoreSkipped(settings.restore, process.argv)) return undefined
+    let saved: SavedWindow[]
+    try {
+      saved = loadWindows(windowsFile)
+    } catch (error) {
+      console.error(
+        `Windows not restored: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return undefined
+    }
+    let restored: Cockpit | undefined
+    for (const one of saved) {
+      // A folder removed since, a worktree for one, leaves the window in the app's own.
+      const cockpit = openCockpit({ cwd: existsSync(one.cwd) ? one.cwd : process.cwd() })
+      one.pages.forEach((page, index) => {
+        const buffer = cockpit.pages.restorePage(page)
+        if (index === one.current) cockpit.buffers.switchTo(buffer.id)
+      })
+      restored ??= cockpit
+    }
+    return restored
+  }
+  const first = restoreWindows() ?? openCockpit()
   // A load error at start is shown once the first window can show it, and
   // the app runs on the defaults.
   if (!firstLoad.ok) {
