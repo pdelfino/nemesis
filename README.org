@@ -92,6 +92,8 @@ A running Nemesis serves its cockpit through MCP, so a =claude= in a terminal, o
 claude mcp add --scope local nemesis -- node <checkout>/bin/nemesis-mcp
 #+end_src
 
+The catalog has since grown a page tier (=browser_= tools, three feeds per page buffer). [[file:docs/mcp.org][docs/mcp.org]] is the full guide: connecting Claude Code or Claude Desktop, every tool with its confirmation class, the label rule for page text and what never exists.
+
 * Roadmap
 
 | Milestone | Outcome                                                                                   |

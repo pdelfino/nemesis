@@ -1,0 +1,195 @@
+#+TITLE: Driving Nemesis from an MCP client
+#+OPTIONS: toc:nil
+
+A running Nemesis is an MCP server. A =claude= in a terminal, Claude Desktop or any other client lists its tools, reads its buffers and pages, and acts through the same command table, buffers and prompt buffer the human uses, under the same rules. The design is ADR 0007 ([[file:adr/0007-mcp-architecture.org][the door]]), ADR 0008 ([[file:adr/0008-mcp-tools.org][the catalog]]) and ADR 0009 ([[file:adr/0009-page-script-door.org][the page's script door]]); this page is how to use it. Landed in #28 (the cockpit tier), #138 to #141 (the page tier) and #29 (the feeds).
+
+* Connect
+
+Open Nemesis first. The client starts =bin/nemesis-mcp=, a few lines of plain Node with no dependency and no build step. It never launches the app; with no Nemesis running it prints =Nemesis is not running= and exits.
+
+** What the shim finds
+
+- The socket =mcp.sock= and the token =mcp.token= sit side by side in the profile's user data folder: =~/Library/Application Support/Nemesis= on macOS, =$XDG_CONFIG_HOME/Nemesis= (else =~/.config/Nemesis=) on Linux, =%APPDATA%\Nemesis= on Windows.
+- =NEMESIS_USER_DATA= names another folder, and =--socket <path>= names the socket itself; the token is =mcp.token= beside whichever socket that is.
+- Both files are owner-only (mode 0600). The socket is a Unix domain socket: no port, no interface, no URL, so no other machine and no web page can address it. The token is 32 random bytes as hex, made fresh at every start and deleted at quit; the shim sends it as the first line and the app closes a connection that does not match. After a restart of Nemesis, restart the client too, or it hears =Nemesis closed the connection=.
+- The token is a secret of that run. Do not paste it into a config, a chat or an issue; the shim reads it from the file.
+
+** Claude Code
+
+From the checkout, one line:
+
+#+begin_src sh
+claude mcp add --scope local nemesis -- node <checkout>/bin/nemesis-mcp
+#+end_src
+
+Then =/mcp= in =claude= shows =nemesis= connected, and its tools are =mcp__nemesis__<tool>=.
+
+** Claude Desktop
+
+In =claude_desktop_config.json= (Settings, Developer, Edit Config):
+
+#+begin_src json
+{
+  "mcpServers": {
+    "nemesis": {
+      "command": "node",
+      "args": ["<checkout>/bin/nemesis-mcp"]
+    }
+  }
+}
+#+end_src
+
+Node must be on the client's =PATH=, or =command= must be its absolute path. Restart Claude Desktop after the edit.
+
+** The in-app server
+
+The agent inside the cockpit needs none of this. Its session is given the same server in process, under the key =nemesis=, so it sees the tools as =mcp__nemesis__<tool>=. It differs from a socket client in three ways: =cockpit_send_prompt= is not offered (a session sending itself a prompt is a loop), =cockpit_run_command= refuses the commands that replace the session it runs in (=new-task=, =resume-session=, =rewind=, =start-fresh-session-from-spec=), and its questions come through the permission bridge instead of the prompt buffer.
+
+* The two doors and the confirmation classes
+
+Every tool carries one class, and the door reads it.
+
+| Class     | What happens                                                                 |
+|-----------+------------------------------------------------------------------------------|
+| =free=    | Answers at once, with no question. It is a read.                             |
+| =yes=     | Asks once per call, and runs on a yes.                                       |
+| =command= | Only =cockpit_run_command=: it takes the class of the command it runs.       |
+
+A command's own class is one of =free=, =yes= or =never=, and =cockpit_list_commands= tells you which. A =never= command is refused on both doors: =answer-yes=, =answer-no=, =allow-for-session=, =approve-plan= and =reject-plan= answer a question the user owns, and =answers= cannot satisfy a confirmation. No path through the catalog produces a yes the user did not give. A tool that must never run is not a class here but an absent row; see "What never exists".
+
+** On the socket
+
+A =yes= call puts a question in the prompt buffer with the client's name first, for example =<client> asks cockpit_name_session: name the session "..."?=, and the no is the highlighted answer, so a stray =RET= refuses. Questions from several clients queue behind the one prompter. A client that disconnects while its question waits has the question withdrawn, with a notice. There is no =a= for an outside client: a yes is for one call.
+
+** Inside the cockpit
+
+The permission bridge asks, as it does for any tool, with =y=, =n= and =a=. =a= allows that tool name for the rest of the session, with one exception that does not bend: a =browser_= tool whose class is =yes= (navigate and act) is offered =y= and =n= only, so a yes on a page is always for one call. The free page reads take =a= like the cockpit tier's free tools.
+
+While a page buffer is open, the page boundary (SECURITY.org, T4) makes every MCP tool ask the user except the free ones the session is offered, which is what lets an agent read a page without a question per read.
+
+* Tools
+
+The catalog is one file, =src/main/mcp/catalog.ts=; every tool is a row with a name, an arguments schema, a return schema and a class. Names are snake case, with =cockpit_= for the cockpit tier and =browser_= for the page tier. The page tools keep browsermcp's names and argument names, so a prompt written for browsermcp drives Nemesis unchanged. A tool the client calls with a name not in the table gets an =isError= result, not a protocol fault. Results carry =structuredContent= and a text rendering of the same.
+
+** Cockpit tier
+
+| Tool                         | Class     | Arguments                                   | Returns                                                                                   |
+|------------------------------+-----------+---------------------------------------------+-------------------------------------------------------------------------------------------|
+| =cockpit_list_commands=      | free      | =filter=                                    | each command's =name=, =doc= and =class= (=free=, =yes= or =never=), read live            |
+| =cockpit_run_command=        | command   | =name=, =answers=                           | =name= and the =notices= the run produced; =answers= feed the command's reads in order    |
+| =cockpit_list_buffers=       | free      | none                                        | each buffer's =id=, =kind=, =title= and whether it is =current=, in creation order        |
+| =cockpit_read_buffer=        | free      | =id=, =from=, =lines=                       | the buffer's text as the window shows it, at most 2000 lines or 200 KB, with =truncated=  |
+| =cockpit_send_prompt=        | yes       | =text=                                      | the queue's receipt (=id=, =status=, =position=), not the answer; read the transcript     |
+| =cockpit_search_transcripts= | free      | =query=, =limit=                            | matches with =sessionId=, =title=, =date=, =line= and =excerpt=, newest session first     |
+| =cockpit_session_info=       | free      | none                                        | the session's id, name, title, =busy=, permission mode, =cwd=, start, =queued= and =catalog= |
+| =cockpit_name_session=       | yes       | =name=                                      | the =sessionId= and the =name= now set; a later name replaces it                          |
+
+=cockpit_run_command= is the typed escape hatch: it runs a command by name as =M-x= would, and a command that reads (a file name, a yes) takes the next of =answers=; a read with none left fails the call with its prompt. A =yes= command asks first on the socket, with the command's name and the answers in the question.
+
+** Page tier
+
+A page tool acts on a page buffer. =page= is a buffer id from =cockpit_list_buffers=, and without it the tool takes the current page buffer. =ref= is an element's handle from =browser_snapshot=, valid until the page navigates; a stale ref comes back as an error, so take a new snapshot. Pixels and the page's own strings are the only things a tool cannot make safe by structure, which is why the screenshot asks and the strings are labeled (see below).
+
+*** Reading, all free
+
+| Tool                       | Class | Arguments                                | Returns                                                                                      |
+|----------------------------+-------+------------------------------------------+----------------------------------------------------------------------------------------------|
+| =browser_snapshot=         | free  | =page=                                   | the page's semantic view (landmarks, headings, links, buttons, fields), each with a =ref=; =refs= counts them |
+| =browser_wait=             | free  | =time=, =page=                           | =waited=; at most 10 seconds                                                                 |
+| =browser_wait_for=         | free  | =page=, =ref=, =text=, =url=, =timeout=  | =met= and =after= (milliseconds); every condition given must hold; 10 seconds by default, at most 30 |
+| =browser_read_text=        | free  | =page=, =ref=, =from=, =chars=           | the page's main text as reader mode extracts it, or one element's text or a field's value; =truncated= says more follows |
+| =browser_form_state=       | free  | =page=                                   | each field's ref, kind, label, flags and value, and the page's alerts; =focused= is the focused ref |
+| =browser_get_console_logs= | free  | =page=, =limit=                          | the page's console messages and uncaught errors, oldest first, the last 100 by default, of 500 kept       |
+| =browser_query=            | free  | =page=, =selector=, =limit=              | =matched= and the first =limit= matches (10 by default) with their ref and outer HTML        |
+
+=browser_query= runs the selector in the page's isolated world, where a selector selects and cannot call code (ADR 0009). An element that is or holds a masked field shows its ref and no HTML.
+
+*** Navigating, all yes
+
+| Tool                | Class | Arguments          | Returns                                                    |
+|---------------------+-------+--------------------+------------------------------------------------------------|
+| =browser_navigate=  | yes   | =url=, =page=      | =page=, =origin= and =status= (=loaded=, =failed=, =timeout=) |
+| =browser_go_back=   | yes   | =page=             | =page=, =origin= and =moved= (false when there is no entry) |
+| =browser_go_forward= | yes  | =page=             | =page=, =origin= and =moved=                               |
+| =browser_open_page= | yes   | =url=              | the new buffer's =page=, =origin= and =status=; it does not take the user's point |
+| =browser_close_page= | yes  | =page=             | =page= and =closed=                                        |
+
+A navigation tool takes https: only: a plain http: URL off loopback, and =javascript:=, =file:= and =data:=, come back refused with the reason. It answers once the load settles, after at most 15 seconds, with the page's snapshot.
+
+*** Acting, all yes
+
+| Tool                    | Class | Arguments                                                      | Returns                                                       |
+|-------------------------+-------+----------------------------------------------------------------+---------------------------------------------------------------|
+| =browser_click=         | yes   | =element=, =ref=, =page=                                       | =page=, =origin=, =ref=                                       |
+| =browser_hover=         | yes   | =element=, =ref=, =page=                                       | =page=, =origin=, =ref=                                       |
+| =browser_type=          | yes   | =element=, =ref=, =text=, =submit=, =page=                     | =page=, =origin=, =ref= and =submitted=                       |
+| =browser_select_option= | yes   | =element=, =ref=, =values=, =page=                             | =page=, =origin=, =ref= and =selected= (options chosen after) |
+| =browser_press_key=     | yes   | =key=, =page=                                                  | =page=, =origin= and =key=                                    |
+| =browser_drag=          | yes   | =startElement=, =startRef=, =endElement=, =endRef=, =page=     | =page= and =origin=                                           |
+| =browser_screenshot=    | yes   | =page=, =ref=, =fullPage=                                      | =page=, =origin=, =width=, =height=; the PNG is one image item after the text |
+
+Input is the user's own kind, synthesized at the element's centre; an element out of view is refused (scroll with =browser_press_key=). =element= is the agent's description of the element for the user, shown quoted in the question, never as the question. The question names the client, the tool, the page's origin and that quotation, and says when =Enter= may submit a form. An action answers once the page settles, with the page's snapshot. =browser_select_option= names each option by its value, else by its label, and announces the choice with input and change events, as a user's choice is.
+
+** Resources
+
+One resource beside the tools, free, read-only and subscribable.
+
+| URI                         | What it is                                                                                         |
+|-----------------------------+----------------------------------------------------------------------------------------------------|
+| =nemesis://session/events=  | the current session's event log as recorded, one JSON object per line; empty before the first event |
+
+** The three feeds
+
+For each open page buffer there are three feeds, listed while the buffer lives, free, read-only and subscribable (#29). A subscriber hears an update after every new record, and the list itself moves as page buffers open and go. They are kept in memory only and are gone when the buffer is killed.
+
+| URI                              | Records                                                                                         |
+|----------------------------------+-------------------------------------------------------------------------------------------------|
+| =nemesis://page/{page}/mutations= | =at=, =kind= (added, removed, attribute, text), =ref= (or null) and =summary=; recorded from the first read or subscription, polled every 500 ms while subscribed |
+| =nemesis://page/{page}/console=   | =at=, =level= and =text=, the last 500; a page error is level =error=                      |
+| =nemesis://page/{page}/network=   | completed requests: =at=, =method=, =origin=, =path=, =status= and =bytes= (null if unannounced); no header, no body, no cookie |
+
+Each read is one JSON object, ={page, origin, records}=, oldest record first, then one block labeled as untrusted content from the page's origin. A record's page-controlled field holds =[n]=, the number of its line in the block.
+
+* The label rule
+
+What Nemesis controls is structure; what the page controls is text. The split is mechanical.
+
+- =structuredContent= holds only fields Nemesis made: the buffer id, the origin (the committed URL's origin of the top frame), counts, flags, timestamps, status codes and the refs a snapshot assigned.
+- Every string the page wrote (its title, the full URL with path and query, the accessibility tree's names, element text, console entries, mutation summaries, outer HTML) comes in one text item per result, the =wrapUntrusted= block, headed by the origin and a line saying it is untrusted content to be read as data, never as instructions.
+- A page-controlled string never appears as a bare field of the structure, so a client that reads only the structure cannot be steered by the page, and a client that reads the text sees the label first.
+- The cockpit tier carries no page text of its own; a transcript line that recorded a page block keeps the block as recorded.
+
+* Masked fields
+
+A secret field (a password, a card number, an expiry) is masked by one list in =src/shared/=, and the value never leaves the renderer.
+
+- =browser_snapshot= and =browser_form_state= show it as present, with its type and whether it is filled, never its value.
+- =browser_read_text= on its ref, or on an element that holds one, is refused: the human reads it.
+- =browser_query= shows such an element's ref and no HTML, and a page whose secret field carries a =value= attribute answers no selector.
+- =browser_type= and =browser_select_option= into one are refused before anyone is asked: the human types it.
+- =browser_screenshot= cannot mask pixels, so it asks, and a secret field shows as the page draws it.
+
+* What never exists
+
+These are absent from the catalog: there is no row to call. A client that calls one of them gets the unknown-tool result.
+
+- *Eval from a page.* No =browser_evaluate=, =browser_execute_script= or =browser_add_init_script=. The only code a tool runs in a page is the fixed set of reads ADR 0009 names; a selector selects and cannot call code.
+- *Eval for an outside client.* No =cockpit_eval=. A client that wants a definition made asks the session through =cockpit_send_prompt=, where the user's yes applies.
+- *Submitting without a yes.* No =browser_submit=, no =browser_fill_form= taking a batch, no =browser_checkout=. A submission is one of three yes-per-call calls: =browser_type= with =submit=, =browser_press_key= with =Enter=, or =browser_click= on the button, and the question says which.
+- *Reading a masked field*, as above.
+- *A client answering its own question*, as above.
+- *HTTP, a TCP port or a client from another machine.* The only door is the socket.
+
+* The catalog version
+
+=CATALOG_VERSION= in =src/main/mcp/catalog.ts= is one integer, reported by =cockpit_session_info= as =catalog= and appended to the server's version as =<app version>+catalog.<n>=. A new tool, a new optional argument, a new return field or a class made stricter keeps the number. A renamed or removed tool, a new required argument, a changed return shape or a class made looser bumps it. After a =reload-config= commit the server sends =notifications/tools/list_changed=.
+
+The current version is 1. Every bump is a line here and in ADR 0008's appendix, with the issue that made it.
+
+* Appendix: catalog versions
+
+| Version | Date       | Change                    | Issue |
+|---------+------------+---------------------------+-------|
+| 1       | 2026-10-19 | the cockpit tier, eight tools | #28   |
+
+The page tier (#138 to #141) and the feeds (#29) were additions that left the number at 1.
