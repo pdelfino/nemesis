@@ -1,0 +1,354 @@
+#+TITLE: Nyxt study 07: the renderer abstraction, mapped to Electron
+#+OPTIONS: toc:nil
+
+- Issue: #18 (feeds #73, the M4 epic; related #12, #48, #49, #50, #51, #54)
+- Nyxt read at: =~/projects/nyxt= at =fb49be5=, files =source/renderer.lisp=,
+  =source/foreign-interface.lisp=, =source/renderer-script.lisp=,
+  =source/renderer/gtk.lisp=, =source/renderer/electron.lisp=
+- Nemesis read at: main (=src/main/security/=, =src/main/buffer-bridge.ts=,
+  =src/shared/buffers.ts=)
+
+A note on the sources the issue named. The =ffi-*= generics are not in
+=renderer.lisp=, which is 19 lines and declares only the =renderer= class and
+two generics (=install=, =uninstall=). They are declared in
+=source/foreign-interface.lisp=, through the =define-ffi-generic= macro. The
+issue also named a separate GTK WebKit file, which does not exist in
+this checkout: the WebKit code lives in =source/renderer/gtk.lisp= (1823
+lines) and the GObject helpers in =source/renderer/gi-gtk.lisp=. The checkout
+also has =source/renderer/electron.lisp= (597 lines), a second implementation
+of the same contract on Electron. That is the most useful file in this study:
+it shows which methods Nyxt itself found it could and could not answer on
+Electron. Every Lisp file cited below was checked to exist.
+
+* The contract: how a renderer plugs in
+
+** Three pieces
+
+1. =renderer= (=source/renderer.lisp=) is a class with a =name=. An instance
+   is bound to =*renderer*=. =install= and =uninstall= are the only two
+   generics in that file. =install= in =source/renderer/electron.lisp= does
+   one thing: it makes the renderer's classes (=electron-browser=,
+   =electron-scheme=, =electron-window=, =electron-buffer=,
+   =electron-download=) superclasses of the renderer-neutral placeholders
+   (=renderer-browser=, =renderer-scheme=, =renderer-window=,
+   =renderer-buffer=, =nyxt/mode/download:renderer-download=). So the core's
+   =buffer= class inherits the foreign object slot and the methods from
+   whichever renderer is installed, and the core never names WebKit or
+   Electron.
+2. =define-ffi-generic= (=source/foreign-interface.lisp=) declares a generic,
+   exports it, and gives it a dummy default method that ignores its
+   arguments when no method is supplied. With =:setter-p= it also defines a
+   dummy =(setf name)=. The consequence is the rule of the whole design: an
+   operation a renderer does not implement silently does nothing instead of
+   failing. A core feature can call =ffi-buffer-add-user-script= on a
+   renderer that has no such thing and nothing tells the caller.
+3. Some generics carry a renderer-neutral method on the core classes, and
+   the renderer method runs through =call-next-method=. The pattern, seen in
+   =ffi-buffer-delete=, =ffi-buffer-load=, =ffi-window-set-buffer= and
+   =ffi-window-active=, is: the core runs its hooks and bookkeeping
+   (=buffer-delete-hook=, =buffer-load-hook=, =window-set-buffer-hook=,
+   =last-active-window=), then the renderer does the foreign work. The hooks
+   therefore fire identically on every renderer. =ffi-buffer-load= also
+   handles the =javascript:= scheme in the core, by evaluating the decoded
+   path, so a renderer never sees that scheme.
+
+In =source/renderer/gtk.lisp= the macro =define-ffi-method= wraps a method
+body so it runs on the GTK thread (=ffi-within-renderer-thread=, with a
+channel when the caller is on another thread). That is the thread-affinity
+problem of WebKit: every call into the foreign object must come from the
+renderer's own thread. Electron has the same shape in a different form: the
+Lisp side talks to a separate Node process by messages
+(=electron::message= in =source/renderer/electron.lisp=), so every call is
+asynchronous and the synchronous ones are built on top of a wait.
+
+** What a renderer must also provide besides the generics
+
+The generics are only the calls from core into renderer. The reverse channel
+is the =on-signal-*= family, also in =source/foreign-interface.lisp=: the
+renderer calls these when something happens, and the core method runs the
+modes (=on-signal-notify-uri= runs each enabled mode's method first so modes
+can alter the behaviour of the buffer). The pair is the whole interface:
+commands down, events up.
+
+* Every renderer method, grouped by concern
+
+All names are in =source/foreign-interface.lisp=. The Electron column says
+what =source/renderer/electron.lisp= did (done, stubbed with an error, or
+left as a commented-out TODO). "Owner" is the Nemesis security baseline
+module that already decides the concern; "none" means no module owns it yet
+and the page-buffer API has to.
+
+** Lifecycle (renderer, browser, buffer, window)
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron           | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+----------------------------+-------|
+| =install=, =uninstall=                      | swap the renderer's classes into the core                 | not needed: the page buffer is a class of ours, not a mixin             | done                       | none  |
+| =ffi-initialize=                            | renderer startup, then =finalize-startup=                 | =app.whenReady()= in =src/main/index.ts=                                | done                       | #54 orders session creation after the host resolver |
+| =ffi-kill-browser=                          | terminate the renderer process                            | =app.quit()=                                                            | done                       | none  |
+| =ffi-within-renderer-thread=                | run a thunk on the renderer thread                        | not needed: main is single threaded and owns every =webContents=        | done                       | none  |
+| =ffi-buffer-initialize-foreign-object=      | create the web view                                       | =new WebContentsView({ webPreferences })= with =HARDENED_WEB_PREFERENCES= | done                    | #47 (=web-preferences.ts=), #54 (partition choice) |
+| =ffi-buffer-delete=                         | destroy the view, pick a replacement buffer               | remove the view from the window, =webContents.close()=                  | done                       | none  |
+| =ffi-register-custom-scheme=                | register an internal scheme with its callback             | =protocol.registerSchemesAsPrivileged=, =protocol.handle=               | done (=electron-scheme=)   | #50 (=internal-scheme.ts=) |
+| =ffi-window-delete=, =-fullscreen=, =-unfullscreen=, =-maximize=, =-unmaximize=, =-to-foreground=, =-title=, =-active= | window frame operations | =BrowserWindow= methods                                                 | done                       | none (cockpit window, #70) |
+| =ffi-window-set-buffer=                     | show a buffer in a window                                 | =win.contentView.addChildView(view)=, =setBounds=, remove the old view | done                       | none  |
+| =ffi-focus-buffer=, =ffi-focused-p=         | give focus, ask for focus                                 | =webContents.focus()=, =webContents.isFocused()=                        | done                       | none  |
+| =ffi-height=, =ffi-width= (setf-able)       | size of a window or buffer in pixels                      | =view.setBounds()=, =view.getBounds()=                                  | done (bounds recomputed around status and message buffers) | none |
+
+The two lines that matter. First, =ffi-buffer-initialize-foreign-object= is
+where Nyxt's design and the baseline meet: whatever the renderer builds here
+is the security surface, and on Electron that is the =webPreferences= object.
+The baseline already froze it in =HARDENED_WEB_PREFERENCES= and checks it
+back from the live contents. Second, the Electron renderer sizes a view by
+hand (=update-active-buffer-bounds= subtracts the status and message buffer
+heights from the window bounds). Nemesis lays out its own chrome in the
+cockpit renderer, so it must decide the same thing once: who owns the page
+view's rectangle (see the API at the end).
+
+** Navigation and history
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-load=                           | load a URL; core handles =javascript:= and runs the hook  | =webContents.loadURL(url)=, after =navigationAllowed(kind, url)=        | done             | #48 (=navigation-policy.ts=: =http:= and =https:= only for a page) |
+| =ffi-buffer-reload=                         | reload                                                    | =webContents.reload()=                                                  | done             | none  |
+| =ffi-buffer-navigate-backwards=, =-forwards= | history step; the default method runs =history.back()= in script | =webContents.navigationHistory.goBack()=, =goForward()=, =canGoBack()= | done (via the default script) | #48 guards the result: a redirect is a navigation too |
+| =ffi-buffer-load-alternate-html=            | show an error page for a URL that failed to load          | =webContents.loadURL('data:...')= is refused by the baseline; use an internal page on the internal scheme | commented out    | #50 (internal pages carry the CSP) |
+| =ffi-buffer-url=, =ffi-buffer-title=        | read the committed URL and the title                      | =webContents.getURL()=, =getTitle()=                                    | done             | #48 (the displayed URL is the committed top-frame URL) |
+| signals =on-signal-notify-uri=, =-notify-title=, =-load-started=, =-load-redirected=, =-load-canceled=, =-load-committed=, =-load-finished=, =-load-failed= | page events up to the core | =did-start-navigation=, =did-redirect-navigation=, =did-navigate=, =did-navigate-in-page=, =page-title-updated=, =did-finish-load=, =did-fail-load= | done | #48 for the redirect and navigate guards |
+| =on-signal-decide-policy= (GTK)             | one hook that sees every navigation, new-window and response, with mime type, method, headers, file name | =will-navigate=, =will-redirect=, =setWindowOpenHandler=, and for responses =session.webRequest.onHeadersReceived= | n/a (GTK only) | #48 (navigation, window-open); #51 (a response that is a download) |
+| =on-signal-load-failed-with-tls-errors= (GTK) | decide whether to trust a bad certificate for a host      | the =certificate-error= event, never overridden                         | n/a              | #48 / SECURITY.org T3: fatal, no click-through |
+| =on-signal-mouse-target-changed= (GTK)      | hovered link URL, shown in the status area                | no direct event; the page buffer's preload script reports hover        | n/a              | none  |
+
+=on-signal-decide-policy= in =source/renderer/gtk.lisp= is the most
+instructive method in the file. WebKit gives one callback that carries a
+decision type (navigation, new window, response) and the method decodes the
+request, mime type, headers, modifiers and mouse button into one record, then
+hands the core a single yes, no or download answer. Electron splits the same
+decision across several events and no single hook. Nemesis already has the
+split halves in =navigation-policy.ts=; what it does not have is a
+renderer-neutral record that the prompt buffer and the history can read.
+
+** Input
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =on-signal-key-press=, =on-signal-button-press= | key and mouse events up to the core's input dispatch   | =webContents.on('before-input-event')= (can preventDefault), the only place a page's keys are seen before the page | done (listeners) | none: this is the one new seam |
+| GTK =on-signal-key-press-event=, =-button-press-event=, =-scroll-event= | translate a toolkit event into a key string with modifiers | the =before-input-event= =Input= object (=key=, =code=, =control=, =alt=, =meta=, =shift=) | done | none |
+| =ffi-buffer-copy=, =-paste=, =-cut=, =-select-all=, =-undo=, =-redo= | editing commands on the focused web view; copy and paste go through the system clipboard | =webContents.copy()=, =paste()=, =cut()=, =selectAll()=, =undo()=, =redo()= | done | #49 (clipboard-read is a denied permission for the page; these are the user's own commands, not the page's) |
+| =ffi-add-context-menu-command=              | add a named command to the page context menu              | =webContents.on('context-menu')= building a =Menu=                      | done (menu built in the remote process) | none |
+
+Input is the place where a Nyxt-style cockpit and a browser disagree. In
+Nyxt the core owns every keystroke because the keymap system is its own. On
+Electron the page receives keys first, so the keyboard layer is only as good
+as =before-input-event=. Nemesis cannot hand a key to the page and also own
+it: the rule has to be decided per mode (an insert mode that forwards, a
+normal mode that consumes), and it is the next study's subject (#14 and the
+keymap ADR), not this one.
+
+** Scripting
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-evaluate-javascript=, =-async=  | run a JS string in the page, optional =world-name=        | =webContents.executeJavaScript(code)= (main world), =webFrame.executeJavaScriptInIsolatedWorld= from a preload for an isolated world | done; =world-name= ignored (TODO) | none; this is a hole in the baseline, see below |
+| =ps-eval=, =define-parenscript=, =define-parenscript-async=, =ps-labels= (=source/renderer-script.lisp=) | compile Lisp to JS with Parenscript, run through the two generics above, return the value | a typed preload function exposed over =contextBridge=, called by IPC   | n/a (macro layer) | #53 (IPC sender and shape validation) |
+| =ffi-buffer-get-document=                   | raw HTML of the page, read in 10000-character slices through script | =webContents.executeJavaScript('document.documentElement.outerHTML')=, or the accessibility tree for the semantic view | default method | none |
+| =html-write=, =html-set=, =html-set-style=, =add-stylesheet= (=source/renderer-script.lisp=) | write HTML or CSS into a buffer from the core | not for pages; for internal pages only, from the cockpit's own renderer | n/a | #50 |
+| =define-internal-page=, =internal-page= (=source/renderer-script.lisp=) | register an internal URL whose content the core generates, matched by URL | =protocol.handle('nemesis', ...)=                                    | done (scheme) | #50 |
+
+=source/renderer-script.lisp= is not renderer code; it is a layer of
+macros over exactly two generics. That is a good sign of how narrow the
+renderer boundary is: all of Nyxt's page scripting (hints, search in page,
+DOM reads, link following) flows through =ffi-buffer-evaluate-javascript= and
+its async twin. It is also the baseline's gap. SECURITY.org has no row for
+"the app runs script in a page". Nyxt's answer, evaluating a string in the
+page's own world, would put app code and page code in the same JavaScript
+world, which the baseline's page-content-is-data rule rules out. In Electron
+the right shape is a preload on the page buffer that runs in an isolated
+world and exposes a minimal, typed bridge; the main process never builds a
+JS string out of page data. That is the one decision the first child issues
+must make before any hint-mode work.
+
+** Cookies, storage and the session
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-cookie-policy= (setf-able)      | accept all, never, or no third party                      | =session.cookies=; third-party blocking via =session.webRequest= or the blocker (#73 item); no policy enum in Electron | TODO, empty method | #54 owns which session; the policy itself is none |
+| =make-web-context= (GTK, not a generic): website data manager, persistent cookie storage as text, spell checking, sandboxed extension dir | one context per name, cached in =web-contexts= | =session.fromPartition('persist:default')= and an ephemeral partition   | n/a              | #54 (=persist:default= on disk, =ephemeral= in memory, wiped on close by construction) |
+| =get-web-context= (GTK)                     | context by name, so buffers can share or isolate storage  | the partition string given to =webPreferences.partition=                | n/a              | #54 and #49 (both partitions get the deny-by-default handlers at creation) |
+| =ffi-buffer-proxy= (setf-able)              | per-buffer proxy URL and ignored hosts                    | =session.setProxy()=: per session, not per buffer                       | stubbed, errors  | #54 (DNS over HTTPS off, WebRTC public interface only); proxy is none |
+| =handle-permission-requests-p= and =process-permission-request= (GTK) | ask the user for geolocation, notification, camera and microphone, pointer lock and the like | =session.setPermissionRequestHandler=, =setPermissionCheckHandler=, =setDevicePermissionHandler= | n/a | #49 (=permissions.ts=: denied by default, a yes is per origin and per run) |
+
+The sharpest contrast with the baseline is =process-permission-request=. It
+builds a question per request type and grants on a yes. The Nemesis baseline
+reaches the same ask, but starts from deny, keeps the allow set in memory so
+it dies with the process, and keys it on scheme plus host (=originOf= in
+=src/main/security/permissions.ts=), never on a path. The renderer contract
+needs nothing from this concern: permissions are session policy, installed
+once, and never a per-buffer call. The Nyxt shape of "a renderer method per
+permission" is the wrong grain for Electron.
+
+** Downloads
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-download=                       | start a download of a URL through a buffer's web view     | =webContents.downloadURL(url)=                                          | done             | #51 (=downloads.ts=: the page-offered item is refused at =will-download=; the app requests the URL itself after a yes) |
+| =wrap-download= (GTK, not a generic), =gtk-download=, =electron-download= | wrap the toolkit's download, track bytes and percent, pick the destination, avoid name clashes, work around the PDF viewer saving as =document.pdf= | =DownloadItem= events: =updated=, =done=; =setSavePath= | done (state map from =completed=, =progressing=, =cancelled=, =interrupted=) | #51 (quarantine folder, the =com.apple.quarantine= attribute checked after completion) |
+
+Nyxt lets a page start a download and then manages it; Nemesis does the
+opposite, and that is deliberate (SECURITY.org T2). So of the whole download
+concern the renderer contract needs one method, "ask the page buffer to
+download this URL that the user confirmed", and the rest stays inside #51.
+
+** Printing
+
+There is no print generic. =ffi-print-status= and =ffi-print-message= in
+=source/foreign-interface.lisp= are misleadingly named: they print into the
+status buffer and the message buffer (the Nyxt equivalent of a modeline and
+an echo area), by writing HTML to a buffer through =html-write=. Neither
+prints a page. Nyxt has no page printing on either renderer. Electron has
+=webContents.print()= and =webContents.printToPDF()= when it is wanted; no
+module owns it. It is not wanted in the first milestone (see the end).
+
+** Zoom
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-zoom-ratio= (setf-able)         | read and set the zoom ratio; default method sets =document.body.style.zoom= by script and an =:after= method stores it in the buffer's =zoom-ratio= slot | =webContents.getZoomFactor()=, =setZoomFactor()=                        | done (positive floats only) | none |
+
+The default method is the useful design lesson: a renderer without native
+zoom still works because the core falls back to a script. Electron has native
+zoom, so the fallback is dead code for Nemesis. Note that Electron's zoom is
+remembered per origin by Chromium unless the factor is set again on
+navigation; the page buffer has to say which behaviour it wants.
+
+** User scripts and user styles
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-add-user-script=, =-remove-user-script= | inject script at document start or end, with allow and block URL lists | a preload script (=session.registerPreloadScript=), or =webContents.executeJavaScript= on =did-finish-load= | commented out    | none |
+| =ffi-buffer-add-user-style=, =-remove-user-style= | inject CSS, with allow and block URL lists            | =webContents.insertCSS()= returns a key, =removeInsertedCSS(key)= | commented out    | none |
+
+Nyxt on Electron never implemented these four; they are TODO comments in
+=source/renderer/electron.lisp=. The GTK versions in
+=source/renderer/gtk.lisp= build a WebKit =user-content-manager= object and
+keep it in the script's =gtk-object= slot so removal can find it. In
+Nemesis, user scripts mean arbitrary code running in pages the user visits,
+and that is a security decision before it is an API: not in the first
+milestone.
+
+** Settings toggles
+
+| Nyxt generic                                | What it does                                              | Electron equivalent                                                     | Nyxt on Electron | Owner |
+|---------------------------------------------+-----------------------------------------------------------+-------------------------------------------------------------------------+------------------+-------|
+| =ffi-buffer-javascript-enabled-p=, =-javascript-markup-enabled-p=, =-smooth-scrolling-enabled-p=, =-media-enabled-p=, =-webgl-enabled-p=, =-auto-load-image-enabled-p= | per-buffer toggles, generated by =define-ffi-settings-accessor= over =webkit-settings= | =webPreferences= fields (=javascript=, =webgl=, =images=), fixed at view creation | stubbed, each errors "not supported by Electron back-end" | #47 (=HARDENED_WEB_PREFERENCES=; the enforced keys are read back from the live contents) |
+| =ffi-buffer-sound-enabled-p=                | mute                                                      | =webContents.setAudioMuted()=, =isAudioMuted()=                         | done             | none  |
+| =ffi-inspector-show=                        | open the web inspector                                    | =webContents.openDevTools()=                                            | done             | #47 for the preferences; whether devtools may open is not decided yet |
+
+The Electron renderer's own comment (the TODO above the stubs in
+=source/renderer/electron.lisp=) says why the toggles fail: Electron fixes
+=webPreferences= at view creation, so the only way to flip one is to delete
+and recreate the view. That is the right answer for Nemesis too, and it
+matches the baseline: a page buffer's preferences are an immutable frozen
+object, never relaxed at runtime.
+
+* What the baseline already decides, by module
+
+| Issue | Module                                    | Concerns it owns in the table above                                                   |
+|-------+-------------------------------------------+---------------------------------------------------------------------------------------|
+| #47   | =web-preferences.ts=, =assert-web-preferences.ts= | the foreign object's configuration; JS, images, WebGL toggles; devtools        |
+| #48   | =navigation-policy.ts=                    | what =ffi-buffer-load= may load, redirects, new windows, =will-attach-webview=, the decide-policy answer, committed URL |
+| #49   | =permissions.ts=                          | every permission request, device choosers; clipboard-read for the page               |
+| #50   | =internal-scheme.ts=                      | custom scheme registration, internal pages, the CSP, error pages                     |
+| #51   | =downloads.ts=, =external.ts=             | downloads of every kind, external protocol handlers                                  |
+| #54   | =partitions.ts=                           | which session a view uses, cookie storage location, WebRTC policy, host resolver     |
+
+What no module owns, and so what the page-buffer API has to decide:
+script execution in the page, input forwarding, cookie policy beyond the
+partition, proxy, zoom, find-in-page, view layout, user scripts and styles.
+
+* The page-buffer API Nemesis needs first (M4's first child issues)
+
+Narrower than Nyxt's. Nyxt's contract is about sixty-five generics because it had
+to cover two toolkits and kept every WebKit setting reachable. Nemesis has
+one engine, and the baseline has already fixed most of what Nyxt left to the
+renderer. Names are proposals for the issue writer, in TypeScript style, in
+=src/main/page-buffer.ts= beside =buffers.ts=.
+
+1. *Create and destroy.* =createPage(spec)= builds a =WebContentsView= with
+   =HARDENED_WEB_PREFERENCES=, the partition chosen from the spec
+   (=persist:default= or =ephemeral=), and runs =applyNavigationPolicy(contents,
+   'page')= before the first load. =destroyPage(id)= closes the contents and
+   removes the view. Two specs: the live preferences read back hardened with a
+   page buffer open (the M4 acceptance in #73), and a destroyed page leaves no
+   listener behind. Maps to =ffi-buffer-initialize-foreign-object= and
+   =ffi-buffer-delete=.
+2. *Load and move.* =load(id, url)=, =reload(id)=, =back(id)=, =forward(id)=,
+   all through =navigationAllowed('page', url)=; a refusal is a notice, not a
+   throw. Maps to =ffi-buffer-load=, =-reload=, =-navigate-backwards=,
+   =-navigate-forwards=. The core-side hook (Nyxt's =buffer-load-hook=) is a
+   cockpit hook point, to be named by the hooks ADR (#16, ADR 0005).
+3. *State up.* One event stream, validated at the IPC boundary (#53): URL
+   changed, title changed, loading started, committed, finished, failed with
+   a reason, redirect. Maps to the =on-signal-*= family collapsed to one
+   discriminated union in =src/shared/buffers.ts=. The URL shown is the
+   committed top-frame URL (SECURITY.org T3).
+4. *Layout.* One owner for the page view's rectangle. The cockpit renderer
+   reports the rectangle it wants (=setBounds(id, rect)=); the main process
+   applies it. This is what the Electron renderer in Nyxt does by hand
+   (=update-active-buffer-bounds=), and the thing to get right once.
+5. *Focus and keys.* =focus(id)= and a =before-input-event= listener that
+   asks the keymap layer, per mode, whether the key is consumed or forwarded.
+   Maps to =ffi-focus-buffer=, =ffi-focused-p= and the key signals.
+6. *Zoom.* =zoom(id)= and =setZoom(id, factor)=, with the per-origin
+   behaviour stated in the issue. Maps to =ffi-buffer-zoom-ratio=.
+7. *Page script, behind one narrow door.* A preload on page buffers, isolated
+   world, one typed bridge for the semantic view and hint mode (#73 items),
+   no =executeJavaScript= built from a string that includes page data. Maps to
+   =ffi-buffer-evaluate-javascript=, deliberately not as a general eval.
+   Needs a SECURITY.org row and a spec before it ships, and Pedro's review as
+   anything under =src/preload/=.
+8. *Download request.* =requestDownload(id, url)= calling the one path in
+   #51; no renderer-side download management.
+
+Items 1 to 3 are the first child issues; 4 and 5 follow in the same
+milestone; 6 and 8 are small; 7 is the one that needs an ADR first.
+
+* What is deliberately not wanted
+
+- *A renderer interface with a dummy default.* The =define-ffi-generic= rule
+  that an unimplemented operation silently does nothing is right for a
+  project with two toolkits and wrong for one engine. The Nemesis page buffer
+  is a concrete class; an operation that is not supported fails loudly or is
+  absent from the type.
+- *A second renderer.* Nothing in M4 abstracts over WebKit or another engine.
+  The seam stays where Electron puts it (=webContents=, =session=,
+  =WebContentsView=, =protocol=), and the type is the interface.
+- *=ffi-within-renderer-thread=.* Main owns every =webContents= on one thread.
+- *Per-buffer proxy, cookie-policy enum, JavaScript/WebGL/image toggles.*
+  Electron cannot change them on a live view, Nyxt's own Electron renderer
+  stubs them, and the baseline fixes the preferences. Per-origin settings come
+  later, as a recreate-the-view operation if ever.
+- *User scripts and user styles in M4.* Arbitrary code in visited pages is a
+  security decision (a new row in SECURITY.org, a spec, Pedro's review), not a
+  convenience method.
+- *Page printing.* Nyxt has none; Electron makes it easy; nothing in the plan
+  asks for it.
+- *Parenscript-style compile-to-JS from the core.* Nemesis has no Lisp. Page
+  interaction goes through a typed preload bridge, never a string assembled in
+  main.
+- *The decide-policy mega-callback.* The record is useful (kept as the
+  navigation notice the prompt buffer reads), the single hook is not: the
+  baseline's split guards stay split.
+- *A permission method per request type on the renderer.* Permissions are
+  session policy installed once (#49).
+
+* To file next
+
+1. M4 child: =page-buffer.ts= with create, destroy, load, reload, back and
+   forward, and the committed-URL event stream (items 1 to 3), with the
+   preferences-hardened spec running with a page buffer open. Feeds #73.
+2. M4 child: view layout and focus (items 4 and 5), after the keymap layer
+   states the consume-or-forward rule per mode.
+3. ADR: the page-script door (item 7): isolated-world preload, the typed
+   bridge, the SECURITY.org row, the spec. Needs Pedro's review before code.
+4. A decision for Pedro, not a code issue: whether the zoom factor is per
+   origin (Chromium's default) or per buffer.

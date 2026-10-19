@@ -1,0 +1,613 @@
+#+TITLE: ADR 0008: the MCP tool catalog, cockpit tools first, browser parity in M4
+#+OPTIONS: toc:nil
+
+- Status: proposed (flips to accepted when Pedro picks on #27; the pick is
+  recorded on that issue and in this line)
+- Date: 2026-OCTOBER-18
+- Threat or Pillar: README.org pillar 3, LLM-friendly and MCP-driven, for
+  what an outside agent sees of Nemesis; SECURITY.org T4 for every tool that
+  carries page text or acts on a page, T2 for anything that downloads or
+  opens, T1 for what a page may never reach; =docs/guidelines-map.org= row
+  "Automate and scale", which names the MCP server over the command table
+- Issue: #27 (study #25; the server ADR 0007 on #26; the MVP #28, rewritten
+  by this; the boundary #55 and its first use #83; the resources #29; the
+  page buffer #73; the masked fields of #94; eval #72; the plan #43)
+
+* Context
+
+** What ADR 0007 fixed and what it left to this file
+
+ADR 0007 put the one MCP server in main, over the command registry, behind a
+Unix socket and a stdio shim, and handed the same instance to the session
+inside the cockpit as an in-process server. It fixed three confirmation
+classes as data every tool carries, =free=, =yes per call= and =never=, and
+fixed that a yes is asked once, by the door a call came through: the prompter
+for an outside client, the permission bridge for the session inside. It left
+this file four things: the catalog itself, whether =run-command= takes one
+class or the class of the command it names, whether an =eval= tool exists for
+outside clients at all, and what the in-app =a= means for a yes-per-call
+tool. It also wrote one sentence this file must keep: the tool list never
+drifts from the command table.
+
+** What there is to serve today
+
+Nothing in M3 is a web page, so the first tools are the cockpit's, and the
+cockpit's seams are these:
+
+- The command registry (=src/main/commands/registry.ts=): 47 commands at the
+  time of writing, each a kebab-case =name=, a one-line =doc= and a
+  =run(context)= that takes no arguments. What a command needs it reads
+  through the prompter (=src/main/commands/prompter.ts=), one read at a time,
+  and a yes or no is a read too (=src/main/commands/confirm.ts=). Among the
+  47 are the commands that answer a pending question: =answer-yes=,
+  =answer-no=, =allow-for-session=, =approve-plan=, =reject-plan=. A tool that
+  could run those would answer its own confirmation.
+- The buffer registry (=src/main/buffers.ts=, vocabulary in
+  =src/shared/buffers.ts=): every buffer is an =id=, a =kind= (=prompt=,
+  =transcript=, =diff= today; =page= in M4) and a =title=. Main owns the list
+  but not every buffer's text: the transcript's text is the session's event
+  log and its Org rendering in the session folder
+  (=src/main/transcripts.ts=), the prompt buffer's text is the draft main
+  holds (=src/shared/agent.ts=, =PromptState=), a diff buffer's text is what
+  =src/main/diffs.ts= produced.
+- The session manager (=src/main/agent/session-manager.ts=): one session,
+  with =sessionId=, =busy=, =permissionMode= and the =cwd= it runs in; the
+  prompt queue (=src/main/agent/prompt-queue.ts=) answers a send with a
+  receipt, =sent=, =queued= or =answered=, and a position.
+- The session index (=src/main/sessions.ts=): every resumable session with
+  its id, a title that is the first line of its first prompt, when it
+  started and its cwd. There is no way to name a session today; its title is
+  whatever was typed first.
+- Transcript search (=src/main/transcript-search.ts=): a case-insensitive
+  substring over every =session.org=, newest first, stopped at 200 matches,
+  each match a session id, a title, a date, a line number and an excerpt.
+
+Every one of these is reachable from main in one call, which is what makes a
+tool a thin relay.
+
+** The parity list
+
+=docs/mcp-study/01-browsermcp-tool-surface.org= (#25) read browsermcp
+0.1.3: twelve tools registered, one more (=browser_drag=) implemented and
+never registered, all page level, no resources, no prompts, no tab tools, no
+authorization, and every result a text block, most ending in the same
+trailer (URL, title, an ARIA tree as YAML). The argument types live in a
+package the clone does not contain, so every argument name below marked
+"confirm" is to be checked against =tools/list= of a running browsermcp
+before the M4 issue copies it. The study's closing list of what only an
+engine we own can offer is the brief for the second tier: element and
+full-page screenshots, stable element references, network logs, page
+errors, text and DOM reads, wait-for conditions, several pages at once, and
+every page result wrapped and labeled as untrusted content from a named
+origin.
+
+** The boundary the page tier sits under
+
+SECURITY.org T4: any text extracted from a page and handed to Claude is
+wrapped in a delimited block labeled as untrusted content from a named
+origin, never concatenated into instructions, and tools with side effects
+need the user's explicit confirmation. #83 creates the one code path,
+=wrapUntrusted(origin, text)= in =src/main/agent/boundary.ts=, for
+=fetch-url=; #55 reuses it for page buffers and adds the =PreToolUse= hook
+that denies side-effect tools while a page buffer is open (option A, picked
+2026-OCTOBER-17: no allowlist in version 1). #94 adds the rule for forms:
+secret fields (password, card and account numbers, SIN and NAS, CVV,
+anything with an autocomplete hint for a secret) are masked before a
+snapshot leaves the renderer, and the agent sees that they exist and
+whether they are filled, never their value. Nothing in browsermcp addresses
+any of this; it is the design space the study said was open.
+
+** The issues this catalog rewrites or feeds
+
+#28 is from the Racket era: five tools (=navigate=, =click_at=, =type_text=,
+=screenshot=, =observe_dom=) against a WKWebView. The engine is
+=WebContentsView= now, click by coordinates became click by reference, and
+the first demo is the cockpit tier over the shim, as ADR 0007's fourth step
+says. #29 wants DOM mutations, console and network as streams an MCP client
+subscribes to, which are resources, not tools. #73's semantic view is an
+accessibility tree with stable references shared by hint mode and by the
+agent, which is what =browser_snapshot= returns here.
+
+* Decision
+
+Proposed: one server, two tiers behind two prefixes, a curated set of
+cockpit tools with =run_command= as the typed escape hatch, parity names kept
+verbatim for the page tier, and the rules below. They become the decision
+when the status flips. The alternatives section holds the two questions #27
+asks and the options for each.
+
+** Names: one server, snake case, a prefix per tier
+
+The server announces itself as =nemesis=, so a client such as Claude Code
+sees =mcp__nemesis__<tool>=. Tool names are snake case, since every MCP
+client and the Claude API accept =[a-zA-Z0-9_-]= and the ecosystem's
+convention is underscores. Cockpit tools carry the prefix =cockpit_=; page
+tools carry =browser_=, which is browsermcp's own prefix, so that a parity
+tool keeps browsermcp's exact name and argument names and a prompt or a
+client written against browsermcp drives Nemesis unchanged. The prefix is
+the tier, not a second server; the alternatives section says why.
+
+** Every tool carries four fields and the catalog is one file
+
+=src/main/mcp/catalog.ts= holds the table below as data: for every tool its
+name, its arguments schema (zod, rendered as JSON Schema for =tools/list=),
+its return schema (the MCP =outputSchema=; results carry =structuredContent=
+and a text rendering of the same), and its confirmation class. A class is a
+field of the tool, as ADR 0007 said, and the door reads it. =tests/unit/mcp-catalog.test.ts=
+pins that =tools/list= equals the table, that every tool has a class, that
+no tool name lacks a tier prefix, and that no page tool appears before the
+=page= buffer kind exists.
+
+The tier is also the milestone: the cockpit tier lands in M3 with ADR 0007's
+steps, the page tier lands with M4's first page buffer and not before. A
+client that lists tools in M3 sees eight.
+
+** The cockpit tier (M3)
+
+Argument schemas are written as TypeScript object types; =?= marks optional.
+Every result also carries a text rendering for clients that ignore
+=structuredContent=.
+
+| Tool                         | Arguments                                              | Returns                                                                                              | Class                   |
+|------------------------------+--------------------------------------------------------+------------------------------------------------------------------------------------------------------+-------------------------|
+| =cockpit_list_commands=      | ={filter?: string}=                                    | ={commands: {name, doc, class}[]}= from =registry.list()=, read live, filtered by substring          | free                    |
+| =cockpit_run_command=        | ={name: string, answers?: string[]}=                   | ={name, notices: string[]}=: the notices the run emitted                                             | the command's own class |
+| =cockpit_list_buffers=       | ={}=                                                   | ={buffers: {id, kind, title, current: boolean}[]}=                                                   | free                    |
+| =cockpit_read_buffer=        | ={id: string, from?: number, lines?: number}=          | ={id, kind, title, from, lines, truncated: boolean}= plus the text as a content block               | free                    |
+| =cockpit_send_prompt=        | ={text: string}=                                       | ={id, status: 'sent' or 'queued' or 'answered', position}=, the receipt the prompt queue gives       | yes per call            |
+| =cockpit_search_transcripts= | ={query: string, limit?: number}=                      | ={matches: {sessionId, title, date, line, excerpt}[]}=, newest first, =limit= capped at 200          | free                    |
+| =cockpit_session_info=       | ={}=                                                   | ={sessionId, name, title, busy, permissionMode, cwd, startedAt, queued: number, catalog: number}=    | free                    |
+| =cockpit_name_session=       | ={name: string}=                                       | ={sessionId, name}=                                                                                  | yes per call            |
+
+What each row means, where a row is not obvious:
+
+- =cockpit_run_command= takes the class of the command it names. =Command=
+  gains an optional field, =mcp: 'free' | 'yes' | 'never'=, defaulting to
+  =yes= when absent, so a command nobody thought about costs a yes and
+  nothing is free by accident. The commands that only read, =buffers=,
+  =commands=, =describe-command=, =describe-key=, =sessions=, =checkpoints=,
+  =list-diffs=, =windows=, declare =free=. The commands that answer a pending
+  question, =answer-yes=, =answer-no=, =allow-for-session=, =approve-plan=,
+  =reject-plan=, declare =never=, and so does =execute-command=, which is the
+  palette itself. The class is also what =cockpit_list_commands= reports, so
+  a client knows the cost before it calls. This answers ADR 0007's first
+  question: one class for all would be either noisy (a yes to list buffers)
+  or loose (no yes to kill one), and the registry already knows what each
+  command does.
+- =answers= feeds the prompter. A command reads what it needs through
+  =prompter.read=, one read at a time; when the call came through MCP the
+  reads are satisfied from =answers= in order, as the palette satisfies them
+  from the keyboard, so =cockpit_run_command {name: 'switch-buffer', answers:
+  ['*transcript*']}= switches without opening a prompt in the window. A read
+  with no answer left fails the call with =isError= and the prompt text, so
+  an agent learns what to supply and the window never blocks on a question
+  the client did not know it was asking. A read raised by =confirm.ts= is
+  never satisfied from =answers=: it is the user's, and the landing issue
+  marks confirm reads so the prompter can tell them apart. The door's yes is
+  asked once per call, with the command name and the answers in the prompt
+  line; a confirm the command raises itself, a download's or an external
+  link's under =src/main/security/=, is still asked, because the MCP layer
+  never reaches those files (ADR 0007), and the double question is the cost
+  of that wall, paid rarely.
+- =cockpit_read_buffer= returns what the window shows, by kind: a transcript
+  buffer gives the lines of its =session.org= rendering, the prompt buffer
+  gives the draft, a diff buffer gives the diff, and in M4 a page buffer
+  gives the page's text through the wrapper of the next section. A read is
+  capped at 2000 lines or 200 KB per call, whichever comes first, with
+  =truncated= set and =from= to continue; the cap keeps one tool call from
+  being the whole transcript. The class is free because the transcript is
+  the agent's own record and a diff is the agent's own work; a page buffer's
+  read is free too, since reading is not acting, and its text is labeled.
+- =cockpit_send_prompt= is yes per call for an outside client, with the
+  text in the prompt line, cut to a screen; the result is the receipt, not
+  the answer. A client that wants the answer reads the transcript buffer or
+  subscribes to the transcript resource below. The length cap is
+  =MAX_PROMPT_LENGTH=. The session inside the cockpit does not see this
+  tool: a session that sends itself a prompt is a loop, so the in-app door
+  hides it (the =in-app= column of the catalog, false for this one row and
+  for the session-replacing commands =resume-session=, =rewind=,
+  =start-fresh-session-from-spec= and =new-task= under =run_command=, whose
+  run would end the very turn that called them).
+- =cockpit_name_session= is new behaviour, not a relay: a session's title
+  today is its first prompt. The name needs a home on disk, and on-disk
+  formats are Pedro's call: the proposal is a =named= event appended to
+  =events.jsonl=, so the index (=sessions.ts=) and the search read it like
+  any other event and the rendering gets a =#+title= line; the pick on #27
+  includes this. It is yes per call because it writes the session folder.
+- =cockpit_session_info= carries =catalog=, the catalog version of the
+  versioning rule below, so a client that cached tool semantics can tell
+  when they moved.
+
+One resource ships with the tier, since =send_prompt= returns before the
+turn does: =nemesis://session/events=, the live =AgentEvent= stream of the
+current session, the same objects =events.jsonl= holds, subscribable through
+=resources/subscribe=. It is free, it carries the agent's own events, and a
+tool result inside it that came from a page keeps the wrapper it was
+recorded with.
+
+** The page tier (M4): parity, verbatim
+
+Every browsermcp tool, by its own name, with its own argument names where
+the clone showed them. Where the study marked an argument "not in clone" the
+M4 issue confirms it against =tools/list= of a running browsermcp before the
+schema is written, and the mark is kept here so nobody mistakes a guess for
+a fact. Every page tool takes an optional =page: string=, a buffer id from
+=cockpit_list_buffers=, defaulting to the current page buffer; browsermcp has
+one tab, Nemesis has several, and the argument is the only addition to a
+parity tool's schema. =ref= is a stable reference from the last snapshot
+(#73), the field browsermcp's handlers forward without reading.
+
+| Tool                       | Arguments                                                                       | Returns                                                                                   | Class                 | Tag    |
+|----------------------------+---------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------+-----------------------+--------|
+| =browser_navigate=         | ={url: string, page?}=                                                          | ={page, origin, status}= plus the snapshot block                                           | yes per call          | parity |
+| =browser_go_back=          | ={page?}=                                                                       | ={page, origin, moved: boolean}= plus the snapshot block                                   | yes per call          | parity |
+| =browser_go_forward=       | ={page?}=                                                                       | ={page, origin, moved: boolean}= plus the snapshot block                                   | yes per call          | parity |
+| =browser_wait=             | ={time: number, page?}= (seconds, confirm)                                      | ={waited: number}=                                                                        | free                  | parity |
+| =browser_snapshot=         | ={page?}=                                                                       | ={page, origin, refs: number, truncated}= plus the snapshot block                          | free                  | parity |
+| =browser_click=            | ={element: string, ref: string, page?}= (=ref= name: confirm)                   | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
+| =browser_hover=            | ={element: string, ref: string, page?}=                                         | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
+| =browser_type=             | ={element: string, ref: string, text: string, submit?: boolean, page?}= (confirm) | ={page, origin, ref, submitted: boolean}= plus the snapshot block                       | yes per call          | parity |
+| =browser_select_option=    | ={element: string, ref: string, values: string[], page?}= (=values=: confirm)   | ={page, origin, ref, selected: number}= plus the snapshot block                           | yes per call          | parity |
+| =browser_press_key=        | ={key: string, page?}=                                                          | ={page, origin, key}=                                                                     | yes per call          | parity |
+| =browser_get_console_logs= | ={page?, limit?: number}=                                                       | ={page, origin, entries: number, truncated}= plus the entries as a wrapped block          | free                  | parity |
+| =browser_screenshot=       | ={page?, ref?: string, fullPage?: boolean}=                                     | one =image= content block, =image/png= checked, plus ={page, origin, width, height}=      | yes per call          | parity |
+| =browser_drag=             | ={startElement, startRef, endElement, endRef, page?}= (ref names: confirm)       | ={page, origin}= plus the snapshot block                                                  | yes per call          | parity |
+
+Thirteen rows: the twelve browsermcp registers and the one it left
+unregistered, finished here as the study suggested. Three rows differ from
+browsermcp in behaviour and the difference is on purpose:
+
+- =browser_screenshot= gains =ref= and =fullPage= (the study's first item of
+  what an owned engine offers) and is yes per call rather than free. The
+  reason is #94: a snapshot masks a secret field before it leaves the
+  renderer, but pixels cannot be masked, and a card number typed into a form
+  is readable in a capture. The user's yes, with the origin in the prompt
+  line, is the mask. The cockpit's own =screenshot-window= command is
+  unchanged by this; it is the user's key, not a page tool.
+- =browser_type= refuses a masked field: when =ref= points at a field the
+  masking list of #94 covers, the result is =isError= with "masked field: the
+  human types it", before any yes is asked. The human fills secrets, always,
+  which is the rule #94 states for watch mode and the catalog applies to
+  every client.
+- =browser_hover= is yes per call in version 1 although it submits nothing,
+  because the rule "no tool acts on a page without a yes" is one sentence to
+  state and one spec to write, and a hover that opens a menu is an action
+  the page sees. Freeing it later is a one-row change under the versioning
+  rule.
+
+Navigation is yes per call because ADR 0007 said so for anything that
+navigates, and because a navigation is traffic the user did not type; T3's
+rules apply on top (HTTPS only, a plain =http= URL is refused with the
+explanation, =javascript:=, =file:= and =data:= never load), so the tool can
+return a refusal but never a block it talked its way past.
+
+** The page tier (M4): Nemesis only
+
+What the engine allows and browsermcp cannot, each with the same four
+fields. Resources are listed with their URI template as the name and the
+template's parameters as the arguments.
+
+| Tool or resource                              | Arguments                                                     | Returns                                                                                   | Class        | Tag          |
+|-----------------------------------------------+---------------------------------------------------------------+-------------------------------------------------------------------------------------------+--------------+--------------|
+| =browser_read_text=                           | ={page?, ref?: string, from?: number, chars?: number}=        | ={page, origin, chars, truncated}= plus the text as a wrapped block                        | free         | nemesis-only |
+| =browser_query=                               | ={page?, selector: string, limit?: number}=                   | ={page, origin, matched: number, truncated}= plus the matched outer HTML as a wrapped block | free        | nemesis-only |
+| =browser_wait_for=                            | ={page?, ref?: string, text?: string, url?: string, timeout?: number}= | ={page, origin, met: boolean, after: number}=                                     | free         | nemesis-only |
+| =browser_form_state=                          | ={page?}=                                                     | ={page, origin, fields: number, focused}= plus the form snapshot of #94 as a wrapped block, secret values masked | free | nemesis-only |
+| =browser_open_page=                           | ={url: string}=                                               | ={page, origin, status}= plus the snapshot block                                           | yes per call | nemesis-only |
+| =browser_close_page=                          | ={page: string}=                                              | ={page, closed: boolean}=                                                                 | yes per call | nemesis-only |
+| =nemesis://page/{page}/mutations= (resource)  | ={page}= in the URI                                           | a stream of ={at, kind, ref, summary}= records, the summary wrapped                       | free         | nemesis-only |
+| =nemesis://page/{page}/console= (resource)    | ={page}= in the URI                                           | a stream of ={at, level, text}= records, the text wrapped; page errors are =level: 'error'= | free       | nemesis-only |
+| =nemesis://page/{page}/network= (resource)    | ={page}= in the URI                                           | a stream of ={at, method, origin, path, status, bytes}= records; no bodies, no headers     | free         | nemesis-only |
+
+The three resources are #29 whole: the feeds browsermcp's extension APIs
+cannot surface in real time. The mutation feed is the observer #94's watch
+mode installs, seen from outside, as #94's related list already says. The
+network feed carries no bodies and no headers in version 1 because headers
+hold cookies and bodies hold whatever the user typed; a body tool is a
+later row with its own class. =browser_wait_for= is the study's note on
+=browser_wait= made useful: an engine we own waits on events, so the fixed
+sleep stays only for parity. Page switching needs no new tool: a page is a
+buffer, and =cockpit_run_command {name: 'switch-buffer', answers: [title]}=
+is the switch.
+
+** Rule: tools that never exist
+
+Enforced by absence, which is the strongest form of the =never= class: the
+catalog has no such row, the unit test pins the list, and a client that calls
+the name gets the "unknown tool" =isError= result ADR 0007 fixed.
+
+- *Eval from a page.* No page tool evaluates code: no =browser_evaluate=, no
+  =browser_execute_script=, no =browser_add_init_script=, the tools Playwright
+  MCP has and browsermcp does not. A page cannot reach the socket (ADR 0007's
+  spec) and no tool reaches into a page with code. This is #72's "Do not
+  touch" line applied to the catalog.
+- *Eval for an outside client.* ADR 0007's second question: no =cockpit_eval=
+  in version 1. #72's eval is a command with a journal and a REPL buffer the
+  user drives; a client that wants a definition made in the image asks the
+  session for it through =cockpit_send_prompt=, where the user's yes and the
+  journal already apply. When #72 lands, a =cockpit_eval= row would be yes
+  per call with the whole code in the prompt line, offered only to outside
+  clients and never to the in-app session, and adding it bumps the catalog
+  version under the rule below; whether to add it is a line in #72's
+  Approach, not a default.
+- *Anything that submits a form or pays without a yes.* No =browser_submit=,
+  no =browser_fill_form= taking a batch, no =browser_checkout=. A submission
+  is one of three yes-per-call calls, =browser_type= with =submit=,
+  =browser_press_key= with =Enter=, or =browser_click= on the button, and the
+  prompt line says which. There is no =a= for outside clients (ADR 0007), and
+  inside the cockpit =a= never covers a page tool: the permission bridge
+  offers =y= and =n= only for every =browser_= name, so a yes on a page is
+  always for one call. That is ADR 0007's third question answered: =a= keeps
+  its meaning for cockpit-tier tools inside the cockpit, the rest of the
+  session per tool name as the bridge already does, and does not exist for
+  the page tier on either door.
+- *Anything that reads a masked field.* The masking list of #94 lives in one
+  place in =src/shared/= and three tools obey it: =browser_snapshot= and
+  =browser_form_state= show a masked field as present, with its type and
+  whether it is filled, never its value; =browser_read_text= on a masked
+  =ref= returns =isError=; =browser_type= into one is refused as above;
+  =browser_screenshot= asks, since it cannot mask. The value never leaves the
+  renderer, so no main-process code can leak it by mistake.
+- *A client answering its own question.* =answer-yes=, =answer-no=,
+  =allow-for-session=, =approve-plan= and =reject-plan= are =never= under
+  =cockpit_run_command=, and =answers= cannot satisfy a confirm read. No
+  path through the catalog produces a yes the user did not give.
+
+** Rule: page text is labeled, and the label is #83's
+
+Every string a page controls reaches a client through one function,
+=wrapUntrusted(origin, text)= from =src/main/agent/boundary.ts=, the code
+path #83 creates for =fetch-url= and #55 reuses for page buffers. The
+catalog adds no second format. The split is mechanical:
+
+- Fields Nemesis controls go in =structuredContent=: the buffer id, the
+  origin (the committed URL's origin of the top frame, as SECURITY.org T3
+  defines the displayed URL), counts, flags, timestamps, status codes, the
+  =ref= ids the snapshot assigned.
+- Everything else goes inside the wrapped block as text: the page title,
+  the full URL with its path and query, the accessibility tree with its
+  names and roles, element text, console entries, mutation summaries, outer
+  HTML from =browser_query=. The block is one text content item of the
+  result, headed by the origin and the line stating that it is untrusted
+  content to be treated as data, in #83's exact shape. A page-controlled
+  string never appears as a bare field of =structuredContent=, so a client
+  that reads only the structure cannot be steered by it, and a client that
+  reads the text sees the label first.
+- The prompt line of a yes-per-call page tool shows the =element=
+  description the agent supplied, quoted and cut to a screen, after the
+  client's name, the tool and the origin; the description is the agent's
+  words about the page, so it is shown as a quotation, never as the
+  question.
+- =tests/e2e/security/agent-boundary.spec.ts= (#55) gains one case with the
+  page tier: =browser_snapshot= over the =injection.html= fixture returns the
+  instruction text inside the block and nowhere else, and no side-effect
+  tool ran.
+
+Cockpit-tier results carry no page text of their own; a transcript line
+that recorded a page block keeps the block as recorded.
+
+** Rule: the catalog is versioned by one integer
+
+=CATALOG_VERSION= in =catalog.ts=, an integer starting at 1, reported by
+=cockpit_session_info= and appended to =serverInfo.version= as
+=<app version>+catalog.<n>=. What moves it:
+
+- Additive changes keep the number: a new tool, a new optional argument, a
+  new field in a return, a class made stricter (free to yes per call).
+- Anything a client could have relied on bumps it: a renamed or removed
+  tool, a new required argument, a changed return shape, a class made looser
+  (yes per call to free, which is also a security review, since it widens
+  what happens without the user). A removed tool stays one app release as a
+  row that returns =isError= naming its successor, then goes.
+- Parity rows do not rename to follow a browsermcp release; a browsermcp
+  rename is a new row here and the old one follows the removal rule.
+- Every bump is a line in this file's appendix table and in =docs/mcp.org=
+  when that lands (ADR 0007's step 5), with the issue that made it.
+
+=notifications/tools/list_changed= stays as ADR 0007 placed it, after a
+=reload-config= commit, and fires also when the page tier becomes available
+at the first page buffer in M4, so a client connected since launch learns
+the tier exists.
+
+* Alternatives considered
+
+#27 asks two questions. Each has its options, with files touched, cost,
+risk and what it rules out, and one Recommended.
+
+** Namespace
+
+*** A. One server, one namespace, a prefix per tier (Recommended)
+
+What the Decision describes. Files touched: =src/main/mcp/catalog.ts= and
+the one server of ADR 0007; nothing else changes shape for the second tier
+when M4 arrives. Cost: small; the prefix is a naming rule and a unit test
+line. Risk: a long tool list in M4 (eight plus thirteen plus six plus three
+resources); clients handle lists ten times that. Rules out: a client that
+wants the browser without the cockpit, which does not exist, since a page
+is a buffer and the cockpit tools are how pages are listed and switched.
+Recommended because the door, the token, the prompter queue and the
+transcript are one, so the catalog should be one; because ADR 0007's "one
+catalog with one set of rules" for the in-app and the outside agent is
+simplest with one list; and because a parity client needs the exact
+=browser_= names, which the prefix gives for free.
+
+*** B. Two servers: =nemesis-cockpit= and =nemesis-browser=
+
+Two =McpServer= instances in main, two hello lines or two shims, two client
+configuration entries. Files touched: =src/main/mcp/= gains a second server
+and a routing field on the socket hello, =bin/nemesis-mcp= gains a flag, the
+client setup in =docs/mcp.org= doubles, every rule in this file is stated
+per server. Cost: medium. Risk: a client configures one and wonders where
+the other half is; the page tier depends on the cockpit tier anyway
+(buffers, prompter, transcript), so the split is cosmetic on the inside and
+real only in the configuration. What it buys: a client can be given the
+browser without the cockpit's =send_prompt= and =run_command=. That is a
+per-tool class question, answered by the class field, not by a second
+socket. Lost.
+
+*** C. One server, bare names, no prefixes
+
+=navigate=, =snapshot=, =run_command=. Cost: nothing. Risk: it throws away
+the one thing parity buys, a browsermcp client working unchanged, and
+=snapshot= would mean a page tree to one reader and a buffer list to
+another. Lost.
+
+** Verbs
+
+*** A. A curated set, with =cockpit_run_command= as the typed escape hatch (Recommended)
+
+The eight cockpit tools above. Files touched: =catalog.ts=; =Command= gains
+the =mcp= field in =src/main/commands/registry.ts= and the 47 command
+definitions in =src/main/commands/keyscheme.ts= gain a line each where the
+default is wrong; the prompter learns to take =answers= and to mark confirm
+reads. Cost: small to medium, mostly the =answers= plumbing. Risk: a new
+command is reachable through =run_command= the day it is registered, which
+is the drift-free property ADR 0007 asked for, moved from the tool list to
+the command list; the cost is that a client sees one generic tool where a
+dedicated one would carry a better schema, which is what the seven other
+rows are for. Rules out: nothing a later row cannot add. Recommended because
+the tools an agent calls most (read a buffer, send a prompt, search) deserve
+typed arguments and typed returns that a command, which takes no arguments,
+cannot carry; because the answer commands must be =never= and a generic tool
+with a class per command is the natural place to say so; and because a
+client that wants a command the eight do not cover is one call away rather
+than one release away.
+
+*** B. One tool per command, generated from the registry
+
+=tools/list= is =registry.list()= mapped to tools, 47 of them, each with an
+empty arguments schema or a positional =answers=. Files touched: =catalog.ts=
+only. Cost: smallest. Risk: 47 tools with no arguments and no return shape
+beyond notices is a catalog a model reads and cannot plan with (which one
+reads the transcript? none, since no command returns text); the answer
+commands appear as tools and must be filtered, so the registry grows the
+=mcp= field anyway; and the page tier cannot be built this way at all, since
+a page tool is not a command. This is the literal reading of ADR 0007's
+"tool list read from the registry"; the sentence is kept by
+=cockpit_list_commands= reading live, and the conflict is noted on #27.
+Lost.
+
+*** C. A curated set with no =run_command=
+
+The seven typed tools, nothing generic. Files touched: =catalog.ts=. Cost:
+smallest honest option. Risk: every command an outside agent wants is a new
+row, a catalog bump and a release; switching buffers, killing one, resuming
+a session, toggling plan mode each become tools or stay out of reach. Rules
+out: the "Automate and scale" row's promise that the command table is the
+agent's door. Lost, but it is A without one row, and A degrades to it by
+deleting that row if =answers= proves a bad idea in practice.
+
+** The two questions against what ADR 0007 fixed
+
+| Fixed by ADR 0007                          | Namespace A: one server, prefixed                | Namespace B: two servers                     | Verbs A: curated plus =run_command=                | Verbs B: one per command                        |
+|--------------------------------------------+--------------------------------------------------+----------------------------------------------+----------------------------------------------------+-------------------------------------------------|
+| One catalog for in-app and outside agents  | yes, with an =in-app= column                     | two catalogs, both doors need both           | yes                                                | yes, 47 rows                                    |
+| Class is a field of the tool               | yes                                              | yes, stated twice                            | yes; =run_command= reads the command's             | yes, on every generated tool                    |
+| Tool list never drifts from the registry   | =list_commands= and =run_command= read live      | same                                         | same                                               | literally, at the cost of untyped tools         |
+| A yes asked once by the door               | one prompter queue                               | two servers, one prompter                    | once per call; a command's own confirm is a second | same                                            |
+| =list_changed= after =reload-config=       | on reload and at the first page buffer           | per server                                   | on reload                                          | on reload, and the list really changes          |
+
+* Sketch of the recommended option
+
+One catalog row and the wrapper call, in the shape =catalog.ts= would hold;
+the real file carries every row.
+
+#+begin_src typescript
+// src/main/mcp/catalog.ts: the catalog is data; the server relays.
+export const CATALOG_VERSION = 1
+
+export const readBuffer: CatalogTool = {
+  name: 'cockpit_read_buffer',
+  tier: 'cockpit',
+  inApp: true,
+  confirmation: 'free',
+  args: z.object({ id: z.string(), from: z.number().int().min(1).optional(), lines: z.number().int().min(1).max(2000).optional() }),
+  returns: z.object({ id: z.string(), kind: z.string(), title: z.string(), from: z.number(), lines: z.number(), truncated: z.boolean() }),
+  async run({ id, from = 1, lines = 2000 }, deps) {
+    const buffer = deps.buffers.require(id)
+    const slice = await deps.text(buffer, from, lines)
+    const text = buffer.kind === 'page' ? wrapUntrusted(slice.origin, slice.text) : slice.text
+    return { structured: { id, kind: buffer.kind, title: buffer.title, from, lines: slice.count, truncated: slice.truncated }, text }
+  },
+}
+#+end_src
+
+A yes-per-call page call, as the user sees it in the prompt buffer, the no
+first as =confirm.ts= already does:
+
+#+begin_example
+claude (terminal) asks browser_type on https://example.com: type 14 characters into "Search box" and submit? [n] y
+#+end_example
+
+** Order of steps to land it
+
+Each step is one issue and keeps =npm run gate= green on its own. The first
+three are ADR 0007's steps seen from the catalog's side.
+
+1. =catalog.ts= with the free cockpit tools (=list_commands=, =list_buffers=,
+   =read_buffer=, =search_transcripts=, =session_info=) and
+   =tests/unit/mcp-catalog.test.ts=, inside ADR 0007's step 1. M3.
+2. The =mcp= field on =Command=, the =answers= plumbing in the prompter with
+   confirm reads marked, =cockpit_run_command=, =cockpit_send_prompt=, the
+   =in-app= column and the =nemesis://session/events= resource, inside ADR
+   0007's step 3. M3.
+3. =cockpit_name_session= with the on-disk form Pedro picks. M3.
+4. #28 rewritten: the demo is a =claude= in a terminal listing commands,
+   reading the transcript and sending a prompt that the user confirms. M3.
+5. The parity table, in the order the study groups them (navigation,
+   reading, input, screenshot), each row with its =ref= from #73's snapshot,
+   the wrapper from #83 and #55, the masking list from #94, and the security
+   spec case; =browser_drag= last. M4.
+6. The Nemesis-only tools, then the three resources of #29, each a child
+   issue of #73. M4.
+
+* Consequences
+
+- *ADR 0007's three questions are answered.* =run_command= takes the class
+  of the command it names, through a field on =Command= that defaults to
+  yes; no eval tool exists in version 1 for any client, and the page side
+  never gets one; =a= keeps its meaning for cockpit tools inside the cockpit
+  and never applies to a page tool anywhere.
+- *#28 is rewritten.* Its five Racket-era names map to =browser_navigate=,
+  =browser_click= (by =ref=, not coordinates), =browser_type=,
+  =browser_screenshot= and =browser_snapshot=; its MVP becomes the cockpit
+  tier over the shim, and its WKWebView line goes.
+- *#55, #83 and #94 gain a consumer, not a format.* The wrapper, the masking
+  list and the =PreToolUse= hook are used as they are; the catalog's only
+  demands are that =wrapUntrusted= stay one function and that the masking
+  list live in =src/shared/= where the renderer and main both read it.
+- *#29 becomes three resource rows and #73's semantic view becomes
+  =browser_snapshot=.* Both carry the tag =nemesis-only= or =parity= in the
+  table above, so the M4 children know which name to ship under.
+- *One on-disk question for the pick.* The =named= event for
+  =cockpit_name_session=; nothing else in this file touches a format.
+- *What becomes easier.* A browsermcp prompt works against Nemesis by
+  changing the server name. An agent reads the transcript it is in, or
+  another session's, through one typed tool. A new command is reachable the
+  day it exists. Every page result reads the same way: structure outside,
+  labeled text inside.
+- *What becomes harder.* Page work costs a yes per action in version 1,
+  hover included, and a form of ten fields is ten questions; the relief is a
+  stricter catalog, not an allowlist, until #55's option B is wanted. A
+  command that reads through the prompter needs its =answers= known in
+  advance, so an agent learns a command's reads by failing once. Confirms
+  inside a command are asked after the door's yes, a second question for
+  downloads and external links.
+- *Out of reach, on purpose.* No code evaluation on a page, no batch form
+  fill, no body or header in the network feed, no secret value in any
+  result, no =a= on a page, no bare page string in =structuredContent=, no
+  tool outside =catalog.ts=, and no reach from the catalog into
+  =src/main/security/=, =src/preload/= or the permission bridge beyond the
+  =y=/=n= rule the bridge enforces for =browser_= names, which is an
+  interactive review when it lands.
+- *Follow-up work.* The six steps above as issues; #28's acceptance list
+  rewritten; the =mcp= line on the commands whose default is wrong; the
+  appendix table below started at version 1 when step 1 lands; and, when a
+  body tool for the network feed or an eval tool for outside clients is
+  wanted, a revision of this file with the bump that goes with it.
+
+* Appendix: catalog versions
+
+| Version | Date | Change | Issue |
+|---------+------+--------+-------|
+| 1       | when step 1 lands | the cockpit tier, free tools | #27 |

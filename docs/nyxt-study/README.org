@@ -15,3 +15,8 @@ a lower number does.
 |----------------------------------+----------------------------------------------------------------+----------+-------|
 | [[file:02-prompt-buffer.org][02-prompt-buffer.org]] | Nyxt's prompt buffer and prompter against the Nemesis palette  | ADR 0003 | #13   |
 | [[file:04-keymaps.org][04-keymaps.org]]             | nkeymaps and Nyxt's input dispatch against the Nemesis keymaps | ADR 0002 | #15   |
+| [[file:01-top-level.org][01-top-level.org]]       | Nyxt's browser, window and buffer ownership against the Nemesis main-process scope | #70, #73 | #12   |
+| [[file:03-modes.org][03-modes.org]]                 | Nyxt's modes (lifecycle, mixins, keymap stacking, defaults) against the Nemesis keyscheme layers | ADR 0004, #22 | #14   |
+| [[file:05-hooks.org][05-hooks.org]]                 | Nyxt's hooks (points, ordering, combination, errors, hook against advice) against the SDK hooks and the first cockpit hook points | ADR 0005, #23 | #16   |
+| [[file:06-config.org][06-config.org]]                 | Nyxt's configuration (find, load, apply, reload, errors, auto-config, trust) against the settings file and the two options of #71 | ADR 0006, #24, the pick on #71 | #17   |
+| [[file:07-renderer.org][07-renderer.org]]         | Nyxt's renderer abstraction (the =ffi-*= generics) mapped to Electron and to the security baseline modules | #73 | #18   |

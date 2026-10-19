@@ -1,0 +1,325 @@
+#+TITLE: Nyxt study 01: top-level architecture, browser, window and buffer
+#+OPTIONS: toc:nil
+
+- Issue: #12 (feeds #70, the window scope object, and the M4 epic #73, the
+  page buffer; related: #13, #15, ADR 0002, ADR 0003)
+- Nyxt read at: =~/projects/nyxt=, =source/browser.lisp=, =source/window.lisp=,
+  =source/buffer.lisp=, =source/start.lisp=, =source/global.lisp=, and
+  =source/renderer/gtk.lisp= where the renderer bridge decides what a window
+  holds and what deleting means
+- Nemesis read at: main after #95 (=src/main/index.ts=, =src/main/buffers.ts=,
+  =src/main/buffer-bridge.ts=, =src/shared/buffers.ts=, =src/main/agent/=)
+
+A note on citations. The renderer bridge in Nyxt is a set of =define-ffi-method=
+generics (=ffi-window-set-buffer=, =ffi-window-delete=, =ffi-buffer-delete=)
+declared for the renderer-neutral classes and implemented per renderer. The
+local clone has the GTK implementation in =source/renderer/gtk.lisp=; that is
+the one cited. Nemesis has no renderer to abstract, so the comparison is with
+what Electron's =BrowserWindow= and, from M4, =WebContentsView= do in the same
+place.
+
+* How Nyxt's top level works
+
+** One browser, held in a global
+
+=source/global.lisp= defines =*browser*=, the single global that every
+convenience function reads. =browser= (=source/browser.lisp=) is a class
+whose docstring says it "manages the display of buffers" and that a typical
+session has one instance "but nothing prevents otherwise". In practice the
+code assumes one: =current-window=, =buffer-list=, =window-list= and
+=buffer-set= all dereference =*browser*=, and =start-browser= in
+=source/start.lisp= signals =browser-already-started= if it is not nil.
+
+The browser owns the state that is not tied to a window:
+
+- the tables: =buffers= (live buffers by =id=) and =windows= (live windows by
+  =id=), plus =recent-buffers=, a ring of 50 deleted buffers;
+- the caches: =last-active-window=, so =current-window= can answer without
+  asking the renderer when called with =no-rescan=;
+- the user's data: =history-file= and =history-vector=, =search-engines=,
+  =clipboard-ring=, =prompt-buffer-generic-history=, =set-url-history=,
+  =downloads=, =messages-content=;
+- the learning state: =command-model= and =last-command=;
+- the policy: =default-new-buffer-url=, =default-cookie-policy=,
+  =open-external-link-in-new-window-p=, =remote-execution-p=, =theme=,
+  =native-dialogs=;
+- the lifecycle: =startup-timestamp=, =startup-promise=, =init-time=,
+  =ready-p=, =exit-code=, =socket-thread=;
+- the hooks: =after-init-hook=, =after-startup-hook=, =before-exit-hook=,
+  =window-make-hook=, =buffer-before-make-hook=, =buffer-make-hook=,
+  =buffer-after-make-hook=, =prompt-buffer-make-hook=,
+  =prompt-buffer-ready-hook=.
+
+** The window: a view, not a container of buffers
+
+In =source/window.lisp=, =window= is "a view where buffers are displayed". It
+has an =id=, exactly one =active-buffer=, and it owns the per-window
+furniture: =status-buffer=, =message-buffer=, =active-prompt-buffers= (the
+stack described in study 02), =prompt-buffer-ready-channel=, =fullscreen-p=
+and =maximized-p=. It has two hooks, =window-set-buffer-hook= (before
+=ffi-window-set-buffer= takes effect) and =window-delete-hook= (after
+=ffi-window-delete=).
+
+The important fact is what a window does not have: a list of buffers. The
+browser's =buffers= table holds every main buffer, whichever window shows it,
+and a window points at one of them. =window= the method on a buffer
+(=source/buffer.lisp=) is a reverse lookup: the window whose =active-buffer=
+is this buffer, or nil. =active-buffer-p= is the same question as a boolean.
+A buffer that no window shows is an inactive buffer, still live, still in the
+table, still loading in the background.
+
+Three small behaviours worth keeping in mind:
+
+- =initialize-instance :after= on a window wires its status and message
+  buffers back to it and sets =last-active-window=; =window-make= puts it in
+  the browser's =windows= table and runs =window-make-hook=.
+- Setting =active-buffer= calls =set-window-title= through an =:around=
+  method, and =titler= builds the title as the buffer's title plus the
+  product name. The window title is derived state.
+- =make-window= (the command) creates the window and a fresh =make-buffer=,
+  then hands both to =ffi-window-set-buffer=. A window is never empty.
+
+** The buffer: a class tower, owned by the browser
+
+=buffer= in =source/buffer.lisp= carries an =id= (from =new-id=),
+=last-access=, =url=, =title=, the key state (=key-stack=, =last-key=) and the
+mode list. The tower is =buffer=, then =modable-buffer=, =input-buffer=,
+=document-buffer=, =context-buffer=, =network-buffer=, and =web-buffer= which
+mixes them. The prompt buffer, status buffer and message buffer are buffers
+too, but they are not in the browser's =buffers= table: the comment in
+=internal-buffer-list= says the slot "only keeps track of main buffers", and
+=buffer-get= falls back to scanning every window's =active-prompt-buffers=.
+That split is the whole ownership rule: main buffers belong to the browser,
+furniture buffers belong to their window.
+
+The registry functions are plain functions over =*browser*=: =make-buffer=
+(builds the instance, optionally loads the URL, does not show it),
+=buffer-list= (sorted by =id=, descending), =buffer-get=, =buffer-set=,
+=buffer-delete= (low level, removes the table entry and re-sets the slot so
+observers such as the status buffer refresh), =last-active-buffer= (by
+=last-access=), =get-inactive-buffer= (the most recent buffer no window shows,
+or a new one) and =add-to-recent-buffers=.
+
+** How a buffer moves between windows
+
+The mover is =set-current-buffer= in =source/browser.lisp=. It has four cases
+on the current window and the buffer's own window:
+
+1. No current window: make one around the buffer.
+2. The buffer is active in another window: swap. That other window gets
+   =get-inactive-buffer= and the current window gets the buffer, so no window
+   is ever left empty and no buffer is shown twice.
+3. The buffer is inactive: put it in the current window; the buffer that
+   window showed becomes inactive.
+4. The buffer is already in this window: nothing.
+
+Underneath, =ffi-window-set-buffer= in =source/renderer/gtk.lisp= removes the
+old widget from the window's container (taking an extra reference so it is
+not destroyed), packs the new one, and grabs focus unless told not to. A
+buffer is therefore a long-lived native view that is reparented, never
+rebuilt. =switch-buffer= and =switch-buffer-next= and friends all end in
+=set-current-buffer=.
+
+** Startup
+
+=start-browser= in =source/start.lisp= is the sequence:
+
+1. Refuse if =*browser*= is set.
+2. Configure logging, install the renderer.
+3. Look for a running instance through the socket (=listening-socket-p=); if
+   there is one, send it the URLs (=listen-or-query-socket=) and stop.
+4. Otherwise load the auto-config and the user config file, so user classes
+   are customised before any instance exists.
+5. =make-instance 'browser=, which also starts the socket thread.
+6. =ffi-initialize=, which runs the toolkit and calls =finalize-startup=.
+
+=finalize-startup= in =source/browser.lisp= runs =after-init-hook=, then, once
+the renderer is ready, makes the first window with =window-make=, loads the
+history file, opens the URLs with =open-urls= (or the default new-buffer
+URL), fulfils =startup-promise=, runs =after-startup-hook=, reports any config
+error, and sets =ready-p=. =open-urls= makes one buffer per URL and shows the
+first, in a new window if =open-external-link-in-new-window-p= is set. The
+order is the point: configuration, then browser, then window, then buffers.
+
+** Window close and quit
+
+Closing a window is =ffi-window-delete= (=source/renderer/gtk.lisp=, which
+destroys the toplevel widget), exposed as =delete-current-window= and
+=delete-window= in =source/window.lisp=. The window's buffers are not
+touched: the table is the browser's, so the buffer the window showed simply
+becomes inactive and stays reachable from =switch-buffer=. Deleting a buffer
+is a separate act, =ffi-buffer-delete= (same file), which closes the view and
+disconnects its signal handlers; =delete-current-buffer=, =delete-other-buffers=
+and =delete-all-buffers= in =source/buffer.lisp= call it.
+
+=quit= in =source/start.lisp= is the one teardown path: run =before-exit-hook=
+while the browser is still ready (so a failing hook leaves it usable), clear
+=ready-p= (so a nested quit does nothing), record the exit code, delete every
+window, destroy the socket thread and remove the socket file only if the
+thread ran, =ffi-kill-browser=, reset =*browser*=, uninstall the renderer.
+Windows go first, buffers die with the process.
+
+* Nyxt against Nemesis today
+
+Nemesis main has one window, one buffer registry and one agent session
+manager, all constructed in =src/main/index.ts= inside the =whenReady= block.
+There is no class that stands for the browser or the window: the module scope
+of =index.ts= is the browser (the policies at the top: =permissionPolicy=,
+=prompter=, =downloads=, =external=), and the =whenReady= closure is one
+window's worth of state.
+
+| Nyxt                                  | Nemesis on main                                                                 |
+|---------------------------------------+---------------------------------------------------------------------------------|
+| =*browser*= global, one instance      | Module scope of =src/main/index.ts=; no object, no global lookup                |
+| =buffers= table on the browser        | =BufferRegistry= in =src/main/buffers.ts=, one, made by =createCockpitBuffers=   |
+| =windows= table, =window-list=        | =BrowserWindow.getAllWindows()=, used only to broadcast in =buffer-bridge.ts=   |
+| =window= class                        | A =BrowserWindow= from =createWindow()=, with nothing attached                  |
+| =active-buffer= on a window           | =currentId= inside the registry, global, not per window                         |
+| =status-buffer=, =message-buffer=     | The renderer's mode line and echo area (=src/renderer/modeline.ts=), not buffers |
+| =active-prompt-buffers= stack         | =Prompter= in =src/main/commands/prompter.ts=, one, with =prompt-buffer.ts=     |
+| =window= method on a buffer           | None: =BufferInfo= has no window field                                          |
+| =set-current-buffer= (move or swap)   | =BufferRegistry.switchTo=, which only changes =currentId=                       |
+| =make-buffer=                         | =BufferRegistry.create(spec)=; takes a =kind= and a title, loads nothing        |
+| =buffer-delete=, =ffi-buffer-delete=  | =BufferRegistry.kill=; no view to close, since buffers are renderer elements    |
+| =recent-buffers= ring                 | None                                                                            |
+| =start-browser=, =finalize-startup=   | Top-to-bottom order of the =whenReady= callback                                 |
+| =quit= and =before-exit-hook=         | =app.on('window-all-closed')= and =will-quit= clearing =permissionPolicy=       |
+| Agent state                           | =SessionManager= in =src/main/agent/session-manager.ts=, one, cwd =process.cwd()=|
+
+Where the ownership crosses the renderer bridge, Nemesis is already shaped
+like Nyxt's rule that the main side owns the list and the view follows:
+=src/main/buffer-bridge.ts= answers =BUFFERS_CHANNEL= with a snapshot and
+pushes =BUFFERS_CHANGED_CHANNEL= to every window on each change
+(=src/shared/buffers.ts=). That is the same observer idea as =buffer-set=
+re-setting the slot. Its comment already names the gap: "a registry per
+window arrives with the second window (#70)".
+
+What does not match, and matters for #70 and #73:
+
+- Current buffer is global. Two windows would share =currentId=, so two
+  windows cannot show different buffers. Nyxt keeps the table global and the
+  "which one is shown" pointer per window.
+- Broadcast goes to every window. With one list that is correct; with a
+  scope per window it would leak one window's buffers into another.
+- The agent session and permission bridge are built once. A window that is
+  to have its own session folder or cwd (the worktree-per-window idea in
+  =docs/guidelines-map.org=) needs them inside the per-window scope.
+- A buffer has no view of its own. Transcript and prompt buffers are DOM
+  elements named by =elementId=; a page buffer (#73) is a
+  =WebContentsView= that must be attached to one window's =contentView= and
+  re-attached to move, which is the reparenting =ffi-window-set-buffer= does.
+- Startup order is implicit. Nyxt makes the order observable (hooks around
+  init, window make, startup); Nemesis encodes it in the line order of one
+  closure.
+- Close has no defined meaning yet. =window-all-closed= quits off macOS and
+  does nothing on macOS, and =activate= makes a fresh window with fresh
+  state; nothing says what happens to the buffers, the session or a running
+  agent turn when a window closes.
+
+* The ownership diagram
+
+#+begin_example
+Nyxt                                       Nemesis, target after #70
+
+*browser*  (one, global)                   app / main process  (module scope)
+ |- buffers   id -> main buffer              |- policies: permission, downloads,
+ |- windows   id -> window                   |            external, prompter
+ |- history, rings, search engines           |- Cockpit  (one per window, #70)
+ |- hooks: init, make-window, make-buffer    |   |- BufferRegistry  (its own)
+ |- lifecycle: ready-p, exit-code            |   |- current buffer id
+ |                                           |   |- SessionManager, recorder
+ +- window  (many)                           |   |- prompter state
+     |- active-buffer ---> one buffer        |   +- BrowserWindow
+     |- status-buffer, message-buffer        |
+     |- active-prompt-buffers (stack)        +- page buffers (#73): a
+     +- fullscreen-p, maximized-p               WebContentsView, owned by a
+                                                Cockpit, moved by re-attaching
+a buffer is in the browser's table;
+a window only points at one of them
+#+end_example
+
+One choice the diagram makes, and the table below carries: Nyxt keeps the
+buffer table global and lets any window show any buffer. The cockpit's
+buffers (transcript, prompt, diff, plan, spec) are bound to one agent
+session, so they belong to one Cockpit; only page buffers could plausibly
+move. Whether the registry stays per Cockpit with page buffers movable
+through a main-level index, or becomes global with a per-Cockpit pointer, is
+the decision #70 owes. The recommendation below is the first, because the
+shared-registry broadcast leak is the bug class SECURITY.org cares about and
+it needs no cross-window move until M4.
+
+* What Nemesis must reproduce
+
+| Nyxt slot or method                                  | Needed in Nemesis | Lives today                         | Will live                                              |
+|------------------------------------------------------+-------------------+-------------------------------------+--------------------------------------------------------|
+| =browser.buffers=                                    | yes               | =BufferRegistry.buffers= (private)  | =Cockpit.buffers= (=cockpit.ts=); page index at main    |
+| =browser.windows=, =window-list=                     | yes               | =BrowserWindow.getAllWindows()=     | =cockpits= map in =src/main/cockpit.ts=, by window id   |
+| =browser.last-active-window=, =current-window=       | yes               | none (one window)                   | =cockpits.focused()=, backed by =BrowserWindow.getFocusedWindow()= |
+| =window.id=, =buffer.id=                             | yes               | =b1=, =b2= in =BufferRegistry=      | window id from =BrowserWindow.id=; buffer ids stay per registry |
+| =window.active-buffer=                               | yes               | =BufferRegistry.currentId=          | =Cockpit= state, one per window                         |
+| =window.status-buffer=, =message-buffer=             | no                | renderer =modeline.ts=              | stay renderer-side; not main-process buffers            |
+| =window.active-prompt-buffers=                       | yes               | =Prompter= (single)                 | one =Prompter= per =Cockpit=                            |
+| =window.fullscreen-p=, =maximized-p=                 | no                | =BrowserWindow=                     | read from the =BrowserWindow=, never mirrored           |
+| =window-make= and =make-window=                      | yes               | =createWindow()=                    | =Cockpit.open()=, builds registry, session, window      |
+| =window-make-hook=, =window-delete-hook=             | later             | none                                | an event on the cockpits map, when a consumer exists    |
+| =window= method on a buffer, =active-buffer-p=       | yes               | none                                | =Cockpit.shows(buffer)=; for pages, owner lookup        |
+| =set-current-buffer= (swap rule)                     | for pages only    | =BufferRegistry.switchTo=           | =switchTo= stays; a page move is detach, attach (#73)   |
+| =get-inactive-buffer=                                | for pages only    | none                                | with page buffers; a window is never left without one   |
+| =make-buffer=, =buffer-list=, =buffer-get=           | yes               | =create=, =list=, =get=             | unchanged, on the per-Cockpit registry                  |
+| =buffer-delete= (table) and =ffi-buffer-delete= (view) | yes             | =BufferRegistry.kill=               | =kill= plus a view teardown for pages (#73)             |
+| =recent-buffers=, =add-to-recent-buffers=            | later             | none                                | with reopen-closed-buffer, not in #70                   |
+| =buffers :before= guard (no browser yet)             | yes               | none                                | =cockpits.require(window)= throws, never returns null   |
+| =start-browser= order, =finalize-startup=            | yes               | line order in =index.ts=            | explicit =startup()= in =src/main/startup.ts=: policies, then first Cockpit |
+| =quit=, =before-exit-hook=, =ready-p=                | yes               | =window-all-closed=, =will-quit=    | =shutdown()= closing every Cockpit, then policies       |
+| =browser.downloads=, =history=, =clipboard-ring=     | partly            | =DownloadPolicy=, none, none        | policies stay global at main; history ring is future    |
+| =open-external-link-in-new-window-p=                 | later             | none                                | with #73's link handling                                |
+
+* What to file next
+
+** Worth an issue
+
+1. A =Cockpit= scope object, one per window, in =src/main/cockpit.ts=: owns
+   the =BufferRegistry=, the =SessionManager=, the =Prompter= and the
+   =BrowserWindow=, with a =cockpits= map keyed by window id and a
+   =require(window)= that throws. This is #70's Approach made concrete; the
+   rows marked "yes" above are its acceptance list.
+2. Make =buffer-bridge.ts= and the other bridges resolve the cockpit from
+   =event.sender= (the window that sent the message) instead of broadcasting
+   to =getAllWindows()=. Test-first under =tests/e2e/security/=: a second
+   window must not receive the first window's buffer snapshot.
+3. An explicit =startup()= and =shutdown()= in place of the =whenReady=
+   closure, with the order of the "How Nyxt's top level works" startup
+   section written in the ADR: policies and partitions, settings, then the
+   first Cockpit.
+4. Define window close: what happens to the registry, a running agent turn
+   and the recorder when the last window of a Cockpit closes, and what
+   =activate= on macOS recreates. Needs Pedro's call on whether closing a
+   window ends its session (=needs-pedro=).
+5. For #73: a page buffer owner pointer and a move operation (detach from
+   one =contentView=, attach to another), with the "never leave a window
+   without a buffer" rule from =set-current-buffer= case 2.
+6. An ADR for the above choice (registry per Cockpit versus global table with
+   a per-window pointer), citing this study.
+
+** Deliberately not wanted
+
+- A global =*browser*= lookup. Nyxt's functions read it implicitly; in
+  Nemesis every function takes its Cockpit, so a handler for window A cannot
+  reach window B by accident.
+- Status and message buffers as buffers. They are chrome in the renderer;
+  making them main-process buffers adds IPC for no feature.
+- The single-instance socket (=listen-or-query-socket=, =remote-execution-p=,
+  =eval-expr=). Electron's =requestSingleInstanceLock= covers the first use
+  if it is wanted, and remote evaluation of code is the exact surface
+  SECURITY.org exists to refuse.
+- Loading the user config as Lisp before the browser exists
+  (=load-lisp= in =start-browser=). Settings are data in =settings.ts=; user
+  keymaps follow study 04, not code execution.
+- A renderer abstraction layer (=define-ffi-method= per backend). There is
+  one renderer; the seam is the preload and the typed IPC.
+- The command model and =last-command= prediction on the browser. Out of
+  scope for the top-level split; the palette study (02) decides what a
+  command history is.
+- Buffers with no window, shown by nobody, loading in the background, for
+  the cockpit's own kinds. Page buffers may be inactive (#73); a transcript
+  with no window has nothing to show.

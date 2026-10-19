@@ -1,0 +1,269 @@
+#+TITLE: MCP study 01: browsermcp's tool surface
+#+OPTIONS: toc:nil
+
+* Source and method
+
+Repository https://github.com/browsermcp/mcp (package =@browsermcp/mcp=
+0.1.3), shallow clone read under =src/=. Commit read:
+=9db12f2b4f61294f0bc11708986abc47db539d6c=. The clone lived in a temporary
+directory outside this repository and was deleted after the tool names
+below were checked against it.
+
+One limit decides how far this catalog can go. The README says the repo
+"currently cannot yet be built on its own" because the tool definitions
+come from the private monorepo package =@repo/types/mcp/tool= (=NavigateTool=,
+=ClickTool= and so on, zod schemas holding each tool's name, description and
+arguments). That package is not in the clone. So:
+
+- Tool names, the set that is registered, return shapes, error handling and
+  the socket message each tool sends are *read from the source*.
+- Argument names are *read from the source* only where a handler touches
+  them (=validatedParams.element=, =.text=, =.startElement=, ...). Argument
+  types and descriptions live in the missing package and are marked
+  "(not in clone)" below. Anything marked so must be confirmed against the
+  published listing (=tools/list= of a running server) before ADR 0008
+  relies on it.
+
+* Architecture in four lines
+
+- =src/index.ts= builds one list, =snapshotTools=, and starts a stdio MCP
+  server (=StdioServerTransport=) via =createServerWithTools= in
+  =src/server.ts=.
+- =src/ws.ts= opens a WebSocket server on =mcpConfig.defaultWsPort= (value
+  not in clone) after running =killProcessOnPort= (=src/utils/port.ts=,
+  =lsof -ti:PORT | xargs kill -9=, or =taskkill= on Windows) on that port.
+- =src/context.ts= holds exactly one socket, the Chrome extension.
+  =sendSocketMessage= has a 30000 ms default timeout. A second connection
+  closes the first.
+- Every tool is a thin relay: validate arguments, send =browser_<name>=
+  over the socket, then (for most) ask the extension for URL, title and an
+  ARIA snapshot and return that as text.
+
+* Shared behaviour
+
+- *Errors.* =server.ts= catches anything a handler throws and returns
+  ={content: [{type: "text", text: String(error)}], isError: true}=. An
+  unknown tool name returns =Tool "<name>" not found= with =isError=.
+  Arguments that fail the zod =parse= throw, so they surface the same way.
+- *No connection.* Any tool before the extension is connected fails with
+  "No connection to browser extension ... clicking the Browser MCP
+  extension icon ... 'Connect'". The extension's own "no connected tab"
+  error (=mcpConfig.errors.noConnectedTab=) is rewritten to that message.
+- *Timeouts.* A socket round trip that exceeds 30 s rejects with the
+  messaging library's error (library not in clone).
+- *Snapshot trailer.* =captureAriaSnapshot= (=src/utils/aria-snapshot.ts=)
+  sends =getUrl=, =getTitle= and =browser_snapshot= and returns one text
+  block: optional status line, then =- Page URL:=, =- Page Title:=, and
+  =- Page Snapshot= followed by a fenced =yaml= block. The three
+  messages are sequential, not atomic.
+- *Resources.* The server declares the =resources= capability but the list
+  is empty (=const resources: Resource[] = []=). No prompts capability.
+
+* The tools
+
+Twelve tools are registered in =snapshotTools= (=src/index.ts=). A
+thirteenth, =browser_drag=, is implemented but never registered. Marks used
+below: *EXT* means it exists only because of Chrome extension APIs and would
+be different or unnecessary in Nemesis, whose engine is ours. *UVC* means it
+assumes a user-visible Chrome (the user's live tab, profile and focus).
+
+** Navigation (=src/tools/common.ts=)
+
+*** browser_navigate
+- Arguments: =url= (string; type not in clone).
+- Socket message: =browser_navigate {url}=.
+- Returns: the snapshot trailer (the factory is called with =snapshot=true=
+  in =index.ts=); with =false= it would return the text =Navigated to <url>=.
+- Errors: the shared ones. No code-level handling of a failed load.
+- Limitations: navigates the one connected tab only. *EXT* (tabs API
+  navigation of an attached tab), *UVC*.
+
+*** browser_go_back
+- Arguments: none.
+- Socket message: =browser_go_back {}=.
+- Returns: snapshot trailer (else =Navigated back=).
+- Errors: shared. Nothing distinguishes "no history entry".
+- *EXT*, *UVC*.
+
+*** browser_go_forward
+- Arguments: none.
+- Socket message: =browser_go_forward {}=.
+- Returns: snapshot trailer (else =Navigated forward=).
+- Errors: shared. *EXT*, *UVC*.
+
+*** browser_wait
+- Arguments: =time= (number, seconds; type not in clone).
+- Socket message: =browser_wait {time}=.
+- Returns: text =Waited for <time> seconds=.
+- Errors: the 30 s socket timeout bounds the wait: a =time= near or above
+  30 makes the relay reject even though the wait itself is valid.
+- Limitation: a fixed sleep, with no wait-for-text or wait-for-element
+  form. The sleep runs in the extension, not the server. A cockpit would
+  not need it as a tool (the server can wait on events).
+
+** Input (=src/tools/snapshot.ts= and =common.ts=)
+
+All element-targeting tools take a human-readable =element= description in
+addition to a reference into the last snapshot. The handlers only read
+=element=; the reference field name and its type are not in the clone.
+Every one returns a status line plus the snapshot trailer.
+
+*** browser_click
+- Arguments: =element= (string, "human-readable element description"),
+  plus a snapshot reference (not in clone).
+- Socket message: =browser_click= with the validated params.
+- Returns: text =Clicked "<element>"= followed by the snapshot trailer.
+- Errors: shared. No result distinguishes "ref no longer exists".
+- Limitation: click is the only pointer action besides hover and drag; no
+  double click, right click or modifier keys visible in the handler.
+  *EXT* (input is injected through the extension, the debugger or content
+  script route; not in clone), *UVC*.
+
+*** browser_hover
+- Arguments: =element=, plus a snapshot reference (not in clone).
+- Socket message: =browser_hover=.
+- Returns: =Hovered over "<element>"= plus snapshot trailer.
+- *EXT*, *UVC*.
+
+*** browser_type
+- Arguments: =element=, =text=, plus a snapshot reference and, in the
+  published tool, a submit flag (the handler forwards all validated params;
+  the flag is not visible in the clone).
+- Socket message: =browser_type=.
+- Returns: =Typed "<text>" into "<element>"= plus snapshot trailer. Note
+  the typed text is echoed back in the result.
+- *EXT*, *UVC*.
+
+*** browser_select_option
+- Arguments: =element=, plus a snapshot reference and the values to select
+  (names not in clone).
+- Socket message: =browser_select_option=.
+- Returns: =Selected option in "<element>"= plus snapshot trailer. The
+  chosen values are not echoed.
+- *EXT*, *UVC*.
+
+*** browser_press_key
+- Arguments: =key= (string; the name or character to press, type not in
+  clone).
+- Socket message: =browser_press_key {key}=.
+- Returns: text =Pressed key <key>=. No snapshot is taken, unlike the
+  other input tools.
+- Limitation: targets whatever has focus in the connected tab. *UVC*.
+
+*** browser_drag (implemented, not registered)
+- Arguments: =startElement=, =endElement= (human-readable descriptions),
+  plus references for each (not in clone).
+- Socket message: =browser_drag=.
+- Returns: =Dragged "<start>" to "<end>"= plus snapshot trailer.
+- Status: =drag= is defined in =snapshot.ts= and imported types exist, but
+  =index.ts= never lists it, so a stock server does not offer it. Any
+  surface that claims to cover browsermcp should count it as latent, not
+  shipped.
+
+** Reading (=src/tools/snapshot.ts=, =custom.ts=)
+
+*** browser_snapshot
+- Arguments: none.
+- Socket messages: =getUrl=, =getTitle=, =browser_snapshot= (in that order).
+- Returns: the snapshot trailer, the page as a YAML accessibility tree.
+  This is the only read of page structure; there is no text, HTML or DOM
+  query tool.
+- Errors: shared. Failure of the second or third message leaves no partial
+  result.
+- Limitation: the tree's format and the reference scheme are produced in
+  the extension (not in clone). The ARIA tree approach is inherited from
+  Playwright MCP (README credits).
+
+*** browser_get_console_logs
+- Arguments: none.
+- Socket message: =browser_get_console_logs {}=.
+- Returns: one text block, each log entry =JSON.stringify=ed and joined by
+  newlines. The entry shape is defined by the extension (not in clone). An
+  empty log yields an empty string.
+- Limitation: console only. No network log, no request list, no page
+  errors as a separate channel. *EXT* (collected by the extension from the
+  attached tab).
+
+** Screenshots (=src/tools/custom.ts=)
+
+*** browser_screenshot
+- Arguments: none (no region, element or full-page option).
+- Socket message: =browser_screenshot {}=.
+- Returns: one =image= content, base64 =data= straight from the extension,
+  hard-coded =mimeType: "image/png"=.
+- Limitation: viewport capture of the visible tab; the format is assumed,
+  not checked. *EXT* (tab capture), *UVC* (the tab must be visible for a
+  capture).
+
+** Tabs
+
+There are none. No list, open, close, switch or select tool exists in the
+source. The surface is bound to the single tab the user connected through
+the extension icon, and a reconnect replaces the previous socket. Tab
+management is something a user does by hand in Chrome.
+
+* Extension dependence, summarized
+
+| Tool                       | EXT | UVC | Note                                        |
+|----------------------------+-----+-----+---------------------------------------------|
+| browser_navigate           | yes | yes | the extension drives the connected tab      |
+| browser_go_back            | yes | yes |                                             |
+| browser_go_forward         | yes | yes |                                             |
+| browser_wait               | no  | no  | sleeps in the extension, no browser API     |
+| browser_snapshot           | yes | no  | tree built in the extension                 |
+| browser_click              | yes | yes | needs a snapshot reference first            |
+| browser_hover              | yes | yes |                                             |
+| browser_type               | yes | yes |                                             |
+| browser_select_option      | yes | yes |                                             |
+| browser_press_key          | yes | yes | acts on focus                               |
+| browser_get_console_logs   | yes | no  |                                             |
+| browser_screenshot         | yes | yes | needs a visible tab                         |
+| browser_drag (unregistered)| yes | yes |                                             |
+
+Beyond the tools, the server-side assumptions that fall away in Nemesis:
+the connect-by-clicking-the-icon handshake, the single global WebSocket
+port with its =kill -9= of whatever holds it, the "uses your logged-in
+profile" and "real fingerprint" stance, and the absence of any
+authorization on the socket (anything on localhost that connects first
+becomes the extension).
+
+* What a cockpit-first server shares, and what only a page buffer offers
+
+** M3: a server over commands and buffers
+
+Shared with browsermcp:
+- The relay shape: validate with a schema, run the command, return text
+  plus an optional trailer. Nemesis commands already have that form.
+- Result as text blocks, errors as =isError= with a message, unknown tool
+  as an error result rather than a protocol fault.
+- A press-key equivalent, in Nemesis an invocation of a keymap or command.
+- A read-the-current-state tool: browsermcp's =browser_snapshot= maps to
+  reading the focused buffer, the buffer list and the session state.
+- A =wait= that is better expressed as awaiting a command's completion.
+
+What browsermcp lacks and a cockpit server can have: a tab-equivalent
+surface (buffers: list, switch, open, close), a registry-driven tool list
+that never drifts from the command table, per-tool permission through the
+bridge instead of one global connect gesture, no socket port to kill, and
+no dependence on a user-visible window.
+
+** M4: only a page buffer can offer
+
+Everything in the Navigation, Input, Reading and Screenshots groups above
+is about a web page, so it belongs to M4: navigate, back, forward, snapshot
+(from our own engine, so no extension, no =getUrl=/=getTitle=/snapshot
+round trip), click, hover, type, select, press key, drag (finish what
+browsermcp left unregistered), console logs, screenshot. An engine we own
+can exceed the surface where browsermcp cannot: element and full-page
+screenshots, stable element references, network logs, page errors, text
+and DOM reads, wait-for conditions, multiple pages at once, and every page
+result wrapped and labeled as untrusted content from a named origin, as
+the project rules require.
+
+** Facts to carry into ADR 0008 (#27)
+
+- The catalog is 12 registered tools plus 1 latent, all page-level.
+- The argument types are missing from the clone (see Source and method);
+  confirm with =tools/list= before copying any schema.
+- Nothing in browsermcp addresses authorization, origin labeling of
+  returned content, or tab management; those are open design space.

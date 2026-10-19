@@ -1,0 +1,786 @@
+#+TITLE: ADR 0005: hooks as declared points with named handlers
+#+OPTIONS: toc:nil
+
+- Status: proposed (flips to accepted when Pedro picks an option for each of
+  the five questions on #23; the picks are recorded on that issue and in
+  this line)
+- Date: 2026-OCTOBER-18
+- Threat or Pillar: README.org pillar 2, text-driven, for hooks a user can
+  list, name and remove from the palette; pillar 4, safe by construction, for
+  the rule that no hook reaches the agent's permission path (SECURITY.org T4)
+- Issue: #23 (study #16; consumers #71 config and #72 eval; modes ADR 0004,
+  #22)
+
+* Context
+
+** What the study found
+
+=docs/nyxt-study/05-hooks.org= (#16) read Nyxt's hook declarations and run
+sites without the =nhooks= library itself, whose directory in the checkout is
+empty. A Nyxt hook is a typed object held in a slot of the browser, a window,
+a buffer or a mode; the slot's type fixes the handler signature. Some events
+have an early and a late hook (=buffer-make-hook= before the modes are
+enabled, =buffer-after-make-hook= when the buffer is finished) because a
+handler wants either the mutable moment or the finished object. Three
+combinations are visible: run all and ignore the results, compose (each
+handler gets the previous one's result), and compose until nil, which is the
+veto on =request-resource-hook=. Error policy is chosen at each run site and
+is inconsistent: =after-init-hook= logs and swallows, a failing
+=buffer-load-hook= silently turns navigation off for that buffer, a failing
+=before-exit-hook= blocks exit on purpose. Handlers carry a name, which is
+what makes removal (a mode's =disable=), listing (=get-hooks= in the palette)
+and the log line possible. The order handlers run in could not be settled
+from the checkout: one docstring says oldest first, another says newest
+first. Nyxt also offers advice (=:before=, =:after=, =:around= on any command)
+and the study asked that Nemesis not copy it: unlisted, unremovable by name,
+and able to reach anything.
+
+The study's design pressure, in short: declared typed points, not advice; one
+order, written down and tested; two kinds (observer and interceptor), no
+user-supplied combinator; error policy at the single fire point; named
+handlers with remove and list; early and late variants only where the moment
+differs; nothing that reaches the agent's permission path.
+
+** Where Nemesis would run hooks today
+
+No cockpit hook exists; =src/= has no hook registry. The seams the issue
+names are real and each has a shape of its own:
+
+- =src/main/commands/dispatcher.ts=. =KeyDispatcher.handle= resolves a
+  key, pushes a =DispatchRecord= for =describe-key= and calls
+  =CommandRegistry.run=. It is one of three callers of =run=: the palette's
+  =execute-extended-command= in =src/main/commands/keyscheme.ts= and the
+  menu in =src/main/menu.ts= are the other two, each with its own
+  =CommandContext.source=. A hook around a command therefore belongs in
+  =CommandRegistry.run= (=src/main/commands/registry.ts=), one level below
+  the dispatcher, or it misses two of the three sources. The dispatcher's
+  record list stays what it is, data for =describe-key= and the tests.
+- =src/main/buffers.ts=. =BufferRegistry.create=, =switchTo= and =kill= each
+  end in =announce()=, which hands a frozen list snapshot to the subscribed
+  listeners. A listener learns that the list changed, not what happened. The
+  three methods are three seams, and =switchTo= already knows when the
+  current buffer actually changed.
+- =src/main/agent/session-manager.ts=. =SessionManager= forwards every
+  session's events down one stream in =emit= and reads that stream itself in
+  =watch=, where =started=, =user-text= and =stopped= already drive the
+  correction counter and the permission mode. =turn-end= carries =isError=,
+  =result=, =durationMs= and =numTurns=. A session hook fired from =watch=
+  sees exactly what the transcript and the recorder saw, after they saw it.
+- Two more seams the inventory needs. =src/main/index.ts= builds the
+  registries and the dispatcher inside =app.whenReady= and then calls
+  =createWindow()=; and =src/main/agent/session-bridge.ts= stops the agent in
+  =app.once('before-quit')=.
+
+The recorder (=src/main/transcripts.ts=) writes every =AgentEvent= to the
+session folder, and a =notice= event is the existing way for the cockpit to
+say something that the transcript shows and the folder keeps. That is the
+session log CLAUDE.md allows a hook error to go to; nothing else is.
+
+** The SDK's hooks stay the SDK's
+
+The Agent SDK has hooks of its own (=PreToolUse=, =PostToolUse= and others),
+passed in the query options. =sdkOptions()= in =src/main/agent/session.ts=
+sets =canUseTool=, the permission callback that
+=src/main/agent/permission-bridge.ts= answers, and no =hooks= option yet.
+SECURITY.org (T4) plans one: a =PreToolUse= hook that denies side-effect
+tools while the current buffer is a page from a domain not on the allowlist.
+That hook will be set in =session.ts= by the security path and reviewed
+interactively, as everything under =src/main/agent/= is.
+
+This ADR wraps and never replaces. Cockpit hooks fire downstream of the SDK,
+from events the manager already emits once the SDK has done its work.
+Nothing a cockpit handler returns reaches =sdkOptions=, =canUseTool= or the
+permission bridge, and the config file, trusted code with the app's
+privileges (#71), is handed the cockpit registry and nothing of the SDK's.
+
+** What the consumers need before they can be filed
+
+#71 wants =init.ts= to have "access to =defineCommand=, keymaps, hooks and
+settings" and a =reload-config= that drops what the previous load registered
+(the source tag of study 06). #72 wants every eval that "defines or redefines
+a command, binding or hook" appended to the journal with a timestamp and the
+form, with =journal-promote= and =journal-discard= on each entry. ADR 0004
+gives a mode a =hooks= field attached on enable and detached on disable and
+says the names and handler types are this ADR's. All three need the point
+names, the handler shape and the removal rule, which is why this is decided
+before any of them is coded.
+
+* Decision
+
+Proposed: the Recommended option of each of the five questions in the next
+section. The rules below describe those options together; they become the
+decision when the status flips.
+
+** Hooks are a fixed list of declared points with typed payloads
+
+A hook point is a name in a closed union, with an event type per name, both
+in a new module =src/main/hooks.ts=. A payload carries names, ids, counts,
+durations, a frozen =BufferInfo= or a =CommandContext=. It never carries
+prompt text, assistant text, tool input or page content: =turn-ended= is
+=AgentTurnEndEvent= without =result=, and no point is fired from =user-text=
+or =assistant-text=. A payload may be printed in a notice when a handler
+fails, so the rule holds by construction, not by care. There is no advice: a
+config cannot wrap a command's =run= or any other function, only register at
+a declared point.
+
+** Two kinds of point: observers and interceptors
+
+An observer's handlers run for their effects and their return value is
+ignored. An interceptor's handler may return a veto, =true= with a reason,
+and the first veto ends the chain and stops the action. =before-command= is
+the only interceptor this ADR ships. There is no compose-a-value pipeline and
+no user-supplied combination; the day a point needs one (a URL rewrite on a
+page buffer, M4) it comes back here.
+
+** Handlers run in registration order; early and late are separate points
+
+Handlers of a point run oldest first, in the order =on= was called. There is
+no prepend, no priority and no =:append= flag, so the cockpit's own handlers
+(registered at startup) run before a mode's (registered on enable), which run
+before the config's (registered at load), which run before the REPL's. Where
+a handler needs the moment before an action and another the moment after,
+they are two points, =before-command= and =after-command=, not two positions
+in one list. A point does not re-enter: while its handlers run, a second fire
+of the same point runs no handler and leaves a notice, which is what stops a
+handler that runs the very command it intercepts from looping.
+
+** A failing handler is logged and skipped; the chain goes on
+
+A handler that throws or rejects is reported as a =notice= down the agent
+event stream, with the point, the handler's name, its source and the error
+message, and the next handler runs. The handler stays registered, so the
+author sees the same notice next time and fixes it, instead of finding the
+handler silently gone. For the interceptor, a throw counts as no change: the
+command runs unless another handler vetoes. No hook failure stops buffer
+creation, a command, a turn or quit.
+
+** Handlers may be synchronous or asynchronous; each is awaited with the point's timeout
+
+A handler returns =void= or a =Promise=. The fire point awaits each handler in
+order, so order means what it says and an interceptor's answer is known
+before the next handler runs. Each point declares a timeout per handler:
+2000 ms for observers, 30 000 ms for =before-command=, long enough to ask a
+yes or no through the prompt buffer (=src/main/commands/confirm.ts=). The
+handler receives an =AbortSignal= that is aborted at the timeout, so a
+well-written handler can drop its prompter read. An observer past its
+timeout is reported in a notice and the cockpit moves on; its promise settles
+on its own and the result is ignored. An interceptor past its timeout is a
+veto with the reason "did not answer in time": a throw is a bug with nothing
+pending, a timeout is a handler that may still be asking the user, and
+running the command while that question is on screen would be the worse
+failure. Nothing runs on another thread, and nothing is fire-and-forget by
+default.
+
+** Handlers are named, come from a source, and can be listed and removed
+
+=on(point, { name, doc, run })= requires a kebab-case name, the same rule as
+a command name, and refuses a second handler of the same name on the same
+point with a =HookError=, as =CommandRegistry.register= refuses a duplicate
+command. =off(point, name)= removes one; =list()= returns every handler with
+its point, name, doc and source; =dropSource(source)= removes every handler
+of one source. Sources are =cockpit=, =mode:<name>=, =config= and =repl=,
+fixed by who holds the API object, never chosen by the handler. A
+=list-hooks= command shows the list in a help buffer and =remove-hook= reads
+a handler through the palette.
+
+** Nine points ship first
+
+| Point              | Kind        | Fired from                                                | Payload                                                         |
+|--------------------+-------------+-----------------------------------------------------------+-----------------------------------------------------------------|
+| =after-init=       | observer    | =src/main/index.ts=, after the dispatcher is built, before =createWindow()= | command names, buffer list                        |
+| =buffer-created=   | observer    | =BufferRegistry.create=, after the push, before =announce()= | the =BufferInfo=                                              |
+| =buffer-switched=  | observer    | =BufferRegistry.switchTo=, only when the current buffer changed | =from= (or null) and =to=                                  |
+| =buffer-killed=    | observer    | =BufferRegistry.kill=, after the splice, before =announce()= | the killed =BufferInfo=                                       |
+| =before-command=   | interceptor | =CommandRegistry.run=, before the command's =run=         | command name and =CommandContext=                               |
+| =after-command=    | observer    | =CommandRegistry.run=, after =run= settled; not when vetoed | command name, context, =ok=, =durationMs=                     |
+| =session-started=  | observer    | =SessionManager.watch= on =started=                       | session id, model, permission mode                              |
+| =turn-ended=       | observer    | =SessionManager.watch= on =turn-end=                      | session id, =isError=, =durationMs=, =numTurns=; never =result= |
+| =before-quit=      | observer    | the =before-quit= path in =src/main/agent/session-bridge.ts= | nothing                                                      |
+
+The buffer points fire before =announce()= so a handler that renames or
+arranges sees its effect in the same push the renderer gets. Page-driven
+points (=before-load= on a page buffer, the request interceptor the renderer
+study names in =docs/nyxt-study/07-renderer.org=) wait for M4 and their own
+review here.
+
+** No hook reaches the permission path
+
+=src/main/hooks.ts= has no runtime import from =src/main/agent/=,
+=src/main/security/= or =src/preload/=; the one import it takes from the
+agent directory is =import type= of the plain event types in
+=src/main/agent/events.ts=, which is erased at compile time and cannot carry
+a path to the bridge. The agent modules import the registry to fire, never
+the reverse. No channel in =src/shared/ipc.ts= carries a hook registration,
+so nothing in the renderer or a page can add, remove or fire a handler. A
+unit test pins the import rules and the channel list. The SDK =hooks=
+option, when the T4 =PreToolUse= rule lands, is set in =session.ts= alone and
+holds no cockpit handler.
+
+* Alternatives considered
+
+Each question lists its options with the files touched, the cost, the risk
+and what the option rules out, so the pick can be made from this file alone.
+
+** Ordering
+
+*** A. Registration order, oldest first; before and after as separate points (Recommended)
+
+One list per point, walked from the front; no prepend, no priority. The
+early and the late moment of one action are two names. Files touched:
+=src/main/hooks.ts= and its test, nothing else, since the order is a property
+of the registry. Cost: none beyond stating it. Risk: a config handler cannot
+run ahead of a cockpit handler; the only case where that matters is an
+interceptor that wants to veto before the cockpit's own interceptor does, and
+the cockpit ships no interceptor handler of its own, so the case is empty
+today. Rules out: a user reordering handlers without unregistering and
+re-registering them. Recommended because the study's one firm lesson from
+Nyxt's oldest-versus-newest ambiguity is to have one order and test it, and
+because enable order, load order and eval order already give the layers
+(cockpit, mode, config, REPL) the order a user expects.
+
+*** B. A priority number per handler
+
+=on(point, handler, { priority })=, lower first, ties in registration order.
+Files touched: the same module plus every call site that wants a priority.
+Cost: a number nobody agrees on, documented in a table that drifts, and ties
+fall back to option A anyway. Risk: the config and a mode fight over a
+number; a REPL handler at priority 0 jumps ahead of the cockpit's. Rules
+out: nothing. It lost because it buys a reorder nobody has asked for and
+makes the order unreadable from =list-hooks= without printing the numbers.
+
+*** C. Newest first
+
+Nyxt's apparent =add-hook= default: a new handler goes to the front. Files
+touched: the registry only. Cost: none to write. Risk: the user's config
+handler, registered last, runs before the cockpit's; a handler added from
+the REPL jumps ahead of everything, including a mode's; the order of two
+config handlers is the reverse of the order they appear in the file. Rules
+out: reading the order off =init.ts=. It lost because it is the behaviour
+the study found confusing enough to be documented two ways in Nyxt.
+
+** Error behaviour
+
+*** A. A throwing handler is logged and skipped; the chain continues; the handler stays (Recommended)
+
+The fire point wraps each handler in its own try, reports the failure as a
+=notice= with point, name, source and message, and runs the next. An
+interceptor that throws counts as no change. Files touched:
+=src/main/hooks.ts= and its test; the fire sites pass a notice sink. Cost: a
+broken handler reports on every fire, which is noisy until fixed. Risk: a
+handler that fails before doing its job leaves the action to run without
+it, which for =before-command= means a buggy confirm handler does not
+protect; the notice says so. Rules out: a handler that stops an action by
+throwing. Recommended because it is the one policy under which a broken
+=init.ts= line cannot take buffer creation, commands, turns or quit down
+with it, and because a visible repeated notice is how the author finds the
+bug.
+
+*** B. The handler is removed after its first failure
+
+Same wrapper, plus =off= on the failing handler. Files touched: the same.
+Cost: none to write. Risk: a transient failure (the session not started yet
+when =after-init= handlers run, a file not there on first launch) removes a
+handler for good, with one notice the user may have missed; the config file
+and the running image now disagree until =reload-config=. Rules out: a
+handler that tolerates its own first failure. It lost because it hides the
+bug after the first report, which is the Nyxt =ignore-errors= outcome by
+another route.
+
+*** C. The failure stops the chain, and the interceptor's failure blocks the action
+
+No wrapper; the fire point rethrows, so the caller (=CommandRegistry.run=,
+=BufferRegistry.create=) fails. Files touched: every fire site has to decide
+what a failure means for the action. Cost: none to write, much to document.
+Risk: Nyxt's =buffer-load-hook= failure mode, one broken handler disables
+every later handler and the action itself, and a failing =before-quit=
+handler strands live agent sessions. Rules out: nothing, which is the
+problem. It lost because the study listed exactly this as not wanted.
+
+** Synchronous versus asynchronous handlers
+
+*** A. Both; each handler is awaited in order with a per-point timeout (Recommended)
+
+A handler returns =void= or a promise and gets an =AbortSignal=. Observers:
+2000 ms each, then a notice and the cockpit moves on. =before-command=:
+30 000 ms each, then a notice and a veto. Files touched: =src/main/hooks.ts=
+and its test; the fire sites become =await= calls (=CommandRegistry.run= and
+=SessionManager.watch= already run in async contexts; =BufferRegistry.create=
+returns the buffer synchronously today and would fire the observer without
+awaiting its completion before returning, or become async, which the landing
+issue decides and the test pins). Cost: a slow observer delays the action by
+up to its timeout; the notice names it. Risk: a =before-command= handler
+that asks the user and takes longer than 30 s vetoes the command, and the
+user presses the key again; a sync caller that cannot await (the =before-quit=
+listener) needs =preventDefault= and a second =quit= after the hooks, with
+the 2 s bound keeping quit near. Rules out: a handler that must finish
+before the action and takes longer than the bound. Recommended because the
+top uses in the inventory (notify when a turn ends, confirm a dangerous
+command, flush state before quit) need to await something, and because an
+unbounded await would let one hung handler strand every command, including
+=reload-config=.
+
+*** B. Synchronous only
+
+A handler returns =void=; a returned promise is ignored. Files touched: the
+registry only; every fire site stays synchronous. Cost: none; the simplest
+rules. Risk: a handler that needs to read a file, ask the user or wait on the
+agent cannot be written as a hook; a config author works around it with a
+fire-and-forget promise inside the handler, whose rejection no one catches.
+Rules out: a =before-command= confirm, a =before-quit= flush. It lost because
+the interceptor is the one hook point where Nemesis is better placed than
+Nyxt (the study's item 4), and it needs an awaited answer.
+
+*** C. Fire-and-forget
+
+Every handler is started and not awaited; rejections are caught and
+reported. Files touched: the registry only. Cost: none; no latency on any
+action. Risk: order among async handlers is start order only; an
+interceptor is impossible because its answer arrives after the action; an
+=after-init= handler that registers a command races the window. Rules out:
+=before-command= as an interceptor, and a =before-quit= that finishes before
+quit. It lost because it is Nyxt's =buffer-loaded-hook= in a thread, which
+the study listed as not wanted.
+
+** The first hook points
+
+*** A. The nine points of the table above (Recommended)
+
+The study's inventory of six items, with =buffer-deleted= and
+=buffer-switched= split into their own names, =after-command= as an observer
+beside the interceptor, and =session-turn-start= dropped: the SDK gives no
+clean turn-start frame, and =user-text= carries the prompt, which no payload
+may hold. Files touched: =src/main/hooks.ts=; the fire sites in
+=src/main/commands/registry.ts=, =src/main/buffers.ts=,
+=src/main/agent/session-manager.ts=, =src/main/index.ts= and
+=src/main/agent/session-bridge.ts=; one test per fire site in the existing
+=tests/unit/registry.test.ts=, =tests/unit/buffers.test.ts= and
+=tests/unit/session-manager.test.ts=, and a new =tests/unit/hooks.test.ts=.
+Cost: five small wiring changes, each a line or two plus a test. Risk: a
+point nobody uses in the first month, which costs a line; a point that
+turns out to want a different payload, which is a change to one type. Rules
+out: nothing M3 or M4 asked for. Recommended because each point has a seam
+today and a named use in the study, and because #71's example config and
+#72's e2e need at least a buffer point and a command point to be worth
+anything.
+
+*** B. The three #71 cannot do without
+
+=after-init=, =before-command=, =after-command=. Files touched:
+=src/main/hooks.ts=, =src/main/commands/registry.ts=, =src/main/index.ts=.
+Cost: the least. Risk: none for M3. Rules out: notify when a turn ends, the
+most asked-for hook of a cockpit that runs long agent turns; anything that
+tracks the current buffer; a flush before quit. It lost because the three
+missing kinds each have a seam today and would come back as three issues
+within M3, each reopening the payload question.
+
+*** C. The Nyxt table
+
+Every Nyxt hook with a Nemesis analogue, including the early and late buffer
+variants, =buffer-load= and the request interceptor. Files touched: the
+above plus page-buffer code that does not exist. Cost: points with no fire
+site until M4, and early and late variants with no mutable moment, since a
+=BufferInfo= is frozen at creation. Risk: a point shipped before its
+payload exists is a promise the project then has to keep. Rules out:
+nothing. It lost because the study said to keep early and late variants
+only where the moment differs, and the renderer study already reserves the
+page points for their own review.
+
+** The config API shape
+
+*** A. hooks.on(point, { name, doc, run }) and hooks.off(point, name) (Recommended)
+
+The handler is an object with the shape of a =Command=: a kebab-case name, a
+doc line and a =run=. The point name is the first argument and types the
+event: =hooks.on('before-command', ...)= gives =run= a payload with
+=command= and =context=, and a misspelt point is a type error in =init.ts=
+and a =HookError= at load. =hooks.off= takes the point and the name;
+=hooks.list()= returns what =list-hooks= shows. The API object handed to
+=init.ts= binds the source =config=, the one handed to the REPL binds =repl=;
+the handler cannot pick its source. Files touched: =src/main/hooks.ts=; the
+API object of #71 (ADR 0006 names it; =nemesis= below is a placeholder).
+Cost: a name on every handler, one line. Risk: the name is one more thing
+to invent; the fix is that =list-hooks= and the failure notice print it, so
+the author sees why it exists on the first bug. Rules out: anonymous
+handlers. Recommended because the study's three uses of a name (removal,
+listing, logs) are all of them, because the journal of #72 needs a name to
+promote or discard an entry by, and because a config author already learnt
+the shape from =defineCommand=.
+
+*** B. hooks.on(point, handler) returning a disposer
+
+The =BufferRegistry.subscribe= shape: an anonymous function in, an
+unsubscribe function out. Files touched: the same. Cost: none. Risk: the
+handler shows as nothing useful in =list-hooks= and in the failure notice;
+the REPL user holds the disposer in a variable or loses it, and a config
+file has nowhere to keep one across a reload; the journal records a form it
+cannot name. Rules out: =remove-hook= from the palette, and the journal's
+=discard= on a hook. It lost because every one of the study's reasons for a
+name applies and a disposer answers only the first.
+
+*** C. hooks.before('command', ...) and hooks.after('command', ...)
+
+The phase as a method, the action as a noun. Files touched: the same, with
+two methods instead of one. Cost: two entry points and the point name split
+in two strings. Risk: a noun that has only one phase (=buffer-created=,
+=turn-ended=) gets a method that does not apply to it, or a third method,
+so the API is three methods where one point name says the same; the event
+type is harder to narrow from two arguments. Rules out: nothing. It lost
+because =before-command= as one name already carries the phase, and a
+closed union of names is the thing the type checker and =list-hooks= both
+read.
+
+* Sketch of the recommended option
+
+Erasable TypeScript, as in ADR 0004: interfaces and type aliases, no enums,
+no parameter properties, no namespaces, so the same shape runs under a
+stripped-types loader and in the compiled =init.ts= of #71. Names are
+proposals; the landing issue may rename, not reshape.
+
+#+begin_src typescript
+import type { BufferInfo } from '../shared/buffers'
+import type { AgentPermissionMode } from './agent/events'
+import type { CommandContext } from './commands/registry'
+
+/** The payload of each point. Names, ids, counts and frozen records only:
+ *  never prompt text, assistant text, tool input or page content, since a
+ *  payload may be printed when a handler fails. */
+export interface HookEvents {
+  readonly 'after-init': { readonly commands: readonly string[]; readonly buffers: readonly BufferInfo[] }
+  readonly 'buffer-created': { readonly buffer: BufferInfo }
+  readonly 'buffer-switched': { readonly from: BufferInfo | null; readonly to: BufferInfo }
+  readonly 'buffer-killed': { readonly buffer: BufferInfo }
+  readonly 'before-command': { readonly command: string; readonly context: CommandContext }
+  readonly 'after-command': {
+    readonly command: string
+    readonly context: CommandContext
+    readonly ok: boolean
+    readonly durationMs: number
+  }
+  readonly 'session-started': {
+    readonly sessionId: string
+    readonly model: string
+    readonly permissionMode: AgentPermissionMode
+  }
+  readonly 'turn-ended': {
+    readonly sessionId: string | null
+    readonly isError: boolean
+    readonly durationMs: number
+    readonly numTurns: number
+  }
+  readonly 'before-quit': Record<string, never>
+}
+
+export type HookPoint = keyof HookEvents
+
+/** An interceptor's answer. An observer's return value is ignored. */
+export interface Veto {
+  readonly veto: true
+  readonly reason: string
+}
+
+export type HookResult = Veto | void
+
+export interface HookHandler<P extends HookPoint> {
+  /** Kebab-case, same rule as a command name; the key for off and list-hooks. */
+  readonly name: string
+  /** One line, shown by list-hooks and in the failure notice. */
+  readonly doc: string
+  run(event: HookEvents[P], signal: AbortSignal): HookResult | Promise<HookResult>
+}
+
+/** Who registered a handler. Fixed by the API object, never by the handler. */
+export type HookSource = 'cockpit' | `mode:${string}` | 'config' | 'repl'
+
+export interface HookPointSpec {
+  readonly kind: 'observer' | 'interceptor'
+  /** Per handler. Past it, an observer is abandoned and an interceptor vetoes. */
+  readonly timeoutMs: number
+}
+
+const OBSERVER: HookPointSpec = { kind: 'observer', timeoutMs: 2000 }
+
+export const HOOK_POINTS: Readonly<Record<HookPoint, HookPointSpec>> = {
+  'after-init': OBSERVER,
+  'buffer-created': OBSERVER,
+  'buffer-switched': OBSERVER,
+  'buffer-killed': OBSERVER,
+  'before-command': { kind: 'interceptor', timeoutMs: 30_000 },
+  'after-command': OBSERVER,
+  'session-started': OBSERVER,
+  'turn-ended': OBSERVER,
+  'before-quit': OBSERVER,
+}
+
+export interface HookListing {
+  readonly point: HookPoint
+  readonly name: string
+  readonly doc: string
+  readonly source: HookSource
+}
+
+export class HookError extends Error {
+  override readonly name = 'HookError'
+}
+
+interface Registered {
+  readonly source: HookSource
+  readonly handler: HookHandler<HookPoint>
+}
+
+export class HookRegistry {
+  private readonly handlers = new Map<HookPoint, Registered[]>()
+  private readonly running = new Set<HookPoint>()
+  private readonly notify: (text: string) => void
+
+  /** `notify` is the notice sink: the agent event stream, so the transcript
+   *  shows the line and the recorder keeps it in the session folder. */
+  constructor(notify: (text: string) => void) {
+    this.notify = notify
+  }
+
+  on<P extends HookPoint>(point: P, handler: HookHandler<P>, source: HookSource): void {
+    // Same name check as defineCommand; a duplicate name on a point is a HookError.
+    const list = this.handlers.get(point) ?? []
+    if (list.some((entry) => entry.handler.name === handler.name)) {
+      throw new HookError(`Hook "${point}" already has a handler named "${handler.name}"`)
+    }
+    list.push({ source, handler: handler as HookHandler<HookPoint> })
+    this.handlers.set(point, list) // oldest first; order is the order of on()
+  }
+
+  off(point: HookPoint, name: string): boolean {
+    const list = this.handlers.get(point) ?? []
+    const index = list.findIndex((entry) => entry.handler.name === name)
+    if (index === -1) return false
+    list.splice(index, 1)
+    return true
+  }
+
+  /** reload-config drops 'config'; a mode's disable drops 'mode:<name>'. */
+  dropSource(source: HookSource): number {
+    let dropped = 0
+    for (const list of this.handlers.values()) {
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        if (list[i]?.source === source) {
+          list.splice(i, 1)
+          dropped += 1
+        }
+      }
+    }
+    return dropped
+  }
+
+  list(): readonly HookListing[] {
+    const out: HookListing[] = []
+    for (const [point, list] of this.handlers) {
+      for (const { source, handler } of list) {
+        out.push({ point, name: handler.name, doc: handler.doc, source })
+      }
+    }
+    return out
+  }
+
+  /**
+   * The one fire point. Observers: every handler, in order, each awaited
+   * with the point's timeout; the return is null. Interceptor: the first
+   * veto ends the chain and is returned. A throw is a notice and no change;
+   * a timeout is a notice, and for the interceptor a veto.
+   */
+  async fire<P extends HookPoint>(point: P, event: HookEvents[P]): Promise<Veto | null> {
+    if (this.running.has(point)) {
+      this.notify(`Hook ${point}: fired while its handlers were running; skipped.`)
+      return null
+    }
+    const spec = HOOK_POINTS[point]
+    this.running.add(point)
+    try {
+      for (const { source, handler } of [...(this.handlers.get(point) ?? [])]) {
+        const outcome = await this.runOne(spec, handler, event)
+        if (outcome.kind === 'failed') {
+          this.notify(`Hook ${point}: handler ${handler.name} (${source}) failed: ${outcome.message}`)
+          continue
+        }
+        if (outcome.kind === 'timed-out') {
+          this.notify(`Hook ${point}: handler ${handler.name} (${source}) did not answer in ${spec.timeoutMs} ms.`)
+          if (spec.kind === 'interceptor') return { veto: true, reason: `${handler.name} did not answer in time` }
+          continue
+        }
+        if (spec.kind === 'interceptor' && outcome.result !== undefined && outcome.result.veto) {
+          return outcome.result
+        }
+      }
+      return null
+    } finally {
+      this.running.delete(point)
+    }
+  }
+
+  private async runOne(
+    spec: HookPointSpec,
+    handler: HookHandler<HookPoint>,
+    event: HookEvents[HookPoint],
+  ): Promise<
+    | { kind: 'done'; result: HookResult }
+    | { kind: 'failed'; message: string }
+    | { kind: 'timed-out' }
+  > {
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<{ kind: 'timed-out' }>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        resolve({ kind: 'timed-out' })
+      }, spec.timeoutMs)
+    })
+    try {
+      const run = Promise.resolve()
+        .then(() => handler.run(event, controller.signal))
+        .then((result): { kind: 'done'; result: HookResult } => ({ kind: 'done', result }))
+      return await Promise.race([run, timeout])
+    } catch (error) {
+      return { kind: 'failed', message: error instanceof Error ? error.message : String(error) }
+    } finally {
+      if (timer !== null) clearTimeout(timer)
+    }
+  }
+}
+#+end_src
+
+The command fire site, in =CommandRegistry.run=, reads:
+
+#+begin_src typescript
+async run(name: string, context: CommandContext): Promise<void> {
+  const command = this.require(name)
+  const veto = await this.hooks.fire('before-command', { command: name, context })
+  if (veto !== null) {
+    this.notify(`${name}: refused by a hook: ${veto.reason}`)
+    return
+  }
+  const started = Date.now()
+  let ok = false
+  try {
+    await command.run(context)
+    ok = true
+  } finally {
+    await this.hooks.fire('after-command', { command: name, context, ok, durationMs: Date.now() - started })
+  }
+}
+#+end_src
+
+One handler, as =init.ts= would write it (the =nemesis= object is ADR
+0006's; its =hooks= member is this registry bound to the source =config=):
+
+#+begin_src typescript
+nemesis.hooks.on('before-command', {
+  name: 'keep-the-transcript',
+  doc: 'Refuses kill-buffer while the transcript is the current buffer.',
+  run(event) {
+    if (event.command === 'kill-buffer' && event.context.bufferType === 'transcript') {
+      return { veto: true, reason: 'the transcript stays open; switch to another buffer first' }
+    }
+    return undefined
+  },
+})
+
+nemesis.hooks.on('turn-ended', {
+  name: 'say-when-a-long-turn-ends',
+  doc: 'A desktop notification when a turn took more than a minute.',
+  run(event) {
+    if (event.durationMs > 60_000) notifyDesktop(`Turn done in ${Math.round(event.durationMs / 1000)} s`)
+    return undefined
+  },
+})
+#+end_src
+
+** Order of steps to land it
+
+Each step is one issue and keeps =npm run gate= green on its own.
+
+1. =src/main/hooks.ts= with =HookEvents=, =HOOK_POINTS=, =HookRegistry= and
+   =HookError=, and a new =tests/unit/hooks.test.ts= that pins: oldest-first
+   order; duplicate name refused; =off= and =dropSource=; a throwing observer
+   is reported and the next handler runs; a throwing interceptor is no
+   change; a timed-out observer is reported and the chain goes on; a
+   timed-out interceptor vetoes; re-entry is skipped with a notice; the
+   import rules (no runtime import from =src/main/agent/=,
+   =src/main/security/= or =src/preload/=; =import type= from
+   =src/main/agent/events.ts= only) and that no channel in
+   =src/shared/ipc.ts= names a hook.
+   No fire site yet. M3.
+2. The fire sites: =before-command= and =after-command= in
+   =CommandRegistry.run=, with the registry taking the hook registry and a
+   notice sink in its constructor; =buffer-created=, =buffer-switched=,
+   =buffer-killed= in =BufferRegistry=; =session-started= and =turn-ended= in
+   =SessionManager.watch=; =after-init= in =src/main/index.ts= between the
+   dispatcher and =createWindow()=; =before-quit= in the bridge's
+   =before-quit= listener, with =preventDefault= and a second =quit= so the
+   2 s bound is honoured. One test per site in the existing unit files. M3.
+3. =list-hooks= on the =describe-command= pattern
+   (=src/main/commands/describe.ts=), a help buffer with one line per handler
+   (point, name, source, doc), and =remove-hook= reading point and name
+   through the palette. M3.
+4. The config door: =hooks= on the API object of #71 bound to the source
+   =config=; =reload-config= calls =dropSource('config')= before it
+   re-evaluates, and =after-init= fires again for the reloaded config only if
+   ADR 0006 decides that a reload re-runs init-time handlers. After ADR 0006.
+   M3.
+5. The REPL door: the same API bound to =repl=, and the journal rows of #72
+   as the Consequences describe. M3.
+6. Modes attach their =hooks= field through =on= with the source
+   =mode:<name>= on enable and =dropSource= on disable (ADR 0004, step 5 of
+   its landing order). M3 or M4, with the modes.
+
+* Consequences
+
+- *A config can act at nine moments and veto at one.* The =init.ts= of #71
+  can refuse a command, rename or arrange buffers as they appear, notify
+  when a turn ends, and flush its own state before quit, with the same
+  object shape it uses for a command. Everything it registers is visible in
+  =list-hooks= with its source, and =reload-config= drops exactly the
+  =config= handlers, which is the source tag study 06 asked for.
+- *The journal of #72 records a hook like a command.* When a hook is added
+  from the REPL, the =repl=-bound =on= appends one entry to
+  =~/.config/nemesis/journal.org= with the timestamp, a header naming the
+  point and the handler (=hook before-command keep-the-transcript=) and the
+  form as typed. =journal-promote= moves the form into =init.ts= and calls
+  =off(point, name)= on the =repl= handler, so the =config= copy registers
+  without tripping the duplicate-name rule on the next =reload-config=;
+  =journal-discard= calls =off= and deletes the entry. A second =on= with the
+  same point and name from the REPL is a =HookError=, so a redefinition is
+  =off= then =on=, and the journal records it as one entry replacing the
+  earlier one. =reload-config= drops =config= handlers and leaves =repl=
+  ones alone: they are the unpromoted auto-config of study 06, and a reload
+  must not lose them. The mode line's count of unpromoted entries includes
+  hooks. =list-hooks= shows =repl= as the source, so a provisional handler
+  is visibly provisional.
+- *Modes get the owner ADR 0004 promised.* A mode's =hooks= field is a list
+  of =(point, handler)= pairs registered under =mode:<name>= on enable and
+  dropped by source on disable, so a mode cannot leave a handler behind and
+  the per-mode leak test of ADR 0004 is =list()= before and after.
+- *Failures are visible in the transcript and the session folder.* A hook
+  failure is a =notice= like a refused site permission (#49): one line, the
+  handler's name, no payload. The author sees it where they are looking,
+  and the recorder keeps it. Nothing is written anywhere else.
+- *What becomes harder.* Every command pays two awaited hook fires even with
+  no handlers registered, which is a microtask each and is measured when it
+  lands. An observer that is slow delays its action by up to 2 s and says
+  so. A =before-command= handler that asks the user has 30 s. A config
+  author must name every handler. =BufferRegistry.create= either returns
+  before its observers finish or becomes async; the landing issue picks and
+  tests, and the renderer sees no difference either way because the push
+  comes after the hook.
+- *Out of reach, on purpose.* No advice on commands or any function. No
+  user-supplied combination. No hook on =user-text=, =assistant-text=,
+  =tool-use= or =tool-result=, and no payload that carries their text. No
+  hook from the renderer, a page or an IPC channel. No cockpit handler in
+  the SDK's =hooks= option, in =canUseTool= or in the permission bridge; the
+  T4 =PreToolUse= rule is security code, written in =session.ts= and
+  reviewed interactively, and it stays that way. No page-driven points
+  until M4 brings a page buffer and its own review here. No one-shot
+  (=once=) variant until a config asks for it; a handler that calls =off= on
+  itself is the one-liner meanwhile.
+- *Follow-up work.* The six steps above as issues; ADR 0006 naming the API
+  object and deciding whether a reload re-fires =after-init=; the #72 e2e
+  extended with a hook entry in the journal; and the M4 page points
+  (=before-load=, a request interceptor) as a new question in this file,
+  with the compose-a-value kind they will need.

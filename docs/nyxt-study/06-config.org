@@ -1,0 +1,329 @@
+#+TITLE: Nyxt study 06: configuration loading and reload, against the Nemesis settings file and the init file of #71
+#+OPTIONS: toc:nil
+
+- Issue: #17 (feeds ADR 0006, #24, and the pick on #71; related #72 eval)
+- Nyxt read at: =~/projects/nyxt= at =fb49be5=, files =source/configuration.lisp=,
+  =source/configuration-commands.lisp=, =source/start.lisp=,
+  =source/user-classes.lisp=, =source/user-files.lisp=, =source/help.lisp=,
+  =source/manual.lisp=, =source/concurrency.lisp=, =source/mode/blocker.lisp=,
+  =source/mode/macro-edit.lisp=
+- Nemesis read at: main after #95 (=src/main/settings.ts=, =src/main/index.ts=),
+  plus the Approach comment on #71
+
+A note on the sources the issue named. The =nfiles= library (the =files:=
+package) decides the actual directories: =config-file= has base path
+=config=, =auto-config-file= has =auto-config.<version>= (both in
+=configuration.lisp=), and the XDG resolution that turns a base path into
+=~/.config/nyxt/= or =~/.local/share/nyxt/= lives in =nfiles=, whose source is
+not in this checkout. This study therefore states the base paths and the
+class split (config file versus data file) but not the resolved directory on
+each OS. Everything else below is read from the files listed above.
+
+* How Nyxt loads and reloads its configuration
+
+** Two Lisp files, two authors
+
+=configuration.lisp= declares two file classes that look alike and are not.
+=config-file= (=*config-file*=, base path =config=) is the file the user
+writes. Its docstring says it can only be loaded with =cl:load= and is never
+read as data: =files:read-file= is specialized to return nil for it, so the
+file layer will not parse it. =auto-config-file= (=*auto-config-file*=, base
+path =auto-config.= plus the Nyxt version) is the file the app writes. It can
+be loaded as code and also read as data, through =files:deserialize= and
+=files:serialize=, which turn its forms into =class-form= and =slot-form=
+objects and back.
+
+Why two files: the user's file is free-form code with comments and
+conditionals that a program cannot rewrite without destroying; the app's file
+is machine-owned and regular enough to round-trip. Keeping them apart means
+the app never edits a file the user owns, and the user can read the app's
+file as a record of what was changed from the UI. Two further details:
+
+- The auto-config name carries the version, so after an upgrade the old file
+  is simply not found. A setting saved from the UI is thereby scoped to the
+  Nyxt version that understood it. This costs the user their UI settings on
+  upgrade and avoids loading a form against a class whose slots changed.
+- =files:resolve= for both (the method on =config-special-file=) honours the
+  command-line options =--config=, =--auto-config=, =--no-config= and
+  =--no-auto-config= (declared in =start.lisp=). A missing file named
+  explicitly logs a warning; a missing default file is silent.
+
+** Lifecycle: find, load, apply
+
+1. *Find.* =start-browser= and =start-load-or-eval= in =start.lisp= expand
+   =*auto-config-file*= and =*config-file*= to paths through the options
+   above. =--no-config= turns the path into the empty pathname, which
+   =load-lisp= treats as "nothing to load".
+2. *Load, in this order.* The auto-config file first, then the config file,
+   both with =*package*= bound to =nyxt-user=. The order is the whole
+   override rule: whatever the UI saved is loaded first, so the hand-written
+   file wins. =manual.lisp= says it in prose ("Any settings can be
+   overridden manually by" the config file).
+3. *Before the browser exists.* Both loads happen before =make-instance 'browser=.
+   Nothing is running yet, so the config can only /declare/: it cannot touch
+   a window or a buffer. After the config, =load-or-eval= runs any =--load=
+   and =--eval= from the command line, then the browser is built and the
+   renderer starts.
+4. *Apply, lazily.* Loading the file does not change any live object. What it
+   does is register customizations on classes, and they take effect when an
+   instance is made (next section). This is why the config can run before
+   any window exists, and why a reload does not retroactively change the
+   open ones.
+
+** =define-configuration=: what it does to a class
+
+The macro in =configuration.lisp= takes one class or a list and a list of
+=(slot value)= forms. For each slot it finds, it builds a handler, a
+=hooks:handler= whose function sets the slot on the object being made, and
+adds it with =:append t= to the =customize-hook= of the /class object/. In
+the value form, two variables are bound: =%slot-value%= (the slot's value at
+that moment, so earlier handlers are visible) and =%slot-default%= (the
+initform). That makes the common case a one-liner that adds to a default
+rather than replacing it, as in the =default-modes= example in the macro's
+docstring and in =manual.lisp=.
+
+Where the hook runs is in =user-classes.lisp=: =make-instance :around= on
+any =user-mixin-class= calls the object's class hook, and those of every
+user-class superclass, then =customize-instance=. Three consequences:
+
+- *Global versus per-buffer is a question of which class you name.* Naming
+  =buffer= (or =web-buffer=) configures every buffer made afterwards. Naming
+  a mode class configures that mode's slots whenever it is instantiated,
+  which is how a mode's customization points work: =blocker-mode= documents
+  its =hostlists= slot as the knob, and shows a custom subclass plus a
+  =define-configuration= on =:buffer= that puts it into =default-modes=
+  (=mode/blocker.lisp=). There is no per-buffer config in the file; per-buffer
+  difference comes from which modes a buffer has. This is the same "class
+  slot plus hook" machinery that study 05 describes for hooks.
+- *Existing objects are untouched.* A buffer made before the reload keeps the
+  old slot values. =help.lisp= says so to the user after a UI change: "You
+  might need to restart to experience the change."
+- *An unknown slot does not fail.* If the slot name is not found on the
+  class, the macro logs a warning and instead defines an =:around= method on
+  the slot's accessor, so a typo or an extension slot is accepted silently
+  at load time. The comment in the macro itself flags that slots are
+  resolved at compile time and calls this alarming.
+
+There is also the older mechanism, specializing =customize-instance=
+directly (shown in =manual.lisp=); the auto-config reader in
+=configuration.lisp= recognizes that shape too (=read-init-form-class=).
+
+** What auto-config persists
+
+=auto-configure= in =configuration.lisp= edits the file's content as a list
+of forms: it finds or creates the =class-form= for a class, finds or creates
+the =slot-form= for a slot, and sets its value; with no value it deletes the
+slot form; with a =:form= it appends a raw form. Then the file layer writes
+the list back (=files:write-file= binds =*print-case*= to downcase and
+=*package*= to =nyxt-user=, so the output reads like hand-written code). The
+callers show the scope:
+
+- =configure-slot= in =help.lisp=, behind the settings page and the slot
+  commands: a slot value chosen in the UI, type-checked against the slot's
+  declared type before it is saved.
+- =macro-edit.lisp=: a macro recorded in the editor is saved as a raw form.
+
+So auto-config holds exactly two kinds of thing: slot values and generated
+forms, both expressed as the same Lisp the user could have typed. Nothing in
+it is data in another format. The app says where it wrote ("Updated
+configuration in ..." via =echo=).
+
+** Reload
+
+=load-config-file= in =configuration-commands.lisp= is the reload command
+("Load or reload the CONFIG-FILE"). It calls =clean-configuration=, then
+=load-lisp= on the config file, then echoes "loaded". Reading it closely:
+
+- =clean-configuration= empties the =customize-hook= handler list of every
+  user class. That undoes every =define-configuration=. It also has a loop
+  over the methods of =customize-instance= whose body only tests a
+  condition and never calls =remove-method=: the loop does nothing. A
+  =defmethod customize-instance= in the config therefore survives a reload
+  and stacks with the new one. The docstring promises more than the code
+  delivers.
+- Only the config file is reloaded, not the auto-config file. The cleanup
+  has already cleared the handlers the auto-config file installed, so after
+  a reload the UI-saved settings are gone until the next start. This is a
+  real hazard of the two-file split combined with a global cleanup.
+- Reload does not undo anything else a config did: =defun=, =defvar=,
+  =defmethod= on other generics, global state, hooks added directly with
+  =hooks:add-hook= on a browser or buffer. Those run again on top of what is
+  there. The lifecycle is "reset the one declared thing we know about, then
+  run the code again", not a fresh image.
+- Existing buffers keep their old values (above), so a reload is complete
+  only for objects made afterwards.
+
+There is also =load-file= (prompt for any Lisp file) and, from the command
+line, =--load= and =--eval=, including against a running instance through the
+socket (=load-or-eval= with =:remote=). The configuration is therefore one
+case of a general "evaluate Lisp in the running image", which is the later
+shape of #72.
+
+** Errors, shown without crashing
+
+=load-lisp= in =configuration-commands.lisp= is where this is decided. It
+wraps =cl:load= in a =handler-bind= on =error= that throws to a catch tag.
+What it returns depends on whether the browser exists:
+
+- *At start, before the browser exists.* It returns the condition and a
+  backtrace. =start-browser= keeps them and builds a =startup-error-reporter=
+  closure; the browser calls it once it is up, which echoes a warning and
+  opens a window titled "Configuration file errors" with the condition and
+  the backtrace in an HTML buffer (=error-in-new-window=). The app starts
+  anyway, with whatever the file declared before it failed. The auto-config
+  load at start is not checked: its result is dropped, so a broken auto-config
+  file fails without a window.
+- *On reload, with the browser up.* The same error opens the same kind of
+  window titled "*Config file errors*" at once, and =load-config-file= still
+  echoes "loaded" afterwards, because it does not look at the result.
+- *From a REPL.* When =*run-from-repl-p*= is true, no catch: a restart named
+  =load-lisp-retry= is offered instead so the developer can fix the file and
+  retry in place.
+
+Two observations. =load= is not transactional: forms before the failing one
+have already run, so a half-applied configuration is the normal result of an
+error, and the error window does not say which parts took effect. And there
+is a last-resort path, =restart-with-message= in =start.lisp=, reached from
+=restart-browser= in =concurrency.lisp=: it relaunches the program with
+=--no-config --no-auto-config= and an =--eval= that installs an after-init
+handler to show "Restarted due to configuration error". So the app has a
+safe mode, reachable from a crash handler, that does not depend on the
+config being loadable. (Which crashes call =restart-browser= was not traced
+here.)
+
+** What is trusted
+
+The config is Lisp evaluated by =cl:load= in the app's own process, in the
+=nyxt-user= package, which uses the Nyxt API. There is no sandbox, no
+capability list, no signature, and no prompt: the file can do anything the
+user can, including reading the other data files and calling the shell.
+=manual.lisp= treats this as a feature ("The following section assumes
+knowledge of basic Common Lisp"). The trust boundary is the user's home
+directory permissions. Two things widen it a little: =--load= and =--eval=
+(and the socket they can arrive on) are the same power from the command line,
+and files in the =nyxt-file= family are =gpg-file= subclasses, so a config can
+be stored encrypted (that comes from the class hierarchy in =user-files.lisp=;
+how the decryption is prompted is in =nfiles= and not verified here).
+
+* What Nemesis has today
+
+=src/main/settings.ts= is the whole configuration. A JSON file named
+=settings.json= in the Electron profile's =userData= folder, created with the
+defaults on the first run (=loadSettings=), five known keys (=sessionsDir=,
+=model=, =keyscheme=, =theme=, =verify=), each validated by hand in
+=parseSettings=, with an unknown key rejected on purpose. The main process
+reads it once in =readSettings= (=src/main/index.ts=) and hands the values
+to the parts that need them. Against the Nyxt lifecycle:
+
+| Step      | Nyxt                                              | Nemesis today                                                  |
+|-----------+---------------------------------------------------+----------------------------------------------------------------|
+| Find      | nfiles path, =--config=, =--no-config=            | =userData/settings.json=; the harness gives a throwaway profile |
+| Load      | =cl:load=, auto-config then config                | =JSON.parse= then =parseSettings=, once, at start              |
+| Apply     | class hooks fire at instance creation             | values passed in by =index.ts= when the parts are built         |
+| Reload    | =load-config-file=, partial (see above)           | none: restart the app                                          |
+| Errors    | error window, app keeps running                   | =console.error=, defaults stand in, the error names the key    |
+| Written by app | =auto-config= file, separate                 | none; the app does not write the file after the first run      |
+| Trust     | full process privileges                           | none needed: the file is data, no code runs                    |
+
+What the file does well, and Nyxt's file does not: it cannot run code, so a
+config error can never be a security event; a misspelled key fails loudly and
+by name (Nyxt's =define-configuration= accepts an unknown slot with a
+warning); and the validation is a function that unit tests exercise
+(=parseSettings=). What it cannot do: add a command, a binding, a hook, or
+compute a value, so it is not an extension door, and it has no reload and no
+error buffer.
+
+* The two options of #71 against the Nyxt lifecycle
+
+The Approach comment on #71 offers A (=init.ts= type-stripped with
+=stripTypeScriptTypes= and run with =node:vm= against an API object, no
+imports in version 1, no dependency) and B (esbuild bundle, with a
+check-deps allowlist entry, imports allowed). Pick is Pedro's; this section
+only reports what each gives and loses against the lifecycle above.
+
+| Nyxt behavior                       | A: strip types + =node:vm=                          | B: esbuild                                           |
+|-------------------------------------+-----------------------------------------------------+------------------------------------------------------|
+| Config is code, same language       | yes, erasable TypeScript only                       | yes, full TypeScript                                 |
+| =load-file= of other files          | no imports: one file, so the "library" half of Nyxt's =--load my-lib.lisp= has no equivalent | imports work, and a user can split the config |
+| Errors with a location              | the stripped source keeps positions (the stripper blanks types rather than moving code), so line and column map back | esbuild reports its own errors and source maps, a second error path |
+| Error window, app keeps running     | the loader catches and writes a buffer              | the same, plus build errors before any code runs     |
+| Load is not transactional           | same: a throw mid-file leaves earlier calls applied | same, unless the loader collects registrations and commits at the end |
+| Reload resets declared state        | possible, if the API objects record what they register | possible, same condition                            |
+| Trust                               | in-process, full privileges; =node:vm= is not a boundary, as the Approach says | same, and imports pull in npm code, which widens the trust to every package the config names |
+| Cost                                | no dependency, ADR 0001 intact                      | a dependency with a postinstall script, which =check-deps= rejects today |
+
+The comparison, in Nyxt's terms: the lifecycle's valuable parts are not in
+the compiler. They are (1) a loader that returns errors as data and not as an
+exception, (2) a reload that resets what the config registered before
+running it again, (3) a separate app-written file so that UI changes never
+edit the user's code, and (4) a safe-mode start that skips the config. Both
+options can deliver those; neither delivers them for free. What A loses
+against Nyxt is composition (no imports). What B loses is the dependency
+rule and a smaller trust surface.
+
+* Findings Nemesis should take from this study
+
+- *Reload must reset what the config registered, and Nyxt's does not fully.*
+  The registry, keymaps and hooks from #71 should record which entries came
+  from the config (a source tag) and drop exactly those before re-evaluating.
+  This is what =clean-configuration= tries to do for slots and misses for
+  methods and for the other file.
+- *A reload that fails should not leave a half-applied config.* Evaluate the
+  file into a staging registry and swap on success. Nyxt cannot (=load=
+  mutates live classes); a vm context with API objects that collect can.
+- *Keep the app-written file separate.* If Nemesis ever writes settings from
+  the UI (a theme toggle, a remembered model), it goes to a data file the
+  config can override, never into =init.ts=. Today's =settings.json= is
+  already human-edited, so the question is whether the app should start
+  writing it; the Nyxt answer is a second file.
+- *Do not copy the lazy-apply model.* Nyxt applies on instance creation, so a
+  reload misses live objects. Nemesis has few long-lived objects (sessions,
+  buffers); the reload command should re-apply to those that read config at
+  use time, and say which need a restart.
+- *Report the result of a reload truthfully.* Nyxt echoes "loaded" after an
+  error. =reload-config= should report either "reloaded N commands, M
+  bindings" or the error buffer, never both.
+- *Reject unknown names.* =parseSettings= already does; the config API should
+  throw on an unknown hook or setting name, which is the opposite of
+  =define-configuration='s accept-with-warning.
+- *Safe mode.* A start flag or a key held at launch that skips =init.ts=
+  (Nyxt's =--no-config=), so a broken config never locks the user out of the
+  cockpit and the error buffer that explains it.
+
+* Needed now (before ADR 0006 is written)
+
+- Pedro's pick on #71 (A or B). This study does not make it.
+- Read =nfiles= (not in the checkout) if the exact directory per OS and the
+  external-modification reload behavior (=files:on-external-modification=
+  is set to =files:reload= on =nyxt-file=) matter to the ADR. They are
+  relevant to a possible watch-and-reload, which Nyxt does for data files
+  but not for the config (it uses =load=, not the file layer).
+- Decide the path: =~/.config/nemesis/init.ts= as the issue says, against
+  =userData= where =settings.json= lives today. Two locations for one
+  person's configuration is a cost the ADR should settle.
+
+* Later
+
+- A =config-source= tag on registry entries, the staging registry and the
+  swap, as part of #71's loader.
+- A =--no-config= equivalent, as its own small issue.
+- Whether =settings.json= folds into the init file as an API object
+  (=settings.theme = 'dark'=), or stays as the data file that the app is
+  allowed to write. ADR 0006 should say which.
+- The journal of #72 as the app-written counterpart: eval'd definitions are
+  the auto-config of Nemesis, promoted into =init.ts= by the user.
+
+* Not wanted
+
+- Running the config in the renderer, or exposing the config API to a page
+  buffer. The config is main-process code, as #71's Do not touch says.
+- A sandbox claim. =node:vm= is not a security boundary; docs and the ADR
+  say the config is trusted code, like =init.el=.
+- Silent acceptance of an unknown slot or key (=define-configuration='s
+  fallback to an =:around= method).
+- A reload command that reports success after an error.
+- A version number in the file name of an app-written file as the way to
+  survive upgrades. It makes the user lose their saved choices; migrate
+  instead.
+- Config that can change a permission decision or reach the permission
+  bridge. Same boundary as study 05.

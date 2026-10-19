@@ -1,0 +1,468 @@
+#+TITLE: ADR 0007: the MCP server as state in main behind a stdio shim over a loopback socket
+#+OPTIONS: toc:nil
+
+- Status: proposed (flips to accepted when Pedro picks an option on #26; the
+  pick is recorded on that issue and in this line)
+- Date: 2026-OCTOBER-18
+- Threat or Pillar: README.org pillar 3, LLM-friendly and MCP-driven, for the
+  door an outside agent uses; SECURITY.org T1 for what a page may reach and
+  T4 for what an agent may be steered into; =docs/guidelines-map.org= row
+  "Automate and scale", which names the MCP server over the command table
+- Issue: #26 (study #25; the catalog ADR 0008 on #27; the MVP #28, blocked
+  by this; eval #72; ADR 0001 dependencies, ADR 0005 hooks, ADR 0006 config;
+  the plan #43)
+
+* Context
+
+** What the server would serve, and where it lives
+
+Everything an MCP tool could touch is in the Electron main process, built
+inside the =whenReady= block of =src/main/index.ts=. The command registry
+(=src/main/commands/registry.ts=) holds every action as a =Command= with a
+kebab-case name, a doc line and a =run(context)=; =list()= feeds the palette
+and =describe-command=, and the =CommandContext= names where an invocation
+came from (=key=, =palette=, =menu=, =test=). A command takes no arguments:
+what it needs it reads through the prompter (=src/main/commands/prompter.ts=),
+one read at a time, and a yes or no is a read too (=src/main/commands/confirm.ts=,
+the no first so a stray =RET= refuses). The buffer registry
+(=src/main/buffers.ts=) is the spine the keymap and the palette act on. The
+agent session manager (=src/main/agent/session-manager.ts=) holds the one SDK
+session; the permission bridge (=src/main/agent/permission-bridge.ts=) turns
+the SDK's =canUseTool= into a buffer answered with =y=, =n= or =a=. None of
+this is reachable from outside the process today, and on macOS the process
+outlives its window: =window-all-closed= quits only off Darwin, so the
+registry, the buffers and the session are alive with no window to show them.
+
+The one door into main from anything less trusted is =src/main/ipc.ts=:
+every invoke channel checks the sender's origin against =nemesis://app=
+before reading the payload, and =tests/e2e/security/ipc-sender-validated.spec.ts=
+proves a page origin on a privileged channel gets nothing. A page buffer has
+no preload at all. The channels are the union in =src/shared/ipc.ts=; nothing
+in it evaluates code or names a socket.
+
+Two facts about the packaged binary bound what a bridge can be. The fuses in
+=scripts/after-pack.mjs= turn =RunAsNode= and =EnableNodeOptionsEnvironmentVariable=
+off, so the Nemesis binary cannot be turned into a plain Node by an
+environment variable: a helper that must run as Node runs on the user's Node,
+not on the app's. And =.nvmrc= pins Node 24, the same major as the Node inside
+Electron 44.9.0, so a script written for one runs on the other.
+
+** The cockpit is already an MCP host
+
+The Agent SDK runs in main (=src/main/agent/session.ts=, =sdkOptions()=), and
+the SDK is an MCP host for its session: =Options.mcpServers= takes stdio,
+HTTP, SSE and in-process servers, and the SDK exports =createSdkMcpServer=
+and =tool= for the in-process kind, an =McpServer= instance handed over with
+no socket and no child process. Nothing in =sdkOptions()= names a server
+today. The SDK's own MCP code comes from =@modelcontextprotocol/sdk=, its
+peer dependency: version 1.32.1 is in =node_modules= and in
+=package-lock.json= because npm installs peers, it declares no install-time
+lifecycle script (=scripts/check-deps.mjs= is green with it in the tree), and
+it is not a line in =package.json=. Importing it from main is therefore not a
+new package in the lockfile; it is a direct-dependency line that ADR 0001
+wants justified in one sentence.
+
+So the in-app agent can be given the command table as an MCP server with no
+process boundary at all. That is the floor every option below shares; what
+the options differ on is the agent outside the app.
+
+** The client shapes and what each needs from the app
+
+An MCP client reaches a server one of two ways.
+
+- *stdio.* The client spawns a command with arguments and an environment
+  (the SDK's =McpStdioServerConfig=: =command=, =args=, =env=, a per-call
+  timeout) and speaks newline-delimited JSON-RPC on the child's stdin and
+  stdout; stderr is for logs. The server's lifetime is the client's: one
+  process per client, started when the client starts, killed when it exits.
+  What it needs from the app: an executable the client can name (on =PATH=
+  or by absolute path) that starts in milliseconds and finds the running app
+  on its own. Claude Code, Claude Desktop and most editors speak this shape
+  first.
+- *HTTP.* The client connects to a URL with headers (=McpHttpServerConfig=);
+  the server outlives any client and serves several at once. What it needs
+  from the app: a listening port, a way to tell clients apart, and an answer
+  to the fact that a port on =127.0.0.1= is reachable by every process on the
+  machine and, through DNS rebinding or a page's own =fetch= to localhost, by
+  any website the user opens. SECURITY.org's last non-negotiable, no network
+  traffic the user did not ask for, has a spec that logs every request from
+  launch to idle (=tests/e2e/security/startup-no-network.spec.ts=).
+
+The Electron main process is neither: no client spawns it, and it listens on
+nothing. Something has to stand between a client and main, and where that
+something keeps its state is the decision.
+
+** What Nyxt did, and what the studies said about it
+
+=docs/nyxt-study/01-top-level.org= read Nyxt's single-instance socket:
+=start-browser= probes it (=listening-socket-p=) and hands the URLs to the
+running instance, the browser's socket thread listens, and =remote-execution-p=
+gates whether =--eval= over that socket is honoured. The study's verdict,
+repeated in =docs/nyxt-study/06-config.org=: a running image that evaluates
+code from a socket is "the exact surface SECURITY.org exists to refuse", and
+Electron's =requestSingleInstanceLock= covers the first use if it is wanted.
+=docs/mcp-study/01-browsermcp-tool-surface.org= (#25) read the other
+precedent, a server whose state is elsewhere: browsermcp's stdio server
+relays every tool to a Chrome extension over one WebSocket port, after
+=kill -9= on whatever held the port, with no authorization on the socket
+(the first thing on localhost to connect becomes the extension) and one
+connection at a time. The study's list of what a cockpit server can have
+instead is the brief for this ADR: a registry-driven tool list that never
+drifts from the command table, per-tool permission through the bridge instead
+of one global connect gesture, no port to kill, no dependence on a visible
+window.
+
+** The sentence about eval
+
+#72 carries the boundary in its "Do not touch": eval is never exposed to page
+buffers or to the MCP server without the user's yes per call. The sentence is
+not in SECURITY.org yet. ADR 0006 made the same move for the config file's
+trust statement: the ADR writes the rule, and the landing issue's interactive
+review puts the sentence into SECURITY.org, where every change is reviewed by
+hand. This ADR does the same, and narrows the sentence: eval from a page,
+never; eval from an outside client, only with a yes per call in the prompt
+buffer with the code shown; and the server itself, whatever the option, never
+decides a yes on its own.
+
+* Decision
+
+Proposed: option A of the next section, with the rules below. They become
+the decision when the status flips. If Pedro picks C, the first rule stands
+alone and the rest wait; if B, the rules on the classes, the lifetime and the
+page boundary stay as written and only the process layout changes.
+
+** One MCP server, built in main over the registry
+
+A new =src/main/mcp/= directory holds the one MCP implementation in the
+project: an =McpServer= from =@modelcontextprotocol/sdk= whose tools are ADR
+0008's catalog, each a thin relay to the registry, the buffers, the prompter,
+the session manager or the transcript search. The tool list is read from the
+registry when a client asks for it, the way the palette's =commands= source
+reads =registry.list()= on every open, so it never drifts from the command
+table; after a =reload-config= commit (ADR 0006) the server sends
+=notifications/tools/list_changed= to every connected client. The in-app
+session gets this same instance through =mcpServers= as an in-process server,
+so the agent inside the cockpit and the agent outside see one catalog with
+one set of rules. =CommandContext.source= gains =mcp=, with the client's name
+beside it, so a command that cares can tell who asked.
+
+=@modelcontextprotocol/sdk= becomes a direct dependency, pinned to the 1.32.1
+the lockfile already holds. The one-line justification: the server in main
+speaks the protocol through the library the Agent SDK already peer-depends
+on, so the lockfile gains no package and the allowlist in =check-deps= stays
+at its one name.
+
+** The door is a Unix domain socket in the user data folder, owned 0600
+
+At =whenReady=, once the registry is up, main listens with =node:net= on
+=mcp.sock= inside =app.getPath('userData')=, the folder =settings.json= lives
+in and the one the e2e harness replaces per run through =NEMESIS_USER_DATA=.
+The socket file is created with mode =0600=; a stale file from a crashed run
+is probed with a connect (Nyxt's =listening-socket-p=) and removed when
+nothing answers; =will-quit= removes it. The listener is loopback by
+construction: a Unix socket has no port, no interface and no URL, so no
+process on another machine and no web page can address it, and nothing the
+app does here shows up in the no-network spec's log. The one limit to check
+in the landing issue is the path length: macOS caps a socket path at 104
+bytes, and both the real =userData= and the harness's temporary profile sit
+well under it.
+
+Every connection carries a per-run token before any JSON-RPC: main writes 32
+random bytes from =node:crypto= as hex to =mcp.token= beside the socket, mode
+=0600=, new on every launch, and a connection whose first line is not
+=NEMESIS-MCP 1 <token>= is closed within a second with nothing sent. The
+file permissions keep other users out; the token closes the case the
+permissions cannot see, a process that obtained the path without the file,
+and ties a connection to this run of the app, so a shim that outlived a
+restart is refused rather than confused. Nothing in =src/shared/ipc.ts=, in
+the preload or in the renderer names the socket, the token or the folder:
+the renderer never learns the path, and a page buffer has no bridge to ask.
+
+** The shim is a few dozen lines of plain Node that forwards bytes
+
+=bin/nemesis-mcp= is the command a client spawns. It runs on the user's Node
+(the fuses rule out running it on the app's binary), takes no dependency and
+no build step, and does four things: find the socket (an explicit =--socket=
+path, else =NEMESIS_USER_DATA=, else the platform's default user data
+folder), read the token, send the hello line, then pipe stdin to the socket
+and the socket to stdout, both ways, until either side closes. It never
+parses JSON-RPC, so it never knows a tool name, never holds state and never
+makes a decision; the one MCP implementation stays in main. When the app is
+not running it writes one line to stderr, =Nemesis is not running=, and exits
+non-zero; it never launches the app, because a client that launches the app
+is the sidecar's temptation and the wrong way round: the user opens Nemesis,
+then clients find it. The user puts the script on =PATH= once (a symlink from
+the checkout in M3; an =install-mcp-shim= command when the =.app= ships in
+M5) and configures a client with =command: nemesis-mcp= and nothing else.
+
+** Several clients, one state, one question at a time
+
+The listener accepts any number of connections; each gets its own MCP
+session over its own transport, all over the same registry and buffers, so a
+=claude= in one terminal and an editor in another drive one cockpit. A call
+that needs a yes goes through the prompter, which reads one thing at a time:
+calls that need the user queue in arrival order, and a queued call is simply
+a pending request its client waits on. The prompt line carries the client's
+name (the =clientInfo.name= it sent at =initialize=), the tool and its
+arguments, in the app's words with the no first, the shape =confirm.ts=
+already gives downloads and external links. The server never times out a
+call waiting for a yes; a client's own timeout may give up, and when its
+connection drops the pending read is withdrawn the way the permission bridge
+withdraws an aborted request. =a= for "the rest of the session" is not
+offered to an outside client in version 1; it stays what it is today, a
+decision about the session inside the cockpit.
+
+** Three confirmation classes, one per tool, enforced by the door
+
+The catalog (ADR 0008) tags every tool with one class, and the class is a
+field of the tool, not of the client:
+
+- *free*: read-only. List commands, list buffers, read a buffer, session
+  info, search transcripts. Answered without a prompt; each call is still a
+  notice in the transcript, with the client's name and the tool, so the user
+  sees what was read.
+- *yes per call*: a side effect. Run a command, send a prompt, switch or
+  close a buffer, name a session, and later anything on a page that
+  navigates, types, submits or downloads. One yes in the prompt buffer per
+  call, no memory between calls, no allowlist in version 1.
+- *never*: eval from a page. No page tool evaluates code, and no page can
+  reach the socket, so the class is enforced by absence: the tool does not
+  exist on that side. An =eval= tool for an outside client is a yes-per-call
+  tool whose prompt shows the whole code, exists only once #72 lands, and
+  whether it exists at all is ADR 0008's question, not this file's.
+
+A yes is asked once, by the door the call came through. For an outside
+client the door is the socket layer and the question is the prompter's. For
+the session inside the cockpit the door is the SDK's =canUseTool= and the
+question is the permission bridge's, which already shows the tool and its
+arguments and already takes =y=, =n= or =a=; a tool the bridge allowed is not
+asked again by the server. Whether =run-command= takes one class or the class
+of the command it names is left to ADR 0008, which can give =Command= a field
+for it; this ADR fixes only that the class is data the catalog carries and
+every door reads.
+
+** Lifetime follows main, not the window
+
+The socket exists while main runs: created at =whenReady= after the
+registry, removed at =will-quit=. With the window closed on macOS main is
+still up, so a free tool answers with no window; a yes-per-call tool with no
+window open creates one the way a click on the dock does (=app.on('activate')=)
+and asks there, because the question needs the prompt buffer and the user
+configured the client on purpose. With no app running there is no server:
+the shim's error line is the whole behaviour, and a client's reconnect is
+the client's business.
+
+** What a page can never reach, as a spec
+
+A spec under =tests/e2e/security/= lands with the socket, failing first:
+=mcp-socket-unreachable.spec.ts=. It launches the app, confirms the socket
+file exists in the profile with mode =0600=, loads the hostile =node-probe=
+fixture with the cockpit's preload attached (the harness's =withPreload=
+route, the strongest position a page can be given) and asserts that the
+bridge exposes no member naming the socket, the token or the profile path,
+that no invoke channel answers with either, and that a raw connection to the
+socket without the token is closed with nothing sent. The positive half is
+=tests/e2e/mcp.spec.ts=: the shim spawned against the launched app lists
+tools, calls a free one and gets a typed answer, calls a yes-per-call one and
+sees the prompt buffer open with the client's name.
+
+* Alternatives considered
+
+The three options of #26, each with the files it touches, its cost, its
+risk and what it rules out, then one table across the trade-offs the issue
+asks for.
+
+** A. State in main, a stdio shim forwarding over a Unix socket in userData (Recommended)
+
+What the Decision describes. Files touched: new =src/main/mcp/= (the server
+over the registry, the listener, the token), =bin/nemesis-mcp=, =package.json=
+for the one dependency line, =src/main/index.ts= for the wiring,
+=src/main/agent/session.ts= for =mcpServers= (an interactive review, since
+it is under =src/main/agent/=), =src/main/commands/registry.ts= for the
+=mcp= source, =tests/unit/mcp-server.test.ts= over the MCP SDK's in-memory
+transport, =tests/e2e/mcp.spec.ts=, =tests/e2e/security/mcp-socket-unreachable.spec.ts=,
+a SECURITY.org row in the interactive review, =docs/mcp.org=. Cost: medium;
+the server over the registry is the real work and every option that has a
+server needs it; the socket, the token and the shim are a day. Risk: the
+shim needs a Node on the client's =PATH=, which a Claude Code user has; the
+per-run token means a client started before the app reconnects after the
+app does; one prompter means prompts from several clients serialize, which
+is the point; the socket path length is a check, not a design. Rules out: a
+client on another machine, a client that drives Nemesis when it is not
+running, and an HTTP client, each on purpose.
+
+Two variants were weighed inside A and lost. The app binary as its own shim
+(=Nemesis --mcp= as a stdio mode): every client would spawn a second
+Electron, a Chromium for a pipe, and the single-instance lock would have to
+hand the pipe over; the fuses already say the binary is not a Node. A
+loopback TCP port instead of the Unix socket: reachable by every local
+process and by any page through =fetch= to localhost, in need of its own
+origin checks and visible in the no-network spec's log, the one thing
+browsermcp's design shows the cost of.
+
+Recommended because the state has one home and it is where the registry
+already lives, because the shim is small enough to read in a minute and
+knows nothing, because file permissions plus a per-run token are the
+authentication the platform gives for free, because the tool list cannot
+drift, and because step 1 of this option is option C whole.
+
+** B. A sidecar process with its own state, talking to the app over IPC
+
+A separate long-lived process, started by the app (Electron's
+=utilityProcess= with a =MessagePort=, or a child on its own socket) or by
+the first client, that holds a model of the cockpit (the command list, the
+buffer list, the session's state) kept in sync with main and serves MCP to
+clients from that model. Files touched: a new =src/sidecar/= with its own
+entry and build target, a sync protocol in =src/shared/=, the same server
+code as A but against the model, a second authentication (client to sidecar,
+sidecar to app), the lifetime code for a second process, and the same specs
+plus one for the sync. Cost: high. Risk: two copies of the truth; every
+=reload-config= commit, buffer change and session swap must be pushed across
+or the sidecar lies; a stale sidecar after a crash is a second thing to
+probe and kill; the authentication problem appears twice. What it buys: a
+process that can answer "Nemesis is not running" with more than an error
+line and could launch the app; a fault in MCP handling that does not reach
+main, which is small comfort when the MCP SDK already runs inside main for
+the SDK session. Rules out: a tool that acts on main state in one hop. It
+lost because every tool is a relay to main anyway, so the sidecar's own
+state is a cache with all of a cache's failure modes and none of its speed,
+and because browsermcp is exactly this shape (a server whose truth is in
+another process behind a socket) and the study lists what it costs: one
+port, a kill, no authorization, one connection.
+
+** C. No server: outside agents reach Nemesis only through the session inside it
+
+The command table becomes an in-process MCP server for the cockpit's own
+SDK session through =createSdkMcpServer= and =mcpServers=, and nothing
+listens anywhere. Files touched: =src/main/mcp/server.ts= and the
+=src/main/agent/session.ts= line only, plus the unit test. Cost: small.
+Risk: none to the security model; the socket spec is unnecessary. Rules
+out: a =claude= in a terminal driving the cockpit, an editor's agent, any
+tool that is not the one session, #28, the "Automate and scale" row's MCP
+affordance, and the thesis of pillar 3, that an agent outside an extension
+setup can do what one inside cannot. It lost because it is not an
+alternative to A but its first step: A contains C, and C alone leaves the
+door in the README's stack table (=MCP server over stdio exposing the
+command table=) unbuilt.
+
+** The three against the trade-offs the issue names
+
+| Trade-off                      | A: state in main, shim over a socket                              | B: sidecar with its own state                                   | C: no server                                     |
+|--------------------------------+-------------------------------------------------------------------+-----------------------------------------------------------------+--------------------------------------------------|
+| Lifetime tied to the GUI       | tied to main, not the window: free tools answer with the window closed, a yes reopens it | the sidecar may outlive the app and then has nothing to serve | tied to the session                              |
+| Authentication of the socket   | file mode 0600 in userData plus a per-run token on the hello line  | twice: client to sidecar, sidecar to app                        | none needed                                      |
+| One client or many             | many, each its own MCP session, one prompter so questions queue    | many at the sidecar, one link to the app                        | one, the session                                 |
+| Latency                        | one hop: shim to main over a local socket                          | two hops, plus the sync                                         | none                                             |
+| With the window closed         | reads answer; a side effect creates the window and asks            | reads answer from the cache, possibly stale                      | nothing: no session without a window             |
+| Drift after =reload-config=    | none: tools/list reads the registry; a list_changed notice         | the commit must be pushed to the sidecar                        | none                                             |
+| What a page can reach          | nothing: no port, no channel, no bridge member; a spec proves it   | the sidecar's own listener, one more thing to prove             | nothing                                          |
+| Dependency                     | one direct line for a package already in the lockfile; the shim takes none | the same, plus a second build target                     | the same one line                                |
+
+* Sketch of the recommended option
+
+The shim, whole. Plain JavaScript, so it runs on the user's Node with no
+build; the real file carries the platform default folders and the error
+lines.
+
+#+begin_src javascript
+#!/usr/bin/env node
+// bin/nemesis-mcp: forward stdio to the running cockpit's MCP socket.
+// Knows no tool name and makes no decision; the server is in main.
+const net = require('node:net')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const userData = process.env.NEMESIS_USER_DATA ?? defaultUserData()
+const token = fs.readFileSync(path.join(userData, 'mcp.token'), 'utf8').trim()
+const socket = net.connect(path.join(userData, 'mcp.sock'))
+
+socket.once('connect', () => {
+  socket.write(`NEMESIS-MCP 1 ${token}\n`)
+  process.stdin.pipe(socket)
+  socket.pipe(process.stdout)
+})
+socket.once('error', () => {
+  process.stderr.write('Nemesis is not running\n')
+  process.exit(1)
+})
+socket.once('close', () => process.exit(0))
+#+end_src
+
+What a client configures, in the shape the SDK and Claude Code read:
+
+#+begin_src json
+{ "mcpServers": { "nemesis": { "command": "nemesis-mcp" } } }
+#+end_src
+
+What main does with a connection, in prose: read the first line; close on a
+bad token; otherwise wrap the socket in a transport the MCP SDK accepts,
+connect the one =McpServer= to it as a new session, and let the catalog
+answer. A free tool runs at once; a yes-per-call tool calls
+=confirm(prompter, MCP_SOURCE, question)= with the client's name in the
+question, and runs on a yes.
+
+** Order of steps to land it
+
+Each step is one issue and keeps =npm run gate= green on its own.
+
+1. The server over the registry and the buffers, free tools only, in
+   =src/main/mcp/server.ts=, handed to the in-app session through
+   =mcpServers= (option C, whole); the dependency line with its
+   justification; =tests/unit/mcp-server.test.ts= over the MCP SDK's
+   in-memory transport, pinning: =tools/list= equals the catalog; a free tool
+   answers; a tool absent from the catalog is an =isError= result, not a
+   protocol fault; a registry change is visible on the next list. Interactive
+   review, since =src/main/agent/session.ts= changes. M3.
+2. The socket, the token and the shim: =src/main/mcp/socket.ts=,
+   =bin/nemesis-mcp=, the wiring in =src/main/index.ts=;
+   =tests/e2e/security/mcp-socket-unreachable.spec.ts= failing first, then
+   green; =tests/e2e/mcp.spec.ts= spawning the shim; the SECURITY.org row.
+   Interactive review. M3.
+3. The yes-per-call class: =MCP_SOURCE= in =confirm.ts= with the client's
+   name in the prompt line, =mcp= in =CommandContext.source=, the queue of
+   questions, the window re-creation rule, the =list_changed= notice after a
+   =reload-config= commit. M3.
+4. #28 rewritten for this ADR and ADR 0008: the MVP is the cockpit tools
+   over the shim, demonstrated from a =claude= in a terminal; its page tools
+   and the WKWebView line are M4's. M3.
+5. =docs/mcp.org= with the client setup, and =install-mcp-shim= when the
+   =.app= ships. M5.
+
+* Consequences
+
+- *SECURITY.org gains one row and one sentence, by hand.* The row: an
+  outside MCP client acts only with the user's yes per call, and no page can
+  reach the socket; the test column names =mcp-socket-unreachable.spec.ts=.
+  The sentence is #72's, narrowed as the Context says. Both land in the
+  interactive review of step 2, never through the queue, and both only
+  strengthen what the file promises today.
+- *ADR 0008 inherits the classes and three questions.* Every tool carries
+  =free=, =yes per call= or =never= as a field; the prompt shows the client's
+  name; the answers it owes this file are whether =run-command= takes the
+  class of the command it names (a field on =Command=), whether an =eval=
+  tool exists for outside clients at all, and what the in-app session's =a=
+  means for a yes-per-call tool.
+- *The reload of ADR 0006 gains one line.* After a commit the server sends
+  =notifications/tools/list_changed=; the list itself is read from the
+  registry on demand, so no state is rebuilt.
+- *What becomes easier.* A =claude= in a terminal drives the cockpit with a
+  one-line client config. The in-app agent and the outside agent share one
+  catalog, one set of classes and one transcript of what they did. The
+  security story is two files the user can =ls -l=.
+- *What becomes harder.* A client must have Node on =PATH= and the shim
+  installed once. Prompts from several clients queue behind one prompter.
+  A client that starts before the app sees an error until it reconnects. The
+  socket path must stay short, which the harness's temporary profile and the
+  real one both do, and a profile the user moves somewhere deep could break.
+- *Out of reach, on purpose.* No HTTP listener, no TCP port, no client from
+  another machine, no =a= for outside clients, no tool that evaluates code
+  from a page, no launch of the app by the shim, no state outside main, and
+  no reach from the server to =src/main/security/=, =src/preload/= or the
+  permission bridge beyond the one =canUseTool= the in-app session already
+  has; the import walls ADR 0005 and ADR 0006 build for hooks and config are
+  this directory's too.
+- *Follow-up work.* The five steps above as issues; #28's acceptance list
+  rewritten from the Racket era; the socket path check and the
+  =list_changed= notice as lines in their steps; and, when a second machine
+  or a browser-based client asks for HTTP, a new ADR, because that door
+  changes the authentication story and this one says so.
