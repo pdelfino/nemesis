@@ -1,0 +1,58 @@
+#+title: Handoff
+#+startup: showall
+
+Where the work stood at the last handoff between machines, for the next session on any of them. The issues and =git log= are the record; this page is the short version a fresh session needs to continue without asking. It is dated: anything on =main= or in the issues after that date is newer than this page.
+
+Written 2026-OCTOBER-19, in the evening, when the work moved from the first Mac to another machine.
+
+* Where main is
+
+- =main= is at =b328724=. Green on it: =make ci= (the workflow's gate job, run here with act), the GitHub run on the push, and =make real= (8 of 8 specs against the real Agent SDK on =claude-haiku-5-5=).
+- Milestones M1 to M4 are done: every code issue in them is closed, the M4 epic #73 with them. M5 has its groundwork (#36).
+- GitHub has one branch, =main=. No queue is running and nothing is half done: no stack branch, no stash, no uncommitted work.
+
+* What waits on the maintainer
+
+No session can finish these; each needs Pedro.
+
+- #36, signing and notarization (M5): an Apple Developer Program membership (USD 99 per year), a Developer ID Application certificate and an App Store Connect API key. Then =make app-signed= and =make verify-app=, as [[file:release-checklist.org][docs/release-checklist.org]] describes.
+- #149: record the page feeds demo GIF for the README.
+- #44, the M0 week inside agent-shell in Emacs: installed on 2026-OCTOBER-17, the daily log (=docs/m0-agent-shell-log.org=) not started.
+- #45: ratify the threat model and the non-negotiables table in =SECURITY.org=.
+- #90 (closed) keeps two manual checks in bold: click one real macOS notification and see the right buffer focused; with the two Telegram variables set, see one finished session reach the phone and the watch.
+- #118, the PDF reader, is parked with no milestone until he asks for it.
+
+* What comes next
+
+Nothing is labeled =queue-ready=. The next batch comes from use: the #44 log, and what hurts while living in Nemesis itself (=make dev=). Each pain becomes an issue with =## Verify=, =## Do not touch= and, when there is a design choice, an =## Approach= table for the maintainer's pick (CONTRIBUTING.org, "Issues are the unit of work").
+
+Noticed on 2026-OCTOBER-19 and not filed yet:
+
+- =make real= leaves one folder per spec under =~/.claude/projects/=, named after the throwaway working folder, because the real CLI writes its transcripts under the user's own Claude configuration. The harness could remove that folder after each spec.
+
+* Setting up a fresh machine
+
+1. =git clone git@github.com:pdelfino/nemesis.git ~/projects/nemesis=
+2. Node 24 from nvm, as =.nvmrc= pins it: =source ~/.nvm/nvm.sh && nvm use= in every shell before =npm= or =make=.
+3. =make setup= (=npm ci --ignore-scripts=, then the Electron binary), then =make gate=, which must be green before any change.
+4. =brew install act= and =gh auth login=, then =make ci=: the workflow's gate job on the host, as the macOS runner would run it.
+5. =claude /login=, then =make real= when a change touches the SDK paths. It spends a few Haiku turns of the logged-in account.
+6. =git config rerere.enabled true=, so a landing's merge replays the conflict resolutions recorded while rehearsing it.
+7. Only for unattended runs: two worktrees next to the clone, =git worktree add --detach ../nemesis-queue-a main= and =git worktree add --detach ../nemesis-queue-b main=, each with its own =make setup=.
+
+* How work lands
+
+The rules are in =CLAUDE.md= and =CONTRIBUTING.org= ("Commits and landing on main"); this is the practice behind them.
+
+- A change made in an interactive session: =make gate=, =make ci=, a commit on =main=, =git push origin main=, then =gh run watch= on the run it starts.
+- A stack: =claude-queue= is the maintainer's own script for headless runs, kept outside this repository (=bin/claude-queue= in his private =claude-config= repository, linked into =~/.local/bin=). From =nemesis-queue-b=, detached at =origin/main=: =ANTHROPIC_MODEL=claude-fable-5-1 claude-queue --repo pdelfino/nemesis --base main --issue N,N --stack NAME --no-pr=. Its default repository is not this one, so =--repo= is never left out. It commits each issue on the stack branch, pushes the branch as a backup, labels the issue =claude-queue:solved= and opens nothing. A run stopped by a usage limit resumes with the same command.
+- Started from inside a Claude Code session, the queue needs the parent session's variables removed first (=CLAUDECODE=, =CLAUDE_PID=, =CLAUDE_EFFORT= and the =CLAUDE_CODE_*= ones), or the nested headless sessions inherit them. =bin/run-stack.sh= in the same private repository does that and logs the run where the shell wrapper would.
+- Landing a stack: read every commit (the security paths line by line, as =CLAUDE.md= requires), check out the stack tip detached in =nemesis-queue-a=, merge =origin/main= into it if =main= moved, run =make ci= there, then =git push origin HEAD:main= (a fast-forward), delete the stack branch, and close each issue with a "landed in <sha>" note and its checklist resolved.
+
+* Learned, and where it is written
+
+- The real =claude= CLI hands the model a tool result's =structuredContent= and drops its content items, so the page tier puts its labeled block in =structuredContent.untrusted= as well (#151, the ADR 0008 amendment).
+- A user's own =allow= rule for Bash or Write answers before the cockpit is asked while no page is open; with a page open the boundary's hook still asks, and with a page current it denies (=tests/real/boundary.spec.ts=, =SECURITY.org= T4).
+- Chromium buffers an offered download in the app's downloads path before anyone answers, so the app points that path at =download-staging/<pid>/= in the profile (#137, =SECURITY.org= T2).
+- Electron gives each =webRequest= event one listener per session: the blocker holds =onBeforeRequest= and the network feed =onCompleted= (=src/main/pages/blocker.ts=, =src/main/pages/network.ts=).
+- GitHub's macOS runner has a 1024x768 display, no reliable frame production and a slower disk than a laptop, so specs assert delivered events and display-relative geometry, and a race seen only there is reproduced here first, under load or with a trace, before it is fixed (=CONTRIBUTING.org=, "The gate"; =tests/e2e/full-screen.spec.ts=).

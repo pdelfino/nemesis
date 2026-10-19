@@ -2,6 +2,8 @@
 
 Read `README.org` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #43; every unit of work is an issue with `## Verify` and `## Do not touch`.
 
+`docs/handoff.org` is where the work stood at the last handoff between machines: what waits on Pedro, what comes next, how to set up a fresh clone and land work. Read it at the start of an interactive session; it is dated, and `git log` and the open issues are newer. Rewrite it when the work moves to another machine.
+
 ## Stack (do not substitute)
 
 Electron (current stable, pinned), TypeScript strict, CodeMirror 6 with the Replit Emacs keymap for every text surface, the Claude Agent SDK in the main process, `node:sqlite` (built into the Node that Electron ships, #125), Vitest, Playwright for Electron, electron-vite, electron-builder. The M0 agent-shell week (#44) runs alongside the code: Pedro lifted the no-code-before-November rule on 2026-10-17.
