@@ -78,8 +78,17 @@ Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue
 
 - Node 24 LTS through nvm (=.nvmrc=), npm with a committed lockfile.
 - =make setup= then =make dev= opens the window; =make gate= runs the gate; bare =make= lists the targets. Underneath: =make setup= checks Node against =.nvmrc= (through nvm when present) and runs =npm ci --ignore-scripts= and =node node_modules/electron/install.js=, =make dev= is =npm run dev= (and runs setup first on a fresh clone), =make gate= is =npm run gate= (dependency check, typecheck, lint, unit, end-to-end and security specs). The gate runs locally before every commit; GitHub Actions is the second opinion at ready-for-review. A red end-to-end spec leaves a screenshot and the main-process log under =test-results/=.
+- =make app= (=npm run package=) builds a local, unsigned =release/mac-arm64/Nemesis.app= with electron-builder: fuses flipped and the binary re-signed ad hoc so Apple silicon runs it, the Agent SDK's CLI binary unpacked from the asar. It is about 550 MB, of which about 256 MB is that CLI binary and 288 MB the Electron framework; the app code in =app.asar= is about 5 MB. =npx playwright test --project=package= launches it, reads its fuses back and checks the unpacked binary. Signing and notarization are #36.
 - =npm run dev:debug= opens the window with a loopback DevTools port on 9222, and =npm run peek= reads the window through that port (title, mode line, buffer text, a PNG). See CONTRIBUTING.org.
 - Claude Code reads =CLAUDE.md= at the root. The non-interactive queue reads =.claude-queue=.
+
+* Connecting an outside agent (MCP)
+
+A running Nemesis serves its cockpit through MCP, so a =claude= in a terminal, or any other client, drives it the way a user does and under the same rules (ADR 0007 and ADR 0008). The client spawns =bin/nemesis-mcp=, a few lines of plain Node that find the socket in the app's user data folder, present the run's token and forward bytes; it never starts the app, so open Nemesis first. The catalog is eight =cockpit_= tools: listing and running commands, listing and reading buffers, sending a prompt, searching transcripts, the session's info and its name. Reads answer at once; sending a prompt, naming the session and running a command that changes something ask you in the prompt buffer first, with the client's name in the question and the no highlighted. From the checkout:
+
+#+begin_src sh
+claude mcp add --scope local nemesis -- node <checkout>/bin/nemesis-mcp
+#+end_src
 
 * Roadmap
 

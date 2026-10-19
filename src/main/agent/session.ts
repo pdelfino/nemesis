@@ -8,6 +8,8 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type {
   AgentEvent,
   AgentEventListener,
@@ -105,6 +107,12 @@ export interface AgentSessionOptions {
   readonly fork?: true | undefined
   /** Who answers a tool permission request. Denies everything when omitted. */
   readonly permissionHandler?: PermissionHandler | undefined
+  /**
+   * In-process MCP servers (#28): the cockpit's own catalog, so the agent
+   * inside sees the tools an outside client does. Their calls still pass
+   * `canUseTool`, so the permission bridge asks as for any tool.
+   */
+  readonly mcpServers?: Options['mcpServers'] | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
 }
@@ -555,6 +563,7 @@ export class AgentSession {
       // Files are snapshotted before an edit, so a checkpoint can restore them (#84).
       enableFileCheckpointing: true,
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
+      ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers }),
       ...(this.options.resume === undefined ? {} : { resume: this.options.resume }),
       ...(this.options.resumeAt === undefined ? {} : { resumeSessionAt: this.options.resumeAt }),
       ...(this.options.fork === true && this.options.resume !== undefined
@@ -644,5 +653,32 @@ export async function resolveDriver(): Promise<AgentDriver> {
     return mockDriver()
   }
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
-  return { query: (params) => query(params) }
+  const executable = unpackedClaudeExecutable()
+  if (executable === undefined) return { query: (params) => query(params) }
+  return {
+    query: (params) =>
+      query({ ...params, options: { ...params.options, pathToClaudeCodeExecutable: executable } }),
+  }
+}
+
+/**
+ * In the packaged app the SDK resolves its CLI binary to a path inside
+ * app.asar, which cannot be executed. electron-builder.yml unpacks it next to
+ * the asar (#35), so point the SDK there. In development and in the headless
+ * harness the unpacked copy does not exist and the SDK's own lookup is used.
+ */
+export function unpackedClaudeExecutable(
+  resourcesPath: string | undefined = process.resourcesPath,
+): string | undefined {
+  if (resourcesPath === undefined) return undefined
+  const binary = process.platform === 'win32' ? 'claude.exe' : 'claude'
+  const path = join(
+    resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    '@anthropic-ai',
+    `claude-agent-sdk-${process.platform}-${process.arch}`,
+    binary,
+  )
+  return existsSync(path) ? path : undefined
 }

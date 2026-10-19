@@ -42,6 +42,10 @@ The phone push needs both Telegram variables; with one of them missing nothing i
 
 The Garmin watch needs no Garmin API: Garmin Connect mirrors the iPhone's notifications. In the Garmin Connect app, open the watch's settings, then Notifications and Alerts, then Smart Notifications, and allow Telegram (Apps, Telegram on). The iPhone's own Settings, Notifications, Telegram must allow notifications too, or there is nothing to mirror.
 
+* The MCP door
+
+The MCP server over the command table (#28) lives in =src/main/mcp/=: =catalog.ts= is the table of tools as data, =server.ts= relays each to the registry, the buffers, the prompter, the session manager or the transcript search, and =socket.ts= is the door. The door is =mcp.sock= in =app.getPath('userData')=, mode 0600, with =mcp.token= beside it, 32 random bytes as hex, mode 0600, new on every launch; both are removed at =will-quit=, and a stale socket from a crashed run is probed and removed at start. A connection whose first line is not =NEMESIS-MCP 1 <token>= is closed within a second with nothing sent. =bin/nemesis-mcp= is the client's side: it reads the token and forwards stdio, and holds no logic. Every tool has a confirmation class the door enforces: =free= answers at once, =yes= asks in the prompt buffer once per call with the client's name in the question, and =never= is refused. =cockpit_run_command= takes the class the command declares in its =mcp= field, =yes= when it declares none. The cockpit's own session gets the same catalog in process, minus =cockpit_send_prompt=, and its calls are asked by the permission bridge instead. Nothing in =src/shared/=, the preload or the renderer names the socket, the token or the folder; =tests/e2e/security/mcp-socket.spec.ts= holds that line.
+
 * The gate
 
 =npm run gate= runs the dependency script check (=scripts/check-deps.mjs=, SECURITY.org T5), typecheck, lint, unit tests, the end-to-end smoke and the security specs. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.

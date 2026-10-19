@@ -181,6 +181,36 @@ main {
   font-size: inherit;
   line-height: 1.45;
 }
+/* A review buffer is a read-only document under the transcript (#87). */
+#review {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+#review[hidden] {
+  display: none;
+}
+#review-from {
+  margin: 0 0 0.3rem;
+  font-weight: bold;
+}
+#review-keys {
+  margin: 0.3rem 0 0;
+}
+#review .cm-editor {
+  min-height: 0;
+}
+#review .cm-editor.cm-focused {
+  outline: none;
+}
+#review .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
 /* The environment buffer is a read-only document under the transcript (#86). */
 #environment {
   border-top: 1px solid var(--line);

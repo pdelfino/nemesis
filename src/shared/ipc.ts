@@ -45,6 +45,7 @@ import type {
 } from './keys'
 import type { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL, PlanAnswer, PlanContent } from './plan'
 import type { JOURNAL_CHANGED_CHANNEL, JournalState, REPL_SHOWN_CHANNEL, ReplContent } from './repl'
+import type { REVIEW_SHOWN_CHANNEL, ReviewContent } from './review'
 import type { SPEC_SHOWN_CHANNEL, SpecContent } from './spec'
 import type {
   HELP_SHOWN_CHANNEL,
@@ -85,6 +86,7 @@ export interface PushChannels {
   readonly [DIFF_SHOWN_CHANNEL]: DiffContent
   readonly [PLAN_SHOWN_CHANNEL]: PlanContent
   readonly [SPEC_SHOWN_CHANNEL]: SpecContent
+  readonly [REVIEW_SHOWN_CHANNEL]: ReviewContent
   readonly [PROMPT_INSERT_CHANNEL]: PromptInsert
   readonly [ENVIRONMENT_SHOWN_CHANNEL]: EnvironmentContent
   readonly [REPL_SHOWN_CHANNEL]: ReplContent

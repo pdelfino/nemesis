@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // Supply chain gate (SECURITY.org T5, docs/adr/0001-dependencies.org): no
-// installed dependency may run code at install time. Electron is the single
-// exception, because it downloads its own binary, and the install path runs
-// that installer explicitly after `npm ci --ignore-scripts`.
+// installed dependency may run code at install time. Electron is an exception,
+// because it downloads its own binary, and the install path runs that installer
+// explicitly after `npm ci --ignore-scripts`. electron-winstaller (pulled in by
+// electron-builder) is the other: its script only picks a 7-Zip binary for
+// Windows installers, it never runs under `--ignore-scripts`, and Nemesis
+// builds no Windows installer (#35).
 //
 // Usage: node scripts/check-deps.mjs [node_modules-directory]
 
@@ -11,7 +14,7 @@ import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall']
-const ALLOWED = new Set(['electron'])
+const ALLOWED = new Set(['electron', 'electron-winstaller'])
 
 const repository = fileURLToPath(new URL('..', import.meta.url))
 const modules = process.argv[2] ? resolve(process.argv[2]) : join(repository, 'node_modules')
@@ -65,7 +68,7 @@ if (found.offenders.length > 0) {
     console.error(`  ${offender.name} (${offender.where}): ${offender.declared.join(', ')}`)
   }
   console.error(
-    'Drop the dependency, or vendor what it builds. Only electron may install its own binary.',
+    `Drop the dependency, or vendor what it builds. Only ${[...ALLOWED].join(', ')} are allowed one.`,
   )
   process.exit(1)
 }

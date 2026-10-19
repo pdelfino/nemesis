@@ -19,6 +19,7 @@ export type BufferType =
   | 'diff'
   | 'plan'
   | 'spec'
+  | 'review'
   | 'environment'
   | 'repl'
 

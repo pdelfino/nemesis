@@ -16,6 +16,7 @@ import {
 import { wrapUntrusted } from '../agent/boundary'
 import type { ClipboardReader } from '../agent/images'
 import type { BufferRegistry } from '../buffers'
+import type { BufferInfo } from '../../shared/buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
 import { EnvironmentBuffers } from '../environment'
@@ -25,12 +26,15 @@ import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
 import { Repl } from '../repl'
+import { reviewApplyPrompt } from '../review-prompt'
+import { ReviewBuffers } from '../reviews'
 import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
 import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
+import { Worktrees, type Worktree } from '../worktrees'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -113,7 +117,16 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * (#72): `eval-expression` reads a form as free text and answers with a
  * notice, `repl` opens the `*repl*` buffer, where `RET` is `repl-read`, and
  * `journal-promote` and `journal-discard` read an entry of the eval journal
- * off the palette and move it to init.ts or delete it.
+ * off the palette and move it to init.ts or delete it. Windows (#70):
+ * `new-window` on `C-x 5 2` opens another window with its own session and
+ * buffers, and `choose-buffer` lists every window's buffers, the others
+ * named by window; choosing one of those brings its window forward.
+ * Writer and reviewer (#87): `review-diff` on `C-c C-r` opens a reviewer
+ * window in the same folder whose fresh session reviews this session's diff
+ * against the attached issue or plan, and its findings open here in a
+ * review buffer, where `C-c C-c` is `review-apply`; `new-window-in-worktree`
+ * on `C-x 5 w` reads a task name, makes a git worktree beside the folder
+ * and opens a window whose session runs there.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -161,6 +174,76 @@ export interface CockpitDeps {
   readonly environment: EnvironmentBuffers
   /** Eval in the config scope, the `*repl*` buffer and the journal (#72). */
   readonly repl: Repl
+  /** The other windows, as `new-window` opens one and the palette lists their buffers (#70). */
+  readonly windows: CockpitWindows
+  /** The folder the window's session runs in: a worktree's for a worktree window (#87). */
+  readonly cwd: string
+  /** The reviews of the session's diff, as review buffers (#87). */
+  readonly reviews: ReviewBuffers
+  /** The git worktrees new-window-in-worktree makes (#87). */
+  readonly worktrees: Worktrees
+}
+
+/** A buffer of another window, as the palette's `buffers` source lists it (#70). */
+export interface WindowBuffer {
+  readonly windowId: number
+  /** How the palette names the window, `Window 2`. */
+  readonly windowName: string
+  readonly buffer: BufferInfo
+  /** Whether it is that window's current buffer. */
+  readonly current: boolean
+}
+
+/** The windows of the app as one window's commands see them (#70). */
+export interface CockpitWindows {
+  /** Opens a new window with its own session and buffer set. */
+  open(): void
+  /** The buffers of every other window, window by window. */
+  others(): readonly WindowBuffer[]
+  /** Brings another window forward with one of its buffers current. */
+  switchTo(windowId: number, bufferId: string): void
+  /**
+   * Opens a reviewer window in this window's folder whose fresh session
+   * starts with `prompt` (#87). `done` resolves with the final text of its
+   * first turn.
+   */
+  review(prompt: string): { readonly reviewer: string; readonly done: Promise<string> }
+  /** Opens a window whose session runs in the worktree; closing it asks whether to remove it (#87). */
+  openWorktree(worktree: Worktree): void
+}
+
+/** Without the app there is one window and no way to open another. */
+const ONE_WINDOW: CockpitWindows = {
+  open: () => {
+    throw new CommandError('No window opener is installed')
+  },
+  others: () => [],
+  switchTo: () => {
+    throw new CommandError('There is no other window')
+  },
+  review: () => {
+    throw new CommandError('No window opener is installed')
+  },
+  openWorktree: () => {
+    throw new CommandError('No window opener is installed')
+  },
+}
+
+/**
+ * The palette id of another window's buffer. A buffer id of the registry is
+ * `b` and a number, so the colon keeps the two apart.
+ */
+export function foreignBufferId(windowId: number, bufferId: string): string {
+  return `${windowId}:${bufferId}`
+}
+
+/** The window and the buffer a palette id names, or null for a buffer of this window. */
+export function parseForeignBufferId(
+  id: string,
+): { readonly windowId: number; readonly bufferId: string } | null {
+  const match = /^(\d+):(.+)$/.exec(id)
+  if (match === null) return null
+  return { windowId: Number(match[1]), bufferId: match[2] ?? '' }
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -239,6 +322,10 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       }),
     // Without the app there is no config scope: every form is refused.
     repl: partial.repl ?? new Repl(buffers),
+    windows: partial.windows ?? ONE_WINDOW,
+    cwd: partial.cwd ?? process.cwd(),
+    reviews: partial.reviews ?? new ReviewBuffers(buffers),
+    worktrees: partial.worktrees ?? new Worktrees(),
   }
 }
 
@@ -273,6 +360,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     fetcher,
     environment,
     repl,
+    windows,
+    cwd,
+    reviews,
+    worktrees,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -282,6 +373,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
   return [
     defineCommand({
       name: 'execute-command',
+      mcp: 'never',
       doc: 'Run a command by name.',
       run: () => {
         prompter.read({ source: 'commands', prompt: 'M-x' }, async (name) => {
@@ -292,6 +384,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'describe-command',
+      mcp: 'free',
       doc: 'Show what a command does and the keys that run it.',
       run: () => {
         prompter.read({ source: 'commands', prompt: 'Describe command:' }, (name) => {
@@ -301,6 +394,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'describe-key',
+      mcp: 'free',
       doc: 'Show what the next key sequence runs.',
       run: () => {
         keys
@@ -314,7 +408,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       doc: 'Switch to a buffer chosen by name.',
       run: () => {
         prompter.read({ source: 'buffers', prompt: 'Switch to buffer:' }, (id) => {
-          buffers.switchTo(id)
+          // A buffer of another window brings that window forward (#70).
+          const foreign = parseForeignBufferId(id)
+          if (foreign === null) buffers.switchTo(id)
+          else windows.switchTo(foreign.windowId, foreign.bufferId)
         })
       },
     }),
@@ -486,6 +583,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'list-diffs',
+      mcp: 'free',
       doc: 'List the Edit and Write calls of the session; one opens as a diff buffer.',
       run: () => {
         if (diffs.list().length === 0) {
@@ -513,6 +611,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'approve-plan',
+      mcp: 'never',
       doc: 'Approve the plan in the current plan buffer, as edited; the session leaves plan mode.',
       run: () => {
         // The text lives in the renderer, edited: when the dispatch answers
@@ -524,6 +623,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'reject-plan',
+      mcp: 'never',
       doc: 'Reject the plan in the current plan buffer; the edited text goes back as feedback.',
       run: () => {
         // Same path as approve-plan: the renderer answers with the text (#82).
@@ -854,6 +954,63 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'new-window',
+      doc: 'Open a new window with its own session and buffers.',
+      run: () => {
+        windows.open()
+      },
+    }),
+    defineCommand({
+      name: 'new-window-in-worktree',
+      doc: 'Read a task name, make a git worktree for it beside this folder on a new branch, and open a window whose session runs there.',
+      run: () => {
+        // The name is only a slug's source: the path is derived from the
+        // folder and the slug, and git runs through execFile (#87).
+        prompter.read(
+          { source: 'worktree-name', prompt: 'Worktree for task:', freeText: true },
+          async (name) => {
+            const worktree = await worktrees.create(cwd, name)
+            if (worktree !== null) windows.openWorktree(worktree)
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'review-diff',
+      doc: "Open a reviewer window: a fresh session reviews this session's diff against the attached issue or plan, and its findings open here in a review buffer.",
+      run: () => {
+        if (diffs.list().length === 0) {
+          help.show('Nothing to review: the agent has made no Edit or Write call in this session.')
+          return
+        }
+        const prompt = reviews.prompt(diffs.list(), issues.current)
+        const review = windows.review(prompt)
+        reviews.notify(
+          `Review started in ${review.reviewer}: a fresh session reads the diff; its findings open here.`,
+        )
+        review.done.then(
+          (text) => {
+            reviews.show(review.reviewer, text)
+          },
+          (error: unknown) => {
+            reviews.notify(
+              `The review in ${review.reviewer} did not finish: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'review-apply',
+      doc: 'Send the findings in the current review buffer to this session, to be addressed one by one.',
+      run: () => {
+        const review = reviews.current
+        if (review === null) throw new CommandError('No review buffer is open')
+        prompts.submit(reviewApplyPrompt(review.text)).catch(report('review-apply'))
+        switchToPrompt()
+      },
+    }),
+    defineCommand({
       name: 'kill-buffer',
       doc: 'Kill the current buffer.',
       run: () => {
@@ -871,6 +1028,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'answer-yes',
+      mcp: 'never',
       doc: 'Allow the pending tool once.',
       run: () => {
         permissions.allowOnce()
@@ -878,6 +1036,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'answer-no',
+      mcp: 'never',
       doc: 'Deny the pending tool, or decline the pending question.',
       run: () => {
         permissions.deny()
@@ -885,6 +1044,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'allow-for-session',
+      mcp: 'never',
       doc: 'Allow the pending tool now and for the rest of the session.',
       run: () => {
         permissions.allowForSession()
@@ -893,6 +1053,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     ...QUESTION_OPTIONS.map((number) =>
       defineCommand({
         name: `choose-option-${number}`,
+        mcp: 'never',
         doc: `Choose option ${number} of the pending question.`,
         run: () => {
           permissions.choose(number)
@@ -919,7 +1080,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * for a free-text read that takes any other; and the files the environment
  * panel lists (#86), in the panel's order, for `RET` there; and the two
  * reads of eval (#72): a form, over nothing, and the journal's entries in
- * file order.
+ * file order; and the task name of a worktree window (#87), over nothing.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -934,6 +1095,7 @@ export function cockpitSources(
   prompts: Pick<PromptQueue, 'draft'>,
   environment: EnvironmentBuffers,
   repl: Repl,
+  windows: CockpitWindows,
 ): readonly PaletteSource[] {
   return [
     {
@@ -948,12 +1110,19 @@ export function cockpitSources(
     },
     {
       name: 'buffers',
-      candidates: () =>
-        buffers.list().map((buffer) => ({
+      candidates: () => [
+        ...buffers.list().map((buffer) => ({
           id: buffer.id,
           label: buffer.title,
           doc: `${buffer.kind} buffer${buffer.id === buffers.current?.id ? ', current' : ''}`,
         })),
+        // Every other window's, with the window named (#70).
+        ...windows.others().map((other) => ({
+          id: foreignBufferId(other.windowId, other.buffer.id),
+          label: `${other.buffer.title} <${other.windowName}>`,
+          doc: `${other.buffer.kind} buffer in ${other.windowName}${other.current ? ', current there' : ''}`,
+        })),
+      ],
     },
     {
       name: 'checkpoints',
@@ -1071,6 +1240,10 @@ export function cockpitSources(
       candidates: () => [],
     },
     {
+      name: 'worktree-name',
+      candidates: () => [],
+    },
+    {
       name: 'journal',
       candidates: () =>
         repl.entries().map((entry) => ({
@@ -1121,6 +1294,9 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
   'C-x s': 'search-transcripts',
+  'C-x 5 2': 'new-window',
+  'C-x 5 w': 'new-window-in-worktree',
+  'C-c C-r': 'review-diff',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
@@ -1154,6 +1330,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   // In a spec buffer the send key starts the fresh session the guide says to (#85).
   spec: defineKeymap('spec', {
     'C-c C-c': 'start-fresh-session-from-spec',
+  }),
+  // In a review buffer the send key sends the findings to the writer (#87).
+  review: defineKeymap('review', {
+    'C-c C-c': 'review-apply',
   }),
   // In the environment buffer RET opens a listed file through the open door (#86).
   environment: defineKeymap('environment', {
@@ -1225,6 +1405,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.prompts,
     deps.environment,
     deps.repl,
+    deps.windows,
   )) {
     deps.prompter.addSource(source)
   }

@@ -6,47 +6,31 @@ import {
   nativeImage,
   nativeTheme,
   session,
-  shell,
 } from 'electron'
 import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
-import { PermissionBridge } from './agent/permission-bridge'
-import { installSessionBridge, type EventSource } from './agent/session-bridge'
-import { SessionManager } from './agent/session-manager'
-import { installBufferBridge } from './buffer-bridge'
-import { createCockpitBuffers } from './buffers'
-import {
-  confirm,
-  CONFIRM_SOURCES,
-  DOWNLOAD_SOURCE,
-  EXTERNAL_SOURCE,
-  OPEN_FILE_SOURCE,
-  VERIFY_SOURCE,
-} from './commands/confirm'
-import { installKeyBridge } from './commands/key-bridge'
+import type { EventSource } from './agent/session-bridge'
+import { createCockpit, mergeNotices, type Cockpit } from './cockpit'
+import { confirm, DOWNLOAD_SOURCE, EXTERNAL_SOURCE, WORKTREE_SOURCE } from './commands/confirm'
 import {
   cockpitKeymapLayers,
-  createCockpitDispatcher,
   createCockpitRegistry,
-  resolveCockpitDeps,
   setUserKeymap,
+  type CockpitWindows,
 } from './commands/keyscheme'
-import { installPaletteBridge } from './commands/palette-bridge'
-import { Prompter } from './commands/prompter'
-import { defineCommand } from './commands/registry'
-import { ConfigEval } from './config/eval'
+import {
+  CommandError,
+  defineCommand,
+  type Command,
+  type CommandRegistry,
+} from './commands/registry'
+import { ConfigEval, type EvalOutcome } from './config/eval'
 import { Journal, journalPath } from './config/journal'
 import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './config/loader'
-import { DiffBuffers } from './diffs'
-import { EnvironmentBuffers } from './environment'
-import { UrlFetcher } from './fetch-url'
-import { WorkingFiles } from './files'
-import { fetchIssueWithGh, IssueAttachment } from './issues'
+import type { HelpBuffers } from './help'
+import { McpDoor } from './mcp/socket'
 import { installMenu } from './menu'
-import { installNotifications } from './notify/install'
-import { PlanBuffers } from './plans'
-import { Repl } from './repl'
-import { Screenshots, SCREENSHOTS_FOLDER } from './screenshots'
+import type { WindowCapturer } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
 import { describeExternal, ExternalPolicy } from './security/external'
@@ -71,11 +55,8 @@ import { internalPagePreferences } from './security/web-preferences'
 import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
-import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
-import { TranscriptSearch } from './transcript-search'
-import { SessionRecorder } from './transcripts'
-import { Verifier, verifyQuestion } from './verify'
+import { Worktrees, type Worktree } from './worktrees'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
@@ -112,15 +93,13 @@ if (devOrigin !== null) permissionPolicy.allow(devOrigin, 'clipboard-sanitized-w
 app.on('will-quit', () => permissionPolicy.clear())
 
 // T2 (#51): a download or an external link is a question in the prompt
-// buffer before anything lands or launches. The prompter exists this early so
-// the two policies can ask through it; the palette commands share it below.
-const prompter = new Prompter()
+// buffer before anything lands or launches, the focused window's (#70).
 const downloads = new DownloadPolicy({
   quarantineDir: join(app.getPath('downloads'), QUARANTINE_FOLDER),
-  confirm: (request) => confirm(prompter, DOWNLOAD_SOURCE, describeDownload(request)),
+  confirm: (request) => confirmInFocused(DOWNLOAD_SOURCE, describeDownload(request)),
 })
 const external = new ExternalPolicy({
-  confirm: (request) => confirm(prompter, EXTERNAL_SOURCE, describeExternal(request)),
+  confirm: (request) => confirmInFocused(EXTERNAL_SOURCE, describeExternal(request)),
 })
 // A yes for a download is good for one request within 30 seconds (#100); on quit none survives.
 app.on('will-quit', () => downloads.clear())
@@ -270,15 +249,64 @@ function clipboardImageOf(image: Electron.NativeImage): ClipboardImage | null {
 /** The command that runs the config file again (#71). */
 const RELOAD_CONFIG = 'reload-config'
 
-/** One stream of the cockpit's own notices out of several policies. */
-function mergeNotices(...sources: readonly EventSource[]): EventSource {
-  return {
-    on: (listener) => {
-      const offs = sources.map((source) => source.on(listener))
-      return () => {
-        for (const off of offs) off()
-      }
-    },
+/** What reload-config says it does, in every window and in the config registry. */
+const RELOAD_CONFIG_DOC =
+  'Run the config file again; a failing file leaves the previous config live.'
+
+/**
+ * The window of each cockpit, by the id of its WebContents (#70): an IPC
+ * call's sender names its window's cockpit, and the palette lists every
+ * window's buffers from here.
+ */
+const cockpits = new Map<number, Cockpit>()
+/** The window focused last, for the app's notices and questions while no window has focus. */
+let lastFocused: number | null = null
+/** How many windows were opened, for the next window's name. */
+let opened = 0
+/** Set on quit: a worktree window then closes without its question, and its worktree stays (#87). */
+let quitting = false
+app.on('before-quit', () => {
+  quitting = true
+})
+
+/** Where a window's session runs, and the worktree it was opened in, if any (#87). */
+interface CockpitPlace {
+  readonly cwd: string
+  readonly worktree?: { readonly worktree: Worktree; readonly opener: number } | undefined
+}
+
+/**
+ * The cockpit the user is at: the focused window's, else the one focused
+ * last, else the first still open. A download, an external link, the app's
+ * notices and the config's `nemesis` object act on it.
+ */
+function focusedCockpit(): Cockpit | undefined {
+  const focused = BrowserWindow.getFocusedWindow()
+  const byFocus = focused === null ? undefined : cockpits.get(focused.webContents.id)
+  const byLast = lastFocused === null ? undefined : cockpits.get(lastFocused)
+  return byFocus ?? byLast ?? cockpits.values().next().value
+}
+
+function runInFocused(name: string): Promise<void> {
+  const cockpit = focusedCockpit()
+  return cockpit === undefined
+    ? Promise.reject(new Error('Commands run once the cockpit is up, not while it starts'))
+    : cockpit.registry.run(name, { source: 'config' })
+}
+
+/** A question in the focused window's prompt buffer; with no window, the answer is no. */
+function confirmInFocused(source: string, question: string): Promise<boolean> {
+  const cockpit = focusedCockpit()
+  return cockpit === undefined
+    ? Promise.resolve(false)
+    : confirm(cockpit.prompter, source, question)
+}
+
+/** The menu bar runs the focused window's commands, so it is built again on focus (#70). */
+function rebuildMenu(): void {
+  const cockpit = focusedCockpit()
+  if (cockpit !== undefined) {
+    installMenu(cockpit.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged })
   }
 }
 
@@ -307,290 +335,307 @@ void app.whenReady().then(() => {
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
-  // The buffer list is the spine: the keymap and, later, the palette act on
-  // it, so it exists before the window that shows it (#60).
-  const buffers = createCockpitBuffers()
-  installBufferBridge(buffers)
   // The config file (#71, ADR 0006): run and checked whole before anything
   // reads a setting, against the cockpit's command names, so the settings it
   // overrides are in force from the start and a failing file changes
-  // nothing. Its commands and keys are committed once the registry exists
-  // below; the error, if any, waits for the window.
-  let dispatcher: ReturnType<typeof createCockpitDispatcher> | null = null
+  // nothing. Its `nemesis` object acts on the focused window (#70).
   const initFile = configPath({ home: app.getPath('home'), env: process.env, argv: process.argv })
   const config = new ConfigLoader({
     path: initFile,
     base: readSettings,
-    buffers: () => buffers.list(),
-    run: (name) =>
-      dispatcher === null
-        ? Promise.reject(new Error('Commands run once the cockpit is up, not while it starts'))
-        : dispatcher.registry.run(name, { source: 'config' }),
+    buffers: () => focusedCockpit()?.buffers.list() ?? [],
+    run: runInFocused,
   })
-  const firstLoad = config.stage(
-    new Set([
-      ...createCockpitRegistry()
-        .list()
-        .map((command) => command.name),
-      RELOAD_CONFIG,
-    ]),
+  // The config's commands are committed to a registry of the cockpit's own
+  // commands that no window drives, and copied from there into every
+  // window's (#70), so a window opened after a reload has them too.
+  const configRegistry = createCockpitRegistry()
+  configRegistry.register(
+    defineCommand({
+      name: RELOAD_CONFIG,
+      doc: RELOAD_CONFIG_DOC,
+      run: () => runInFocused(RELOAD_CONFIG),
+    }),
   )
+  const ownCommands = new Set(configRegistry.list().map((command) => command.name))
+  const syncConfigCommands = (registry: CommandRegistry): void => {
+    const fromConfig = configRegistry.list().filter((command) => !ownCommands.has(command.name))
+    const names = new Set(fromConfig.map((command) => command.name))
+    for (const command of registry.list()) {
+      if (!ownCommands.has(command.name) && !names.has(command.name)) {
+        registry.unregister(command.name)
+      }
+    }
+    for (const command of fromConfig) {
+      registry.unregister(command.name)
+      registry.register(command)
+    }
+  }
+  const firstLoad = config.stage(ownCommands)
   const settings = config.settings
   // The appearance (#33): `system` follows the OS, `light` and `dark` pin it.
   // Set before the window exists, so the renderer's prefers-color-scheme is
   // right on its first paint and the renderer never reads the settings.
   nativeTheme.themeSource = settings.theme
-  // One agent session per cockpit, in the folder the app was started in; the
-  // SDK loads the CLI's own settings, so the permission rules are the CLI's
-  // and so is the model unless the settings name one (#61, #64). It starts on
-  // the first prompt, not at launch. A tool the rules ask about waits on a key
-  // through the permission bridge (#63). Every event is written to the session
-  // folder as it arrives (#64).
-  const permissions = new PermissionBridge(buffers)
-  const recorder = new SessionRecorder({ sessionsDir: settings.sessionsDir })
-  // The same folder, read back: what resume-session lists and replays (#67),
-  // and what search-transcripts scans (#69).
+  // The sessions folder, read back: what resume-session lists and replays
+  // (#67). The app's, since every window's session writes to it.
   const sessions = new SessionIndex({ sessionsDir: settings.sessionsDir })
-  const transcripts = new TranscriptSearch({ sessionsDir: settings.sessionsDir })
-  // The guide's plan mode (#82): the one tool that leaves it, ExitPlanMode,
-  // is taken here in front of the bridge and becomes a plan buffer; every
-  // other request reaches the bridge untouched. An approval tells the manager
-  // to leave plan mode, which is why the two reference each other.
-  const plans: PlanBuffers = new PlanBuffers(buffers, permissions, {
-    leavePlanMode: (): Promise<void> => agent.leavePlanMode(),
-  })
-  // The manager holds that session and swaps it on new-task or a rewind (#84).
-  // The model is read when a session starts, so a reload's model is the
-  // next session's (#71).
-  const agent: SessionManager = new SessionManager({
-    cwd: process.cwd(),
-    get model() {
-      return config.settings.model
-    },
-    permissionHandler: plans,
-    requests: permissions,
-  })
-  // Walking away (#90): a finished turn, a request or an error is a macOS
-  // notification, and a Telegram push when its two variables are set, with
-  // the session's name, the elapsed time and the tool-call count only.
-  installNotifications({ agent, permissions, buffers, env: process.env })
-  // The Edit and Write calls of the session, listed and opened as diff
-  // buffers (#68). The collector reads the live events and a resumed
-  // session's history before the bridge pushes them, so list-diffs is never
-  // behind the window; `C-c C-o` asks in the prompt buffer, then hands the
-  // file to the system through `shell.openPath`, a door the environment
-  // panel below shares.
-  const diffs = new DiffBuffers(buffers, {
-    confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
-    open: (path) => shell.openPath(path),
-  })
-  agent.on((event) => diffs.observe(event))
-  agent.onHistory((history) => {
-    for (const event of history) diffs.observe(event)
-  })
-  // The spec an interview ends with (#85): the agent's Write of SPEC.md,
-  // once it went through, opens as a spec buffer with the fresh-session key.
-  // Live events only: a resumed history reopens no spec.
-  const specs = new SpecBuffers(buffers)
-  agent.on((event) => specs.observe(event))
-  // The environment of the working directory as one buffer (#86): the
-  // CLAUDE.md files, rules, hooks, skills, servers and subagents off disk
-  // and off the session's init frame. A listed file opens through the same
-  // door as a diff's: the question in the prompt buffer, then shell.openPath.
   // Under test a home named by NEMESIS_HOME stands in for the user's, so a
-  // spec reads a fixture and never the developer's own ~/.claude.
+  // spec reads a fixture and never the developer's own ~/.claude (#86).
   const testHome = process.env['NEMESIS_HOME']
   const home =
     process.env['NODE_ENV'] === 'test' && testHome !== undefined && testHome.length > 0
       ? testHome
       : app.getPath('home')
-  const environment = new EnvironmentBuffers(buffers, {
-    cwd: process.cwd(),
-    home,
-    started: () => agent.started,
-    confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
-    open: (path) => shell.openPath(path),
-    config: () => config.status,
-  })
-  // The verify key (#81): the check of the attached issue, else the settings'
-  // verify entry, else npm run gate, run as a child of the cockpit with the
-  // user's permissions in the folder it was started in, never through the
-  // agent's tool path. The issue comes through the user's own gh login, and
-  // its command, remote text, is confirmed in the prompt buffer before its
-  // first run (#98).
-  const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
-  const verifier = new Verifier({
-    cwd: process.cwd(),
-    // Read on every check, so a reload's verify is the next check's (#71).
-    get settingsCommand() {
-      return config.settings.verify
-    },
-    issueBody: () => issues.current?.body ?? null,
-    confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
-  })
   // A window of the screen into the prompt as an image (#81): the system's
-  // capture under the user's screen-recording permission, the file written
-  // under the sessions folder, the one place session data goes.
-  const screenshots = new Screenshots({
-    dir: join(settings.sessionsDir, SCREENSHOTS_FOLDER),
-    capturer: {
-      list: async () =>
-        (
-          await desktopCapturer.getSources({
-            types: ['window'],
-            thumbnailSize: { width: 0, height: 0 },
-          })
-        ).map((source) => ({ id: source.id, name: source.name })),
-      capture: async (id) => {
-        const sources = await desktopCapturer.getSources({
+  // capture under the user's screen-recording permission.
+  const capturer: WindowCapturer = {
+    list: async () =>
+      (
+        await desktopCapturer.getSources({
           types: ['window'],
-          thumbnailSize: SCREENSHOT_SIZE,
+          thumbnailSize: { width: 0, height: 0 },
         })
-        const source = sources.find((candidate) => candidate.id === id)
-        return source === undefined || source.thumbnail.isEmpty() ? null : source.thumbnail.toPNG()
-      },
+      ).map((source) => ({ id: source.id, name: source.name })),
+    capture: async (id) => {
+      const sources = await desktopCapturer.getSources({
+        types: ['window'],
+        thumbnailSize: SCREENSHOT_SIZE,
+      })
+      const source = sources.find((candidate) => candidate.id === id)
+      return source === undefined || source.thumbnail.isEmpty() ? null : source.thumbnail.toPNG()
     },
-  })
-  // The guide's rich prompts (#83): the files `@` lists come from git in the
-  // folder the app was started in; a URL the user asks for is fetched once,
-  // within the limits of fetch-url.ts, and wrapped as untrusted content.
-  const files = new WorkingFiles({ cwd: process.cwd() })
-  const fetcher = new UrlFetcher()
+  }
   // Eval in the config scope (#72): the forms run in the main process with
   // the init file's `nemesis` object, and a definition is applied to the
   // running cockpit and journaled beside init.ts until it is promoted or
-  // discarded. The evaluator needs the registry, built below, so it is
+  // discarded. The evaluator needs the config target, built below, so it is
   // reached through `evaluator` once the cockpit is up.
   const journal =
     initFile === null ? null : new Journal({ path: journalPath(initFile), configFile: initFile })
   let evaluator: ConfigEval | null = null
-  const repl = new Repl(buffers, {
-    journal,
-    evaluate: (form) =>
-      evaluator === null
-        ? Promise.resolve({
-            ok: false,
-            text: 'Eval runs once the cockpit is up, not while it starts',
-            defined: null,
-            journal: null,
-          })
-        : evaluator.evaluate(form),
+  const evaluate = (form: string): Promise<EvalOutcome> =>
+    evaluator === null
+      ? Promise.resolve({
+          ok: false,
+          text: 'Eval runs once the cockpit is up, not while it starts',
+          defined: null,
+          journal: null,
+        })
+      : evaluator.evaluate(form)
+  // The app's own notices, a refused site permission or download, a
+  // certificate error, a config load, go to the focused window's session
+  // (#70), shown and recorded like any event there.
+  const appNotices = mergeNotices(permissionPolicy, downloads, external, transport, config)
+  const noticesFor = (id: number): EventSource => ({
+    on: (listener) =>
+      appNotices.on((event) => {
+        if (focusedCockpit()?.id === id) listener(event)
+      }),
   })
-  const prompts = installSessionBridge({
-    agent,
-    permissions,
-    recorder,
-    notices: mergeNotices(
-      permissionPolicy,
-      downloads,
-      external,
-      diffs,
-      plans,
-      specs,
-      issues,
-      verifier,
-      screenshots,
-      fetcher,
-      environment,
-      transport,
-      config,
-      repl,
-    ),
-  })
-  // The palette reads a choice for a command, and help answers in a buffer (#65);
-  // the same prompter reads the yes or no of a download or an external link (#51).
-  const deps = resolveCockpitDeps({
-    buffers,
-    permissions,
-    prompter,
-    agent,
-    prompts,
-    sessions,
-    transcripts,
-    diffs,
-    plans,
-    specs,
-    verifier,
-    issues,
-    screenshots,
-    files,
-    clipboard: { readImage: readClipboardImage },
-    fetcher,
-    environment,
-    repl,
-  })
-  for (const source of CONFIRM_SOURCES) prompter.addSource(source)
-  installPaletteBridge({
-    prompter: deps.prompter,
-    help: deps.help,
-    transcripts,
-    diffs,
-    plans,
-    specs,
-    environment,
-    repl,
-    journal,
-  })
-  // Keys mean nothing until the registry and the keymaps are up (#59).
-  const cockpit = createCockpitDispatcher(deps)
-  dispatcher = cockpit
-  installKeyBridge(cockpit)
-  // What a config load swaps (#71): its commands in the registry, the user
-  // keymap layer the resolver reads on every key, the settings read at use
-  // time, and the menu bar, which lists every command with its chord as text
-  // (#30) and is built again so the labels follow. The palette's commands
-  // source reads the registry and the layers on every open.
+  // What a config load swaps (#71): its commands in every window's registry,
+  // the user keymap layer the resolver reads on every key, the settings read
+  // at use time, and the menu bar, which lists every command with its chord
+  // as text (#30) and is built again so the labels follow. The palette's
+  // commands source reads the registry and the layers on every open.
   const target: ConfigTarget = {
-    registry: cockpit.registry,
+    registry: configRegistry,
     setUserKeymap,
     applySettings: (next) => {
       nativeTheme.themeSource = next.theme
     },
-    rebuilt: () => installMenu(cockpit.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged }),
+    rebuilt: () => {
+      for (const cockpit of cockpits.values()) {
+        syncConfigCommands(cockpit.registry)
+        // An outside client's tool list follows the command table (#28, ADR 0007).
+        cockpit.mcp.toolsChanged()
+      }
+      rebuildMenu()
+    },
   }
-  cockpit.registry.register(
+  const reloadConfig = (help: HelpBuffers): Command =>
     defineCommand({
       name: RELOAD_CONFIG,
-      doc: 'Run the config file again; a failing file leaves the previous config live.',
+      doc: RELOAD_CONFIG_DOC,
       run: () => {
         const result = config.reload(target)
         if (result.ok) {
           config.notify(result.line)
           return
         }
-        deps.help.show(renderProblem(result.problem))
+        help.show(renderProblem(result.problem))
         config.notify(`Config not reloaded: ${result.problem.message}`)
       },
-    }),
-  )
+    })
   if (firstLoad.ok) config.commit(firstLoad.config, target)
-  else target.rebuilt()
   evaluator = new ConfigEval({
     loader: config,
     target,
     journal,
-    buffers: () => buffers.list(),
-    run: (name) => cockpit.registry.run(name, { source: 'config' }),
+    buffers: () => focusedCockpit()?.buffers.list() ?? [],
+    run: runInFocused,
   })
-  const win = createWindow()
-  // The mode line's journal count is pushed on every change; a page that
-  // loads, or loads again, gets the count as it stands.
-  if (journal !== null) {
-    win.webContents.on('did-finish-load', () => {
-      win.webContents.send(JOURNAL_CHANGED_CHANNEL, { unpromoted: journal.count })
+  /** The other windows as the window `id` sees them (#70). */
+  const windowsFor = (id: number): CockpitWindows => ({
+    open: () => {
+      openCockpit()
+    },
+    others: () =>
+      [...cockpits.values()]
+        .filter((cockpit) => cockpit.id !== id)
+        .flatMap((cockpit) =>
+          cockpit.buffers.list().map((buffer) => ({
+            windowId: cockpit.id,
+            windowName: cockpit.name,
+            buffer,
+            current: buffer.id === cockpit.buffers.current?.id,
+          })),
+        ),
+    switchTo: (windowId, bufferId) => {
+      const cockpit = cockpits.get(windowId)
+      if (cockpit === undefined) throw new CommandError('That window is closed')
+      cockpit.buffers.switchTo(bufferId)
+      if (cockpit.window.isMinimized()) cockpit.window.restore()
+      cockpit.window.show()
+      cockpit.window.focus()
+    },
+    // The reviewer (#87) is a window of its own in the writer's folder, a
+    // fresh session whose first message is the reviewer's prompt; its first
+    // turn's final text is the review.
+    review: (prompt) => {
+      const reviewer = openCockpit({ cwd: cockpits.get(id)?.cwd ?? process.cwd() })
+      const done = new Promise<string>((resolve, reject) => {
+        const off = reviewer.agent.on((event) => {
+          if (event.type === 'turn-end') {
+            off()
+            if (event.isError) reject(new Error(event.result || 'the turn ended in an error'))
+            else resolve(event.result)
+          } else if (event.type === 'error') {
+            off()
+            reject(new Error(event.message))
+          }
+        })
+        reviewer.window.once('closed', () => {
+          off()
+          reject(new Error('the reviewer window was closed before its turn ended'))
+        })
+      })
+      // Sent once the page listens, so the reviewer's transcript shows the prompt.
+      reviewer.window.webContents.once('did-finish-load', () => {
+        reviewer.prompts.submit(prompt).catch((error: unknown) => {
+          console.error('review: the reviewer prompt was not sent:', error)
+        })
+      })
+      return { reviewer: reviewer.name, done }
+    },
+    openWorktree: (worktree) => {
+      openCockpit({ cwd: worktree.path, worktree: { worktree, opener: id } })
+    },
+  })
+  /**
+   * Closing a worktree window asks first, keep highlighted (#87). The
+   * removal runs after the window is gone, through the opener's worktrees
+   * so the notice lands where the worktree was made, and only when the
+   * worktree is clean. A quit asks nothing and keeps it.
+   */
+  const askBeforeClosing = (cockpit: Cockpit, worktree: Worktree, opener: number): void => {
+    const win = cockpit.window
+    let state: 'open' | 'asking' | 'closing' = 'open'
+    win.on('close', (event) => {
+      if (quitting || state === 'closing') return
+      event.preventDefault()
+      if (state === 'asking') return
+      state = 'asking'
+      void confirm(
+        cockpit.prompter,
+        WORKTREE_SOURCE,
+        `Remove the worktree ${worktree.path}? Only a clean worktree is removed.`,
+      ).then(async (remove) => {
+        state = 'closing'
+        if (!win.isDestroyed()) win.close()
+        const notices = (cockpits.get(opener) ?? focusedCockpit())?.worktrees ?? new Worktrees()
+        if (remove) await notices.remove(worktree)
+        else notices.kept(worktree)
+      })
     })
   }
-  // A load error at start is shown once the window can show it, and the
-  // app runs on the defaults.
+  /** A window and its cockpit: its own session, buffers and keys (#70), in its own folder (#87). */
+  const openCockpit = (place: CockpitPlace = { cwd: process.cwd() }): Cockpit => {
+    const win = createWindow()
+    const id = win.webContents.id
+    opened += 1
+    const cockpit = createCockpit(
+      win,
+      `Window ${opened}`,
+      {
+        config,
+        sessions,
+        journal,
+        evaluate,
+        home,
+        clipboard: { readImage: readClipboardImage },
+        capturer,
+        notices: noticesFor(id),
+        windows: windowsFor(id),
+        commands: (help) => [reloadConfig(help)],
+      },
+      place.cwd,
+    )
+    if (place.worktree !== undefined) {
+      askBeforeClosing(cockpit, place.worktree.worktree, place.worktree.opener)
+    }
+    syncConfigCommands(cockpit.registry)
+    cockpits.set(id, cockpit)
+    lastFocused = id
+    win.on('focus', () => {
+      lastFocused = id
+      rebuildMenu()
+    })
+    win.on('closed', () => {
+      cockpits.delete(id)
+      if (lastFocused === id) lastFocused = null
+    })
+    // The mode line's journal count is pushed on every change; a page that
+    // loads, or loads again, gets the count as it stands.
+    if (journal !== null) {
+      win.webContents.on('did-finish-load', () => {
+        win.webContents.send(JOURNAL_CHANGED_CHANNEL, { unpromoted: journal.count })
+      })
+    }
+    rebuildMenu()
+    return cockpit
+  }
+  // The door of ADR 0007 (#28): mcp.sock and mcp.token in the profile, both
+  // 0600, for bin/nemesis-mcp. It lives as long as main does, window or not.
+  // A connection drives the cockpit of the window focused when it arrived
+  // (#70); with no window open, one is opened for it, as the Dock would.
+  const door = new McpDoor({
+    dir: app.getPath('userData'),
+    accept: (transport) => {
+      const cockpit = focusedCockpit() ?? openCockpit()
+      cockpit.mcp.connect(transport).catch((error: unknown) => {
+        console.error(
+          `MCP connection failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+    },
+  })
+  door.open().catch((error: unknown) => {
+    console.error(`No MCP door: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  app.on('will-quit', () => door.close())
+  const first = openCockpit()
+  // A load error at start is shown once the first window can show it, and
+  // the app runs on the defaults.
   if (!firstLoad.ok) {
     const problem = firstLoad.problem
-    win.webContents.once('did-finish-load', () => {
-      deps.help.show(renderProblem(problem))
+    first.window.webContents.once('did-finish-load', () => {
+      first.help.show(renderProblem(problem))
       config.notify(`Config not loaded: ${problem.message}`)
     })
   }
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) openCockpit()
   })
 })
 

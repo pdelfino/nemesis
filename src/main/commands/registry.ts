@@ -8,7 +8,9 @@ import type { BufferType } from '../../shared/keys'
 
 /** Where the invocation came from, for commands that care. */
 export interface CommandContext {
-  readonly source: 'key' | 'palette' | 'menu' | 'config' | 'test'
+  readonly source: 'key' | 'palette' | 'menu' | 'config' | 'test' | 'mcp'
+  /** With `mcp`: the name the client gave at initialize (#28), so a command can tell who asked. */
+  readonly client?: string
   /** The chord that ran it, in Emacs notation, when a key did. */
   readonly chord?: string
   readonly bufferType?: BufferType | null
@@ -19,8 +21,17 @@ export interface Command {
   readonly name: string
   /** One line, shown by the palette and by describe-command. */
   readonly doc: string
+  /**
+   * What `cockpit_run_command` costs an MCP client (ADR 0008): `free` runs at
+   * once, `yes` asks the user each call, `never` is refused. Absent means
+   * `yes`, so a command nobody thought about is not free by accident.
+   */
+  readonly mcp?: McpClass
   run(context: CommandContext): void | Promise<void>
 }
+
+/** The confirmation classes of ADR 0007, as a command declares one. */
+export type McpClass = 'free' | 'yes' | 'never'
 
 export class CommandError extends Error {
   override readonly name = 'CommandError'

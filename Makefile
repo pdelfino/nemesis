@@ -3,7 +3,7 @@
 # what dev and gate mean.
 
 .DEFAULT_GOAL := help
-.PHONY: help node-version setup dev gate
+.PHONY: help node-version setup dev gate app
 
 # Make runs /bin/sh, where nvm is a shell function and not a command, so a
 # fresh terminal has no `nvm use` in effect. Source nvm.sh here and put the
@@ -40,6 +40,9 @@ dev: node-version node_modules/electron/dist ## Run the app in development mode,
 
 gate: node-version ## Run the gate, the same as npm run gate
 	$(NPM) run gate
+
+app: node-version node_modules/electron/dist ## Build the unsigned release/mac-arm64/Nemesis.app (#35)
+	$(NPM) run package
 
 node_modules/electron/dist:
 	@$(MAKE) --no-print-directory setup

@@ -1,7 +1,7 @@
-# electron-builder configuration. Distribution proper (targets, signing,
-# notarization, updates) is milestone M5; what lives here now is the one piece
-# the security baseline needs: the afterPack hook that flips the Electron fuses
-# before the app is signed (SECURITY.org T1, #47).
+# electron-builder configuration. `npm run package` builds a local, unsigned
+# release/mac-arm64/Nemesis.app (#35); signing and notarization are #36. The
+# afterPack hook flips the Electron fuses before the app is signed
+# (SECURITY.org T1, #47).
 appId: com.pdelfino.nemesis
 productName: Nemesis
 afterPack: scripts/after-pack.mjs
@@ -13,3 +13,11 @@ directories:
 files:
   - out/**/*
   - package.json
+# The SDK spawns its native CLI binary, and a file inside the asar cannot be
+# executed, so it is unpacked next to it (src/main/agent/session.ts points the
+# SDK at the unpacked copy).
+asarUnpack:
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/claude
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/claude.exe
+mac:
+  target: dir

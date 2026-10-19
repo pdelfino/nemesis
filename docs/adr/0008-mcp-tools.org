@@ -609,4 +609,4 @@ three are ADR 0007's steps seen from the catalog's side.
 
 | Version | Date | Change | Issue |
 |---------+------+--------+-------|
-| 1       | when step 1 lands | the cockpit tier, free tools | #27 |
+| 1       | 2026-10-19 | the cockpit tier, eight tools | #28 |

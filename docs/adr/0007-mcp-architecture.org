@@ -251,6 +251,8 @@ configured the client on purpose. With no app running there is no server:
 the shim's error line is the whole behaviour, and a client's reconnect is
 the client's business.
 
+Amendment of 2026-OCTOBER-19 (#70, #28 merged): with several windows, each window's cockpit holds its own server instance over its own registry, buffers, prompter and session; a connection drives the cockpit of the window that was focused when it arrived, and with no window open one is opened for it. The door, the token and the lifetime are unchanged.
+
 ** What a page can never reach, as a spec
 
 A spec under =tests/e2e/security/= lands with the socket, failing first:

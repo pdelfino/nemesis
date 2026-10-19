@@ -37,6 +37,12 @@ is therefore =npm ci --ignore-scripts= followed by
 =node node_modules/electron/install.js=, which runs that one installer
 explicitly and by name instead of trusting every package in the tree.
 
+=electron-winstaller= is the second name on the allowlist (#35). electron-builder
+depends on it, and its =install= script (=select-7z-arch.js=) only picks a 7-Zip
+binary for building Windows installers. It never runs here, because the install
+path is =npm ci --ignore-scripts=, and Nemesis builds no Windows installer, so
+the binary it would pick is never used either.
+
 ** The lockfile is the source of truth
 
 =package-lock.json= is committed and is the only accepted install input.
@@ -69,5 +75,5 @@ it below 6.1). Every Dependabot pull request is merged only on a green gate.
   a prebuilt alternative or to do without.
 - =check-deps= reads the tree on disk, so it needs an install before it can
   speak. It fails with that instruction when =node_modules= is absent.
-- The Electron exception is one name in one allowlist, in one file. Widening it
+- The exceptions are two names in one allowlist, in one file. Widening it
   is a visible diff under review, not a silent default.
