@@ -8,6 +8,12 @@ import { fixtureServer } from './security/_harness'
  * out, the page view is laid out again at the page section's new rectangle,
  * which spans the window's content width, and coming out gives the window
  * its prior frame back. The Space itself is the system's.
+ *
+ * Full-screen is checked by what holds on any screen: the content area is
+ * the display's. An earlier version waited for the content width to change,
+ * which never happens when the window already fills its display, as on the
+ * GitHub macOS runner's 1024x768 screen (PR #135, 2026-OCTOBER-19); the second
+ * test starts from that case on every machine.
  */
 
 interface Rect {
@@ -22,11 +28,13 @@ interface Frame {
   readonly bounds: Rect
   readonly content: Rect
   readonly views: readonly Rect[]
+  /** The bounds of the display the window is on. */
+  readonly display: Rect
 }
 
 /** The cockpit window's state, frame and content, and the bounds of its page views. */
 function frame(app: ElectronApplication): Promise<Frame> {
-  return app.evaluate(({ BrowserWindow }) => {
+  return app.evaluate(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0]
     if (window === undefined) throw new Error('no cockpit window')
     return {
@@ -36,6 +44,7 @@ function frame(app: ElectronApplication): Promise<Frame> {
       views: window.contentView.children.flatMap((child) =>
         'webContents' in child ? [child.getBounds()] : [],
       ),
+      display: screen.getDisplayMatching(window.getBounds()).bounds,
     }
   })
 }
@@ -75,7 +84,8 @@ async function expectLaidOut(app: ElectronApplication, window: Page): Promise<vo
     .toBe(true)
 }
 
-test('C-x 5 F toggles full-screen; the page view follows the content area and the frame comes back', async () => {
+/** Opens a page buffer, toggles full-screen in and out, and checks the layout each way. */
+async function fullScreenRoundTrip(fillDisplay: boolean): Promise<void> {
   const fixtures = await fixtureServer()
   const app = await launchNemesis()
   try {
@@ -92,6 +102,13 @@ test('C-x 5 F toggles full-screen; the page view follows the content area and th
     await window.keyboard.type(fixtures.url('node-probe.html'))
     await window.keyboard.press('Enter')
     await expect(window.locator('#page')).toBeVisible()
+    if (fillDisplay) {
+      // The runner's case: the window already as large as its display.
+      await app.evaluate(({ BrowserWindow, screen }) => {
+        const one = BrowserWindow.getAllWindows()[0]
+        if (one !== undefined) one.setBounds(screen.getDisplayMatching(one.getBounds()).bounds)
+      })
+    }
     await expectLaidOut(app, window)
     const before = await frame(app)
     expect(before.fullScreen).toBe(false)
@@ -101,9 +118,18 @@ test('C-x 5 F toggles full-screen; the page view follows the content area and th
     await window.keyboard.press('5')
     await window.keyboard.press('Shift+F')
     await expect.poll(async () => (await frame(app)).fullScreen, { timeout: 15_000 }).toBe(true)
+    // In full-screen the content area is the display, whatever its size.
     await expect
-      .poll(async () => (await frame(app)).content.width, { timeout: 15_000 })
-      .not.toBe(before.content.width)
+      .poll(
+        async () => {
+          const now = await frame(app)
+          return (
+            now.content.width === now.display.width && now.content.height === now.display.height
+          )
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true)
     await expectLaidOut(app, window)
 
     // By name too, and the window comes back to the frame it had.
@@ -122,4 +148,12 @@ test('C-x 5 F toggles full-screen; the page view follows the content area and th
     await app.close()
     await fixtures.close()
   }
+}
+
+test('C-x 5 F toggles full-screen; the page view follows the content area and the frame comes back', async () => {
+  await fullScreenRoundTrip(false)
+})
+
+test('full-screen from a window that already fills its display, as on the GitHub runner', async () => {
+  await fullScreenRoundTrip(true)
 })
