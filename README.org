@@ -77,7 +77,7 @@ Pivoted on 2026-OCTOBER-17 from the Racket plan (see History). The plan is issue
 * Development setup
 
 - Node 24 LTS through nvm (=.nvmrc=), npm with a committed lockfile.
-- =nvm use=, =npm ci --ignore-scripts=, =node node_modules/electron/install.js=, then =npm run gate= (dependency check, typecheck, lint, unit, end-to-end and security specs); =npm run dev= opens the window. The gate runs locally before every commit; GitHub Actions is the second opinion at ready-for-review.
+- =make setup= then =make dev= opens the window; =make gate= runs the gate; bare =make= lists the targets. Underneath: =make setup= checks Node against =.nvmrc= (through nvm when present) and runs =npm ci --ignore-scripts= and =node node_modules/electron/install.js=, =make dev= is =npm run dev= (and runs setup first on a fresh clone), =make gate= is =npm run gate= (dependency check, typecheck, lint, unit, end-to-end and security specs). The gate runs locally before every commit; GitHub Actions is the second opinion at ready-for-review.
 - Claude Code reads =CLAUDE.md= at the root. The non-interactive queue reads =.claude-queue=.
 
 * Roadmap

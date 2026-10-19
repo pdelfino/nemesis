@@ -4,9 +4,11 @@ Nemesis is developed on macOS first and mostly by Claude Code under the rules in
 
 * Toolchain
 
+=make setup= then =make dev= runs the app from any state; =make gate= runs the gate and bare =make= lists the targets. The =Makefile= is a thin wrapper: it checks Node against =.nvmrc= (sourcing =~/.nvm/nvm.sh= itself, because Make runs =/bin/sh= where =nvm= is not loaded, and printing the =nvm use= command when the version is wrong), then calls the npm scripts below, which stay the single definition of each step. =make dev= runs the install first only when =node_modules/electron/dist= is missing.
+
 - Node 24 LTS through nvm: =nvm use= reads =.nvmrc=.
 - npm with the committed =package-lock.json=. Install with =npm ci --ignore-scripts= and then =node node_modules/electron/install.js=. Lifecycle scripts from dependencies are never run; Electron's binary download is the single explicit exception.
-- No global tools are required. Playwright downloads nothing extra for Electron.
+- No global tools are required beyond Make, which ships with the Xcode command line tools. Playwright downloads nothing extra for Electron.
 
 ** Seeing the window: =dev:debug= and =peek=
 
