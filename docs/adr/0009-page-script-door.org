@@ -1,7 +1,7 @@
 #+TITLE: ADR 0009: the page-script door, an isolated-world preload with one typed bridge
 #+OPTIONS: toc:nil
 
-- Status: proposed (the pick on #121 flips it to accepted)
+- Status: accepted (picked by Pedro on 2026-OCTOBER-19, in session, on #121: option A)
 - Date: 2026-OCTOBER-19
 - Threat or Pillar: SECURITY.org T1, a page tries to reach the app, for what
   the page may see of the door; SECURITY.org T4, page content steering the
