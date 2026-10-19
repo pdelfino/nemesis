@@ -12,7 +12,7 @@ import type { PageTierDeps } from '../../src/main/mcp/page-tier'
 import type { BufferRegistry } from '../../src/main/buffers'
 import { helloMatches, HELLO_PREFIX, McpDoor } from '../../src/main/mcp/socket'
 import { buildTree } from '../../src/main/pages/semantic'
-import { SEMANTIC_STATES, type SemanticRole } from '../../src/shared/page-door'
+import { FORM_FLAGS, SEMANTIC_STATES, type SemanticRole } from '../../src/shared/page-door'
 import { connectClient, fakeCockpit } from './mcp-fakes'
 
 const opened: { door: McpDoor; dir: string }[] = []
@@ -77,7 +77,20 @@ function png(width: number, height: number): string {
  * a masked card expiry (#141). Every string the page wrote carries a canary;
  * what the acts did is recorded in order.
  */
-function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps {
+/** The secret field the acting fake reports while it holds the focus (#140 review). */
+const PASSWORD_FIELD = {
+  id: 3,
+  kind: 'password' as const,
+  label: 'Password',
+  name: 'password',
+  placeholder: '',
+  choices: '',
+  message: '',
+  value: '',
+  flags: 1 << FORM_FLAGS.indexOf('masked'),
+}
+
+function actingPage(acted: string[], focus = { id: 0 }): (buffers: BufferRegistry) => PageTierDeps {
   return (buffers) => {
     const page = buffers.create({ kind: 'page', title: 'NEMESIS-TITLE-CANARY', elementId: 'page' })
     buffers.update(page.id, { url: 'https://shop.example/NEMESIS-PATH-CANARY' })
@@ -106,7 +119,6 @@ function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps 
         node(7, 'combobox', 'Expiry', 1170, masked),
       ],
     })
-    let focused = 0
     const never = (): never => {
       throw new Error('not read here')
     }
@@ -127,7 +139,13 @@ function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps 
       text: never,
       form: async () => ({
         document: 4,
-        answer: { version: 1, same: 0, focused, fields: [], alerts: [] },
+        answer: {
+          version: 1,
+          same: 0,
+          focused: focus.id,
+          fields: focus.id === 3 ? [PASSWORD_FIELD] : [],
+          alerts: [],
+        },
       }),
       console: { read: () => ({ entries: [], truncated: false }) },
       events: () => () => undefined,
@@ -168,7 +186,7 @@ function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps 
         click: (_id, at) => {
           acted.push(`click ${at.x},${at.y}`)
           // A click at the search field's centre gives it the focus.
-          if (at.y === 60) focused = 2
+          if (at.y === 60) focus.id = 2
         },
         hover: (_id, at) => acted.push(`hover ${at.x},${at.y}`),
         drag: (_id, from, to) => acted.push(`drag ${from.x},${from.y} ${to.x},${to.y}`),
@@ -665,7 +683,7 @@ describe('the MCP door (#28, ADR 0007)', () => {
       [
         'browser_type',
         { element: 'Search box', ref: 'd4e2', text: 'shoes', submit: true },
-        `browser_type on ${on}: type 5 characters into "Search box" in ${pageId}, then press Enter to submit it?`,
+        `browser_type on ${on}: type "shoes" (5 characters) into "Search box" in ${pageId}, then press Enter to submit it?`,
         ['click 60,60', 'type shoes', 'key Enter'],
       ],
       [
@@ -766,5 +784,54 @@ describe('the MCP door (#28, ADR 0007)', () => {
     expect(acted).toEqual(['capture full', 'click 60,60', 'type a'])
     const both = await mcp.call('browser_screenshot', { fullPage: true, ref: 'd4e4' }, inApp)
     expect(both.isError).toBe(true)
+  })
+})
+
+describe('the human types secrets, one key at a time too (review of #140)', () => {
+  it('refuses a key that types into a focused secret field, unasked, at either door', async () => {
+    const acted: string[] = []
+    const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted, { id: 3 }))
+    for (const key of ['a', 'Space']) {
+      const refused = await mcp.call('browser_press_key', { key }, { door: 'socket', client: 'c' })
+      expect(refused.isError, key).toBe(true)
+      expect(JSON.stringify(refused.content), key).toContain('masked field: the human types it')
+      expect(prompter.pending).toBeNull()
+    }
+    await expect(mcp.inAppQuestion('browser_press_key', { key: 'a' })).rejects.toThrow(
+      'masked field: the human types it',
+    )
+    expect(acted).toEqual([])
+  })
+
+  it('lets Enter through on a secret field, and any key on an ordinary one', async () => {
+    const acted: string[] = []
+    const focus = { id: 3 }
+    const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted, focus))
+    const enter = mcp.call('browser_press_key', { key: 'Enter' }, { door: 'socket', client: 'c' })
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    expect((await enter).isError).toBeFalsy()
+    expect(acted).toEqual(['key Enter'])
+
+    focus.id = 2
+    const letter = mcp.call('browser_press_key', { key: 'a' }, { door: 'socket', client: 'c' })
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    expect((await letter).isError).toBeFalsy()
+    expect(acted).toEqual(['key Enter', 'key a'])
+  })
+
+  it('refuses at the act when the focus moved to a secret field after the yes', async () => {
+    const acted: string[] = []
+    const focus = { id: 2 }
+    const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted, focus))
+    const call = mcp.call('browser_press_key', { key: 'a' }, { door: 'socket', client: 'c' })
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    focus.id = 3
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    const result = await call
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('masked field: the human types it')
+    expect(acted).toEqual([])
   })
 })

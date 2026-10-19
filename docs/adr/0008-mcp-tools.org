@@ -442,6 +442,17 @@ that recorded a page block keeps the block as recorded.
 at the first page buffer in M4, so a client connected since launch learns
 the tier exists.
 
+Amendment of 2026-OCTOBER-19 (#138, landed with the page tier): the page
+tier is listed from launch instead, so a client connected since launch
+already sees it, and no =list_changed= is sent at the first page buffer. A
+page tool called while no page buffer is open answers =isError= with the
+fix in words (open a page, or pass =page=). The =list_changed= after
+=reload-config= stands. Two rules of the acting tools were made explicit
+at the same landing (#140): the question of =browser_type= quotes the text
+it will type, cut as the =element= words are, and =browser_press_key=
+refuses a key that types a character while the focus is on a field the
+masking list of #94 covers, as =browser_type= refuses that field.
+
 * Alternatives considered
 
 #27 asks two questions. Each has its options, with files touched, cost,

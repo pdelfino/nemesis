@@ -427,9 +427,12 @@ export class PageTier {
         does = `hover over ${element} in ${pageId}`
         break
       case 'browser_type': {
-        const count = [...String(args['text'])].length
+        // The text itself, quoted and cut as the element's words are: a yes,
+        // above all one that submits, is for what goes in, not only how much.
+        const text = String(args['text'])
+        const count = [...text].length
         const then = args['submit'] === true ? ', then press Enter to submit it' : ''
-        does = `type ${count} character${count === 1 ? '' : 's'} into ${element} in ${pageId}${then}`
+        does = `type ${quote(text)} (${count} character${count === 1 ? '' : 's'}) into ${element} in ${pageId}${then}`
         break
       }
       case 'browser_select_option': {
@@ -445,6 +448,7 @@ export class PageTier {
         const key = String(args['key'])
         if (keyStroke(key) === null)
           throw new Error(`Not a key the page tier presses: ${quote(key)}`)
+        await this.refuseIntoSecret(pageId, key)
         const submits = key === 'Enter' ? ', which may submit a form' : ''
         does = `press ${quote(key)} in ${pageId}${submits}`
         break
@@ -825,6 +829,21 @@ export class PageTier {
     }
   }
 
+  /**
+   * Refuses a key that would type a character while the focus is on a secret
+   * field (ADR 0008: the human types secrets). One approved key at a time
+   * would otherwise spell what browser_type refuses to type. Keys that type
+   * nothing, Enter included, pass: submitting what the human typed is theirs
+   * to approve.
+   */
+  private async refuseIntoSecret(pageId: string, key: string): Promise<void> {
+    const stroke = keyStroke(key)
+    if (stroke === null || stroke.char === undefined || key === 'Enter') return
+    const { answer } = await this.deps.form(pageId)
+    const field = answer.fields.find((one) => one.id === answer.focused)
+    if (field !== undefined && (field.flags & MASKED_FLAG) !== 0) throw new Error(MASKED_TYPE)
+  }
+
   private acts(): PageActs {
     if (this.deps.acts === undefined) throw new Error('This cockpit does not act on pages')
     return this.deps.acts
@@ -1041,6 +1060,7 @@ export class PageTier {
   ): Promise<PageAnswer> {
     if (keyStroke(key) === null) throw new Error(`Not a key the page tier presses: ${key}`)
     const { pageId } = this.resolve(given)
+    await this.refuseIntoSecret(pageId, key)
     const settled = this.settle(pageId, signal)
     this.acts().key(pageId, key)
     await settled
