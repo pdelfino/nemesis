@@ -109,7 +109,7 @@ export const CATALOG: readonly CatalogTool[] = [
   {
     name: 'cockpit_read_buffer',
     tier: 'cockpit',
-    description: `Read a buffer's text by id: the transcript's Org rendering or the prompt's draft. At most ${READ_LINES_CAP} lines or ${READ_BYTES_CAP / 1024} KB per call; \`truncated\` says there is more from \`from\` + \`lines\`.`,
+    description: `Read a buffer's text by id, as the window shows it: the transcript's Org rendering, the prompt's draft, a diff as - and + lines, a pending request's question, the text of a help, plan, spec, review, environment or *repl* buffer. At most ${READ_LINES_CAP} lines or ${READ_BYTES_CAP / 1024} KB per call; \`truncated\` says there is more from \`from\` + \`lines\`.`,
     confirmation: 'free',
     inApp: true,
     args: z.object({
@@ -200,6 +200,20 @@ export const CATALOG: readonly CatalogTool[] = [
     returns: z.object({ sessionId: z.string().nullable(), name: z.string() }),
   },
 ]
+
+/**
+ * The one resource of the cockpit tier (ADR 0008): the current session's
+ * event log, the `AgentEvent` objects `events.jsonl` holds, one JSON object
+ * per line, read-only and subscribable. Free, like the transcript: the
+ * events are the agent's own record, and a tool result that came from a page
+ * keeps the wrapper it was recorded with.
+ */
+export const EVENTS_RESOURCE = {
+  uri: 'nemesis://session/events',
+  mimeType: 'application/x-ndjson',
+  description:
+    "The cockpit's current agent session as its event log: every AgentEvent recorded, one JSON object per line, oldest first. Empty before the session's first event. Subscribe for an update after every event.",
+} as const
 
 export function catalogTool(name: string): CatalogTool | undefined {
   return CATALOG.find((tool) => tool.name === name)

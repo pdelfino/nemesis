@@ -3,9 +3,13 @@ import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AgentNoticeEvent } from '../../src/main/agent/events'
 import { CommandRegistry, defineCommand } from '../../src/main/commands/registry'
+import { DiffBuffers } from '../../src/main/diffs'
+import { HelpBuffers, type HelpListener } from '../../src/main/help'
+import { diffText } from '../../src/main/mcp/buffer-texts'
 import { helloMatches, HELLO_PREFIX, McpDoor } from '../../src/main/mcp/socket'
-import { fakeCockpit } from './mcp-fakes'
+import { connectClient, fakeCockpit } from './mcp-fakes'
 
 const opened: { door: McpDoor; dir: string }[] = []
 
@@ -190,5 +194,117 @@ describe('the MCP door (#28, ADR 0007)', () => {
     await vi.waitFor(() => expect(prompter.pending?.prompt).toContain('"two"'))
     await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
     expect((await second).isError).toBeFalsy()
+  })
+
+  it('withdraws a question whose client disconnected before the answer (#117)', async () => {
+    const { mcp, prompter, submit } = fakeCockpit()
+    const heard: AgentNoticeEvent[] = []
+    mcp.on((event) => heard.push(event))
+    const gone = new AbortController()
+    const call = mcp.call(
+      'cockpit_send_prompt',
+      { text: 'nobody waits for this' },
+      { door: 'socket', client: 'claude-code', signal: gone.signal },
+    )
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    const question = prompter.pending
+    gone.abort()
+    const result = await call
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('disconnected')
+    expect(prompter.pending).toBeNull()
+    expect(heard.map((event) => event.text)).toContain(
+      'MCP: claude-code disconnected; its question was withdrawn',
+    )
+    // The window's late answer to the stale question runs nothing.
+    await prompter.answer({ id: question?.id ?? '', choice: 'yes' })
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('withdraws the question of a run_command when the real client closes (#117)', async () => {
+    const registry = new CommandRegistry()
+    const run = vi.fn()
+    registry.register(defineCommand({ name: 'kill-buffer', doc: 'Kill.', run }))
+    const { mcp, prompter } = fakeCockpit(registry)
+    const heard: string[] = []
+    mcp.on((event) => heard.push(event.text))
+    const client = await connectClient(mcp)
+    const call = client
+      .callTool({ name: 'cockpit_run_command', arguments: { name: 'kill-buffer' } })
+      .catch(() => undefined)
+    await vi.waitFor(() => expect(prompter.pending?.prompt).toContain('run kill-buffer'))
+    await client.close()
+    await call
+    await vi.waitFor(() => expect(prompter.pending).toBeNull())
+    expect(heard).toContain('MCP: test-client disconnected; its question was withdrawn')
+    expect(run).not.toHaveBeenCalled()
+    // The next question is asked: the queue did not stall on the gone one.
+    const next = mcp.call(
+      'cockpit_name_session',
+      { name: 'after' },
+      { door: 'socket', client: 'b' },
+    )
+    await vi.waitFor(() => expect(prompter.pending?.prompt).toContain('"after"'))
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    expect((await next).isError).toBeFalsy()
+  })
+
+  it('reads a help buffer and a diff buffer as the window shows them (#117)', async () => {
+    const { mcp, deps, texts } = fakeCockpit()
+    const help = new HelpBuffers(deps.buffers)
+    texts.follow({ onShown: (listener: HelpListener) => help.on(listener) }, (c) => c.text)
+    const diffs = new DiffBuffers(deps.buffers, {
+      confirm: async () => false,
+      open: async () => '',
+    })
+    texts.follow(diffs, (content) => diffText(content.diff))
+    const client = await connectClient(mcp)
+
+    const shownHelp = help.show('describe-key\nC-x b runs switch-buffer.')
+    const readHelp = await client.callTool({
+      name: 'cockpit_read_buffer',
+      arguments: { id: shownHelp.id },
+    })
+    expect(readHelp.isError).toBeFalsy()
+    expect(readHelp.structuredContent).toMatchObject({ kind: 'help', lines: 2, truncated: false })
+    expect(readHelp.content).toEqual([
+      { type: 'text', text: 'describe-key\nC-x b runs switch-buffer.' },
+    ])
+
+    diffs.observe({
+      type: 'started',
+      sessionId: 's1',
+      model: 'm',
+      permissionMode: 'default',
+      cwd: '/work',
+      tools: [],
+    })
+    diffs.observe({
+      type: 'tool-use',
+      toolUseId: 't1',
+      name: 'Edit',
+      input: { file_path: '/work/a.ts', old_string: 'one\ntwo', new_string: 'three' },
+    })
+    const shownDiff = diffs.show('t1')
+    const readDiff = await client.callTool({
+      name: 'cockpit_read_buffer',
+      arguments: { id: shownDiff.id, from: 2, lines: 2 },
+    })
+    expect(readDiff.structuredContent).toMatchObject({ kind: 'diff', from: 2, lines: 2 })
+    expect(readDiff.content).toEqual([{ type: 'text', text: '-one\n-two' }])
+    const wholeDiff = await client.callTool({
+      name: 'cockpit_read_buffer',
+      arguments: { id: shownDiff.id },
+    })
+    expect(wholeDiff.content).toEqual([
+      { type: 'text', text: 'Edit /work/a.ts\n-one\n-two\n+three' },
+    ])
+
+    // A killed buffer, like an id never given, is an error.
+    deps.buffers.kill(shownHelp.id)
+    for (const id of [shownHelp.id, 'b99']) {
+      const missing = await client.callTool({ name: 'cockpit_read_buffer', arguments: { id } })
+      expect(missing.isError).toBe(true)
+    }
   })
 })

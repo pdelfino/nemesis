@@ -14,6 +14,8 @@ import { describeContext } from '../shared/context'
  *
  * The session's name (#104) is the fourth: shown in the mode line and as
  * the window title, `<name> · Nemesis`, while the named session is up.
+ * The stop gate (#113) is the fifth: `gate` while it is on, with the retry
+ * count against the cap once a red check has gone back to the session.
  */
 export function installModeline(): void {
   const meter = document.getElementById('context-meter')
@@ -25,6 +27,15 @@ export function installModeline(): void {
   }
   const naming = new SessionNaming()
   window.nemesis.onAgentEvent((event) => render(event, { meter, hint, mode, name }, naming))
+  const gate = document.getElementById('stop-gate')
+  if (gate === null) throw new Error('index.html has no #stop-gate')
+  window.nemesis.onAgentEvent((event) => {
+    if (event.type !== 'stop-gate') return
+    gate.textContent = describeStopGate(event)
+    gate.title = event.on
+      ? `Stop gate: every turn ends with the check; a red one goes back as the next prompt, ${event.cap} times at most. M-x toggle-stop-gate turns it off.`
+      : ''
+  })
   // The eval journal (#72): the definitions made at eval not yet promoted to
   // init.ts or discarded, blank at none.
   const journal = document.getElementById('journal-count')
@@ -36,6 +47,12 @@ export function installModeline(): void {
         ? ''
         : `${state.unpromoted} eval ${state.unpromoted === 1 ? 'definition' : 'definitions'} not in init.ts. M-x journal-promote or journal-discard.`
   })
+}
+
+/** `gate`, `gate 2/3` once retries were sent, blank when off. */
+export function describeStopGate(event: Extract<AgentEvent, { type: 'stop-gate' }>): string {
+  if (!event.on) return ''
+  return event.retries === 0 ? 'gate' : `gate ${event.retries}/${event.cap}`
 }
 
 export interface ModelineElements {

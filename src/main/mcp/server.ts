@@ -2,19 +2,25 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import {
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
+  type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js'
+import type { BufferInfo } from '../../shared/buffers'
 import type { PromptReceipt } from '../../shared/agent'
 import type { AgentEvent, AgentNoticeEvent, AgentPermissionMode } from '../agent/events'
 import type { BufferRegistry } from '../buffers'
-import { confirm, MCP_SOURCE } from '../commands/confirm'
+import { confirmWhile, MCP_SOURCE } from '../commands/confirm'
 import type { Prompter } from '../commands/prompter'
 import type { CommandRegistry, McpClass } from '../commands/registry'
 import { searchTranscripts } from '../transcript-search'
-import { sessionName, TRANSCRIPT_FILE } from '../transcripts'
+import { EVENT_LOG_FILE, sessionName, TRANSCRIPT_FILE } from '../transcripts'
 import {
   CATALOG,
   CATALOG_VERSION,
   catalogTool,
+  EVENTS_RESOURCE,
   IN_APP_HIDDEN_COMMANDS,
   READ_BYTES_CAP,
   READ_LINES_CAP,
@@ -36,7 +42,14 @@ import {
  * it, asked one at a time in arrival order. In-app, the question already
  * happened: the SDK's `canUseTool` sent the call through the permission
  * bridge, so a tool the bridge allowed is not asked again here. A command
- * whose class is `never` is refused on both doors.
+ * whose class is `never` is refused on both doors. A socket client that
+ * goes away before the user answered its question has the question
+ * withdrawn, with a notice naming it (#117).
+ *
+ * One resource beside the tools, `nemesis://session/events` (ADR 0008): the
+ * current session's `events.jsonl` as recorded, so a tool result that came
+ * from a page keeps the wrapper it was recorded with. A subscriber hears
+ * `notifications/resources/updated` after every event the log took.
  *
  * Plain data and no Electron types, so the unit tests drive it over the MCP
  * SDK's in-memory transport.
@@ -77,6 +90,8 @@ export interface CockpitMcpDeps {
   readonly version: string
   /** Opens a window when none is, so a question has somewhere to be asked (ADR 0007). */
   readonly showWindow?: (() => void) | undefined
+  /** The text of the buffer kinds the window is pushed (#117); see buffer-texts.ts. */
+  readonly texts?: { text(buffer: BufferInfo): string | undefined } | undefined
 }
 
 interface Call {
@@ -100,6 +115,8 @@ export type NoticeListener = (event: AgentNoticeEvent) => void
 export class CockpitMcp {
   private readonly deps: CockpitMcpDeps
   private readonly servers = new Set<McpServer>()
+  /** The servers whose client subscribed to the events resource. */
+  private readonly subscribed = new Set<McpServer>()
   private readonly listeners = new Set<NoticeListener>()
   /** The questions of socket clients, one at a time, in arrival order. */
   private asking: Promise<unknown> = Promise.resolve()
@@ -115,7 +132,10 @@ export class CockpitMcp {
 
   constructor(deps: CockpitMcpDeps) {
     this.deps = deps
-    deps.agent.on((event) => this.track(event))
+    deps.agent.on((event) => {
+      this.track(event)
+      this.eventsChanged()
+    })
   }
 
   /** A fresh server for one connection, with the rows its door offers. */
@@ -141,9 +161,11 @@ export class CockpitMcp {
         },
       )
     }
+    this.serveEvents(server)
     this.servers.add(server)
     server.server.onclose = () => {
       this.servers.delete(server)
+      this.subscribed.delete(server)
     }
     return server
   }
@@ -153,6 +175,59 @@ export class CockpitMcp {
     const server = this.serve('socket')
     await server.connect(transport)
     return server
+  }
+
+  /** The events resource on `server`, read-only, and its subscription. */
+  private serveEvents(server: McpServer): void {
+    server.registerResource(
+      'session-events',
+      EVENTS_RESOURCE.uri,
+      { description: EVENTS_RESOURCE.description, mimeType: EVENTS_RESOURCE.mimeType },
+      async (uri) => ({
+        contents: [
+          { uri: uri.href, mimeType: EVENTS_RESOURCE.mimeType, text: await this.events() },
+        ],
+      }),
+    )
+    server.server.registerCapabilities({ resources: { subscribe: true } })
+    server.server.setRequestHandler(SubscribeRequestSchema, (request) => {
+      if (request.params.uri !== EVENTS_RESOURCE.uri) {
+        throw new McpToolError(`No resource ${request.params.uri}`)
+      }
+      this.subscribed.add(server)
+      return {}
+    })
+    server.server.setRequestHandler(UnsubscribeRequestSchema, (request) => {
+      if (request.params.uri === EVENTS_RESOURCE.uri) this.subscribed.delete(server)
+      return {}
+    })
+  }
+
+  /** The log as the recorder wrote it; empty before the session's first event. */
+  private async events(): Promise<string> {
+    const folder = this.deps.sessionFolder()
+    if (folder === null) return ''
+    try {
+      return await readFile(join(folder, EVENT_LOG_FILE), 'utf8')
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * Tells the subscribers the log moved. The recorder writes an event when
+   * it is emitted, and may hear it after this server does, so the
+   * notification goes on the next turn of the loop, once the line is on disk.
+   */
+  private eventsChanged(): void {
+    if (this.subscribed.size === 0) return
+    setImmediate(() => {
+      for (const server of this.subscribed) {
+        if (server.isConnected()) {
+          server.server.sendResourceUpdated({ uri: EVENTS_RESOURCE.uri }).catch(() => undefined)
+        }
+      }
+    })
   }
 
   /** After a `reload-config` commit: every connected client lists again (ADR 0007). */
@@ -292,7 +367,7 @@ export class CockpitMcp {
   private async readBuffer(id: string, from: number, lines: number): Promise<Answer> {
     const buffer = this.deps.buffers.get(id)
     if (buffer === undefined) throw new McpToolError(`No buffer with id "${id}"`)
-    const whole = await this.bufferText(buffer.kind)
+    const whole = await this.bufferText(buffer)
     const all = whole.length === 0 ? [] : whole.split('\n')
     const taken: string[] = []
     let bytes = 0
@@ -314,10 +389,10 @@ export class CockpitMcp {
     }
   }
 
-  /** What the window shows, by kind; a kind not served yet says so. */
-  private async bufferText(kind: string): Promise<string> {
-    if (kind === 'prompt') return this.deps.prompts.draft
-    if (kind === 'transcript') {
+  /** What the window shows, by kind. */
+  private async bufferText(buffer: BufferInfo): Promise<string> {
+    if (buffer.kind === 'prompt') return this.deps.prompts.draft
+    if (buffer.kind === 'transcript') {
       const folder = this.deps.sessionFolder()
       if (folder === null) return ''
       try {
@@ -326,7 +401,8 @@ export class CockpitMcp {
         return ''
       }
     }
-    throw new McpToolError(`A ${kind} buffer cannot be read over MCP yet`)
+    // A buffer opens before its content is pushed; until then it shows nothing.
+    return this.deps.texts?.text(buffer) ?? ''
   }
 
   private async sendPrompt(text: string): Promise<Answer> {
@@ -387,16 +463,30 @@ export class CockpitMcp {
   /**
    * The door's yes (ADR 0007): the prompt buffer, the no first, the client's
    * name in the question. Questions wait their turn; one whose client has
-   * gone by its turn is not asked.
+   * gone by its turn is not asked, and one whose client goes while it is
+   * open is withdrawn from the prompt buffer with a notice (#117).
    */
   private async ask(call: Call, question: string): Promise<void> {
+    const signal = call.signal ?? new AbortController().signal
     const turn = this.asking.then(() => {
-      if (call.signal?.aborted === true) return false
+      if (signal.aborted) return 'withdrawn' as const
       this.deps.showWindow?.()
-      return confirm(this.deps.prompter, MCP_SOURCE, `${clip(call.client)} asks ${question}`)
+      return confirmWhile(
+        this.deps.prompter,
+        MCP_SOURCE,
+        `${clip(call.client)} asks ${question}`,
+        signal,
+      ).then((outcome) => {
+        if (outcome === 'withdrawn') {
+          this.notice(`${clip(call.client)} disconnected; its question was withdrawn`)
+        }
+        return outcome
+      })
     })
     this.asking = turn.catch(() => undefined)
-    if (!(await turn)) throw new McpToolError('The user refused the call')
+    const outcome = await turn
+    if (outcome === 'withdrawn') throw new McpToolError('The client disconnected before the answer')
+    if (!outcome) throw new McpToolError('The user refused the call')
   }
 
   /** What a yes-per-call question shows of the arguments. */

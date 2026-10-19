@@ -245,6 +245,22 @@ export interface AgentNamedEvent {
   readonly name: string
 }
 
+/**
+ * The stop gate (#113): on, the end of every turn runs the check and a red
+ * result goes back to the session as the next prompt, up to `cap` times.
+ * Emitted when the gate is toggled and when its retry count moves, so the
+ * mode line shows `gate` and the count from the event push it already
+ * reads. One more event type in the log, as `named` was (#104): an older
+ * reader skips the line.
+ */
+export interface AgentStopGateEvent {
+  readonly type: 'stop-gate'
+  readonly on: boolean
+  /** Retry prompts sent for the current task so far. */
+  readonly retries: number
+  readonly cap: number
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -264,6 +280,7 @@ export type AgentEvent =
   | AgentPermissionModeEvent
   | AgentEvidenceEvent
   | AgentNamedEvent
+  | AgentStopGateEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

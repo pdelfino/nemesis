@@ -2,8 +2,10 @@ import type { RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AgentEvent,
   AgentEventListener,
+  AgentEvidenceEvent,
   AgentPermissionMode,
   AgentStartedEvent,
+  AgentTurnEndEvent,
   PermissionHandler,
 } from './events'
 import type { SessionAttentionListener } from '../../shared/notify'
@@ -18,6 +20,7 @@ import type {
   UserImageBlock,
 } from './session'
 import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } from './session'
+import { checkPassed, gatePrompt } from '../verify'
 
 /**
  * The session manager (#84): the one place that holds the cockpit's current
@@ -37,6 +40,9 @@ import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } f
  * a key, with the mode it replaced kept for when the plan is approved.
  * The attention stream (#90) says when the user is wanted: a finished turn,
  * a permission request or a question, an error, for the notifications.
+ * The stop gate (#113) holds a turn's end: gated, a turn that ended well
+ * runs the check, and a red one goes back as the next prompt until it is
+ * green or the cap is reached; only then does the turn end for the user.
  *
  * Listeners subscribe once, here, and hear every session the manager runs in
  * turn: the prompt queue, the recorder and the window never learn that the
@@ -64,7 +70,32 @@ export interface SessionManagerOptions {
   readonly requests?: { on(listener: AgentEventListener): () => void } | undefined
   /** The clock the attention stream measures turns with; the tests pass their own. */
   readonly now?: (() => number) | undefined
+  /** What the stop gate runs and sends through (#113); without it the gate cannot go on. */
+  readonly stopGate?: StopGateOptions | undefined
 }
+
+/**
+ * The stop gate's doors (#113). The check is the Verifier's (#81): a child
+ * of the cockpit, never a tool call of the agent, with the confirmation of
+ * an attached issue's command (#98) as it is for the verify key. The retry
+ * goes through the prompt queue, so it waits its turn behind anything the
+ * user queued and reads in the transcript as any other prompt.
+ */
+export interface StopGateOptions {
+  /** Runs the check; null when the user refused an attached issue's command. */
+  readonly verify: () => Promise<AgentEvidenceEvent | null>
+  readonly submit: (text: string) => Promise<unknown>
+  /** The retry cap from the settings, read at each turn end. */
+  readonly retries: () => number
+}
+
+/**
+ * The guide's own words, the first time the gate goes on in a window: the
+ * check as a goal, so an unattended run finishes correctly instead of
+ * merely stopping. Shown in the mode line until the next prompt.
+ */
+export const STOP_GATE_REMINDER =
+  'Stop gate: set the check as the goal, so the run finishes correctly instead of merely stopping. A red check goes back as the next prompt; M-x toggle-stop-gate turns it off.'
 
 /** What a rewind restores. `summarize` is not among them: the SDK exposes no such call. */
 export type RewindTarget = 'conversation' | 'code' | 'both'
@@ -144,8 +175,8 @@ export function turnsDropped(checkpoints: readonly Checkpoint[], checkpoint: Che
   return checkpoints.filter((c) => c.index >= checkpoint.index).length
 }
 
-function count(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`
+function count(n: number, noun: string, plural = `${noun}s`): string {
+  return `${n} ${n === 1 ? noun : plural}`
 }
 
 /** One checkpoint on one line: its number, when, and the first line of the prompt. */
@@ -212,6 +243,16 @@ export class SessionManager {
   private planReminded = false
   /** The init frame of the running session, as its `started` event carries it (#86). */
   private startedEvent: AgentStartedEvent | null = null
+  /** The stop gate is on (#113). */
+  private gated = false
+  /** The guide's words about the gate went out already in this window. */
+  private gateReminded = false
+  /** Retry prompts the gate sent for the current task. */
+  private gateRetries = 0
+  /** The retry prompt in flight, so its own user turn does not start a new task. */
+  private gateRetryText: string | null = null
+  /** Moves when the session stops, so a check that outlived its session sends nothing. */
+  private gateEpoch = 0
 
   constructor(options: SessionManagerOptions) {
     this.options = options
@@ -311,6 +352,38 @@ export class SessionManager {
   /** A plan was approved (#82): the session goes on in the mode plan mode replaced. */
   async leavePlanMode(): Promise<void> {
     if (this.mode === 'plan') await this.setPermissionMode(this.beforePlan)
+  }
+
+  /** True while the stop gate is on (#113). */
+  get stopGate(): boolean {
+    return this.gated
+  }
+
+  /**
+   * `toggle-stop-gate` (#113): on, every turn that ends well runs the check
+   * before it ends for the user. Off by default; the guide's words follow
+   * the first time it goes on. The mode line hears the state either way.
+   */
+  toggleStopGate(): boolean {
+    if (this.options.stopGate === undefined) {
+      this.emit({ type: 'notice', text: 'Stop gate: no check is wired in this window.' })
+      return this.gated
+    }
+    this.gated = !this.gated
+    this.gateRetries = 0
+    this.gateRetryText = null
+    this.announceGate()
+    this.emit({
+      type: 'notice',
+      text: this.gated
+        ? `Stop gate on: every turn ends with the check, up to ${count(this.gateCap(), 'retry', 'retries')}.`
+        : 'Stop gate off: turns end without the check.',
+    })
+    if (this.gated && !this.gateReminded) {
+      this.gateReminded = true
+      this.emit({ type: 'nudge', text: STOP_GATE_REMINDER })
+    }
+    return this.gated
   }
 
   /**
@@ -582,15 +655,114 @@ export class SessionManager {
    * next session (#82).
    */
   private watch(event: AgentEvent): void {
-    if (event.type === 'user-text') this.nudgeAt(this.corrections.observe(event.text))
-    else if (event.type === 'started') {
+    if (event.type === 'user-text') {
+      this.nudgeAt(this.corrections.observe(event.text))
+      this.gateTask(event.text)
+    } else if (event.type === 'started') {
       this.mode = event.permissionMode
       this.startedEvent = event
+    } else if (event.type === 'turn-end' && this.holdsTurnEnd(event)) {
+      void this.gate(event)
     } else if (event.type === 'stopped') {
       this.corrections.reset()
       this.planReminded = false
       this.startedEvent = null
+      this.gateEpoch += 1
+      this.gateRetryText = null
+      if (this.gateRetries > 0) {
+        this.gateRetries = 0
+        this.announceGate()
+      }
     }
+  }
+
+  /** A gated turn that ended well waits on the check; an error or an interrupt ends as it is. */
+  private holdsTurnEnd(event: AgentEvent): event is AgentTurnEndEvent {
+    return (
+      event.type === 'turn-end' &&
+      !event.isError &&
+      this.gated &&
+      this.options.stopGate !== undefined
+    )
+  }
+
+  /** A user turn that is not the gate's own retry is a new task: its count starts over. */
+  private gateTask(text: string): void {
+    if (this.gateRetryText !== null && text === this.gateRetryText) {
+      this.gateRetryText = null
+      return
+    }
+    if (this.gateRetries > 0) {
+      this.gateRetries = 0
+      this.announceGate()
+    }
+  }
+
+  /**
+   * The gate on one turn end (#113): the check runs, green ends the turn,
+   * red under the cap goes back as the next prompt and the turn goes on,
+   * red at the cap ends it with a notice. The attention stream hears the
+   * turn end only when the turn ends for the user, so a notification says
+   * done once, after the check.
+   */
+  private async gate(turnEnd: AgentTurnEndEvent): Promise<void> {
+    const gate = this.options.stopGate
+    if (gate === undefined) return
+    const epoch = this.gateEpoch
+    let evidence: AgentEvidenceEvent | null
+    try {
+      evidence = await gate.verify()
+    } catch (error) {
+      this.emit({ type: 'notice', text: `Stop gate: ${describe(error)}; the turn ends.` })
+      this.attend(turnEnd)
+      return
+    }
+    if (epoch !== this.gateEpoch) return
+    if (evidence === null) {
+      this.emit({ type: 'notice', text: 'Stop gate: the check was not run; the turn ends.' })
+      this.attend(turnEnd)
+      return
+    }
+    if (checkPassed(evidence) || !this.gated) {
+      this.attend(turnEnd)
+      return
+    }
+    const cap = this.gateCap()
+    if (this.gateRetries >= cap) {
+      this.emit({
+        type: 'notice',
+        text: `Stop gate: the check still fails after ${count(cap, 'retry', 'retries')}; the turn ends.`,
+      })
+      this.attend(turnEnd)
+      return
+    }
+    this.gateRetries += 1
+    this.announceGate()
+    const text = gatePrompt(evidence)
+    this.gateRetryText = text
+    try {
+      await gate.submit(text)
+    } catch (error) {
+      this.gateRetryText = null
+      this.emit({
+        type: 'notice',
+        text: `Stop gate: the retry could not be sent: ${describe(error)}`,
+      })
+      this.attend(turnEnd)
+    }
+  }
+
+  private gateCap(): number {
+    return this.options.stopGate?.retries() ?? 0
+  }
+
+  private announceGate(): void {
+    this.emit({
+      type: 'stop-gate',
+      on: this.gated,
+      retries: this.gateRetries,
+      cap: this.gateCap(),
+    })
   }
 
   private nudgeAt(streak: number): void {
@@ -611,7 +783,7 @@ export class SessionManager {
 
   private emit(event: AgentEvent): void {
     for (const listener of [...this.listeners]) listener(event)
-    this.attend(event)
+    if (!this.holdsTurnEnd(event)) this.attend(event)
   }
 
   private attend(event: AgentEvent): void {

@@ -52,6 +52,13 @@ body {
 #permission-mode::before {
   content: 'mode: ';
 }
+/* The stop gate (#113): shown while it is on. */
+#stop-gate {
+  white-space: nowrap;
+}
+#stop-gate:empty {
+  display: none;
+}
 #context-meter {
   white-space: nowrap;
   margin-left: auto;

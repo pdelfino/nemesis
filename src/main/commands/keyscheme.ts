@@ -97,6 +97,8 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * work is verified by (#81): `verify` on `C-c C-v` runs the attached
  * issue's Verify command, else the settings' `verify`, else `npm run gate`,
  * with the user's permissions, and the output lands as an evidence block;
+ * `toggle-stop-gate` (#113) holds every turn's end on that same check,
+ * a red one sent back as the next prompt up to the settings' cap;
  * `attach-issue` reads the issue number; `attach-check` adds a criterion to
  * the prompt, example cases and the check to run; `screenshot-window` puts
  * a window of the screen in the prompt as an image. The guide's specific,
@@ -690,6 +692,13 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         if (running !== null)
           throw new CommandError(`A check is already running: ${running.command}`)
         verifier.verify().catch(report('verify'))
+      },
+    }),
+    defineCommand({
+      name: 'toggle-stop-gate',
+      doc: 'Stop gate on or off: on, every turn ends with the verify check, and a red result goes back to the session as the next prompt, up to the stopGateRetries setting.',
+      run: () => {
+        agent.toggleStopGate()
       },
     }),
     defineCommand({

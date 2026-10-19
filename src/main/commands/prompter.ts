@@ -179,6 +179,19 @@ export class Prompter {
   }
 
   /**
+   * Cancels the read `id` when it is still the one in flight, as a `C-g`
+   * would, for an asker that went away (#117). The window's palette may
+   * still show it; an answer to it is then ignored like any stale one.
+   */
+  withdraw(id: string): boolean {
+    const read = this.current
+    if (read === null || read.request.id !== id) return false
+    this.current = null
+    read.cancel?.()
+    return true
+  }
+
+  /**
    * The window answered. A null choice cancels; an answer to a read that is
    * no longer current is ignored, since the window may still answer a read
    * that a newer one replaced. A choice that is not a candidate is refused,

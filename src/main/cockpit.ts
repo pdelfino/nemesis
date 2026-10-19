@@ -25,8 +25,9 @@ import { DiffBuffers } from './diffs'
 import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
-import type { HelpBuffers } from './help'
+import type { HelpBuffers, HelpListener } from './help'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
+import { BufferTexts, diffText } from './mcp/buffer-texts'
 import { CockpitMcp } from './mcp/server'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
@@ -159,11 +160,27 @@ export function createCockpit(
     mcpServers: () => ({
       nemesis: { type: 'sdk', name: 'nemesis', instance: mcp.serve('in-app') },
     }),
+    // The stop gate (#113): the verify key's check at a gated turn's end,
+    // the red evidence back through the prompt queue. Both exist below and
+    // are read when a turn ends.
+    stopGate: {
+      verify: () => verifier.verify(),
+      submit: (text) => prompts.submit(text),
+      retries: () => config.settings.stopGateRetries,
+    },
   })
   // Walking away (#90): a finished turn, a request or an error is a macOS
   // notification, and a Telegram push when its two variables are set, with
-  // the session's name, the elapsed time and the tool-call count only.
-  installNotifications({ window, agent, permissions, buffers, env: process.env })
+  // the session's name, the elapsed time and the tool-call count only. The
+  // toggles are the settings' `notify` key (#114).
+  installNotifications({
+    window,
+    agent,
+    permissions,
+    buffers,
+    toggles: () => config.settings.notify,
+    env: process.env,
+  })
   // The Edit and Write calls of the session, listed and opened as diff
   // buffers (#68). The collector reads the live events and a resumed
   // session's history before the bridge pushes them, so list-diffs is never
@@ -254,7 +271,17 @@ export function createCockpit(
   // 0008): a thin relay to the registry, the buffers, the prompter, the
   // session manager and the transcript search. The registry and the queue
   // exist below; the server reads them at call time. A client that connected
-  // while this window was focused drives this cockpit (#70).
+  // while this window was focused drives this cockpit (#70). What the window
+  // is pushed of every other buffer kind is kept for its reads (#117).
+  const texts = new BufferTexts(buffers)
+  const shown = (content: { readonly text: string }): string => content.text
+  texts.follow(diffs, (content) => diffText(content.diff))
+  texts.follow(plans, shown)
+  texts.follow(specs, shown)
+  texts.follow(reviews, shown)
+  texts.follow(environment, shown)
+  texts.follow(repl, shown)
+  texts.followRequests(permissions)
   const mcp: CockpitMcp = new CockpitMcp({
     get registry() {
       return dispatcher.registry
@@ -270,6 +297,7 @@ export function createCockpit(
     notices,
     cwd,
     version: app.getVersion(),
+    texts,
     // A yes-per-call question wants its window on screen.
     showWindow: () => {
       if (!window.isDestroyed()) {
@@ -325,6 +353,7 @@ export function createCockpit(
     repl,
     journal,
   })
+  texts.follow({ onShown: (listener: HelpListener) => deps.help.on(listener) }, shown)
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher: KeyDispatcher = createCockpitDispatcher(deps)
   installKeyBridge(dispatcher, contents)

@@ -60,6 +60,7 @@ const KNOWN_TYPES: Readonly<Record<AgentEvent['type'], true>> = {
   'permission-mode': true,
   evidence: true,
   named: true,
+  'stop-gate': true,
 }
 
 interface LogEntry {
