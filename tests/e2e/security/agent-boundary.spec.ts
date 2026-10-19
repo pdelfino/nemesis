@@ -11,8 +11,11 @@ import { fixtureServer, launchNemesis } from './_harness'
  *
  * 1. Page text reaches the agent only as labeled data: `summarize-page` over
  *    the injection fixture sends the SDK one message whose instruction is
- *    the cockpit's and whose page text, every canary of it, sits inside the
- *    block `wrapUntrusted` heads with the fixture's origin.
+ *    the cockpit's and whose page text, every visible canary of it, sits
+ *    inside the block `wrapUntrusted` heads with the fixture's origin. The
+ *    text is the door's reader extraction (#142): the hidden and commented
+ *    canaries never reach the agent, and the fixture server sees no second
+ *    request for the page.
  * 2. A side-effect tool needs a yes while a page buffer is open: a mocked
  *    Bash call becomes a request in the transcript, with the tool name and
  *    its arguments, and does not run until answered; a no keeps it from
@@ -53,11 +56,8 @@ interface PageDoor {
   run(windowId: number, name: string): Promise<void>
 }
 
-const CANARIES = [
-  'NEMESIS-INJECTION-CANARY.',
-  'NEMESIS-INJECTION-CANARY-HIDDEN',
-  'Ignore all previous instructions',
-]
+/** The canaries of the injection fixture a reader sees. */
+const CANARIES = ['NEMESIS-INJECTION-CANARY.', 'Ignore all previous instructions']
 
 function events(window: Page): Promise<AgentEvent[]> {
   return window.evaluate(() => (globalThis as unknown as TestWindow).__agentEvents ?? [])
@@ -107,6 +107,7 @@ test('page text reaches the agent wrapped, and a side-effect tool asks while a p
     if (ids === undefined) throw new Error('The page buffer has no ids')
 
     // 1. Summarize: the SDK gets the block, the canaries inside it only.
+    const pageRequests = fixtures.requested.filter((path) => path === '/injection.html').length
     await run(app, ids.windowId, 'summarize-page')
     const header = `--- untrusted content from ${fixtures.httpsOrigin} ---`
     const footer = `--- end of untrusted content from ${fixtures.httpsOrigin} ---`
@@ -124,8 +125,13 @@ test('page text reaches the agent wrapped, and a side-effect tool asks while a p
       expect(at, canary).toBeLessThan(end)
       expect(outside).not.toContain(canary)
     }
-    // The comment never reaches the agent at all.
+    // The hidden paragraph and the comment never reach the agent at all.
+    expect(prompt).not.toContain('NEMESIS-INJECTION-CANARY-HIDDEN')
     expect(prompt).not.toContain('NEMESIS-INJECTION-CANARY-COMMENT')
+    // The text came through the door: the page was not fetched again (#142).
+    expect(fixtures.requested.filter((path) => path === '/injection.html')).toHaveLength(
+      pageRequests,
+    )
     await expect.poll(async () => (await ofType(window, 'turn-end')).length).toBe(1)
     // The instruction text was not executed: the turn called no tool.
     expect(await ofType(window, 'tool-use')).toEqual([])

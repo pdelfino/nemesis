@@ -47,7 +47,13 @@ import { capturePage, captureFullPage } from './pages/capture'
 import { ConsoleLog } from './pages/console'
 import { NetworkLog, type CompletedRequests } from './pages/network'
 import { SemanticView, semanticText } from './pages/semantic'
-import { PAGES_FOLDER, ReaderBuffers, readerAttachment, type ReaderDocument } from './pages/reader'
+import {
+  PAGES_FOLDER,
+  ReaderBuffers,
+  readerAttachment,
+  readerBody,
+  type ReaderDocument,
+} from './pages/reader'
 import { Repl } from './repl'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -675,20 +681,18 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
-    // The current page's text for the agent (#55): its committed URL read
-    // again through the page's own partition, cookies omitted, within the
-    // limits of fetch-url.ts. The page-script door (ADR 0009) will hand the
-    // rendered text instead; the prompt it lands in is the same.
-    pageText: () => {
-      const current = buffers.current
-      const view = current === null || current === undefined ? undefined : pages.viewOf(current.id)
-      if (view === undefined)
-        return Promise.reject(new CommandError('The current buffer is not a page'))
-      const { url } = pages.currentPage()
-      const reader = new UrlFetcher({
-        fetch: (target, init) => view.webContents.session.fetch(target, init),
-      })
-      return reader.fetchText(url)
+    // The current page's text for the agent (#55, #142): the door's reader
+    // extraction, the page as the user sees it and the text attach-page-text
+    // sends, under the origin of the committed URL main held. No second
+    // request leaves the app; secret fields never cross the door (#94).
+    pageText: async () => {
+      const document = await readerDocument()
+      if (document.blocks.length === 0) throw new CommandError('No text to read on this page')
+      return {
+        url: document.url,
+        origin: document.origin,
+        text: `${document.title}\n\n${readerBody(document)}`,
+      }
     },
     // The current page's semantic view as the human reads it (#122).
     semanticText: async () => {
