@@ -59,6 +59,7 @@ import {
 } from './security/partitions'
 import { originOf, PermissionPolicy } from './security/permissions'
 import { internalPagePreferences } from './security/web-preferences'
+import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
@@ -113,6 +114,8 @@ const external = new ExternalPolicy({
 })
 // A yes for a download is good for one request within 30 seconds (#100); on quit none survives.
 app.on('will-quit', () => downloads.clear())
+// A quiet app still prints the last "suppressed N more" line of each key.
+app.on('will-quit', () => warnLimited.flush())
 
 app.on('web-contents-created', (_event, contents) => {
   // T6 (#49): whatever partition this WebContents uses gets the deny-by-default

@@ -11,7 +11,9 @@
  * A key is the kind of refusal and the scheme, channel or permission name
  * it was about, never a URL, an origin or a path: the key is printed. The
  * window closes lazily, on the next call after it ended, so there is no
- * timer to leak and the clock is a plain function a test can fake.
+ * timer to leak and the clock is a plain function a test can fake. `flush`
+ * writes the summaries still pending, for `will-quit`, so a quiet app does
+ * not lose its last one.
  */
 
 /** Lines written per key before the rest of the window is held back. */
@@ -29,7 +31,11 @@ export interface WarnLimiterOptions {
   readonly write?: ((line: string) => void) | undefined
 }
 
-export type WarnLimited = (key: string, line: string) => void
+export interface WarnLimited {
+  (key: string, line: string): void
+  /** Writes every pending summary now and forgets the windows, so none is written twice. */
+  flush(): void
+}
 
 interface WarnWindow {
   readonly start: number
@@ -42,7 +48,7 @@ export function createWarnLimiter(options: WarnLimiterOptions = {}): WarnLimited
   const now = options.now ?? (() => Date.now())
   const write = options.write ?? ((line: string) => console.warn(line))
   const windows = new Map<string, WarnWindow>()
-  return (key, line) => {
+  const warn = (key: string, line: string): void => {
     const at = now()
     // Every window that has ended is closed here, this key's included, and
     // the one summary line each owes is written then.
@@ -59,6 +65,13 @@ export function createWarnLimiter(options: WarnLimiterOptions = {}): WarnLimited
     window.count += 1
     if (window.count <= limit) write(line)
   }
+  const flush = (): void => {
+    for (const [key, window] of windows) {
+      if (window.count > limit) write(`suppressed ${window.count - limit} more for ${key}`)
+    }
+    windows.clear()
+  }
+  return Object.assign(warn, { flush })
 }
 
 /** The app's one limiter: the five refusal sites share it, each under its own keys. */
