@@ -32,6 +32,8 @@ Noticed on 2026-OCTOBER-19 and not filed yet:
 
 * Setting up a fresh machine
 
+The move of 2026-OCTOBER-19 is a checklist in #152, with what only Pedro can do (the accounts and logins) and how to verify each step; tick it as you go. The short version:
+
 1. =git clone git@github.com:pdelfino/nemesis.git ~/projects/nemesis=
 2. Node 24 from nvm, as =.nvmrc= pins it: =source ~/.nvm/nvm.sh && nvm use= in every shell before =npm= or =make=.
 3. =make setup= (=npm ci --ignore-scripts=, then the Electron binary), then =make gate=, which must be green before any change.
