@@ -24,7 +24,8 @@ the same ground:
   =--host-resolver-rules=, port kept, so a spec has a plain =http= URL off
   loopback for the upgrade of #52 to act on.
 - =openPageBuffer(url)= opens a URL in a real page buffer of the focused
-  window (#119): the app's own hardened, preload-free =WebContentsView=, built
+  window (#119): the app's own hardened =WebContentsView=, with only the
+  page-script door's preload (#130), built
   by =src/main/page-buffer.ts= and made current, through a door the main
   process installs under =NODE_ENV=test= only. It reports Chromium's refusal
   in =loadError= when the load never commits, and the page's =contentsId= as

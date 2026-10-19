@@ -4,6 +4,7 @@ import type { AgentEvent } from '../../src/main/agent/events'
 import { BufferRegistry } from '../../src/main/buffers'
 import {
   nextZoomLevel,
+  PAGE_PRELOAD,
   PageBuffers,
   parsePageBounds,
   pressFromInput,
@@ -238,13 +239,18 @@ function only(views: readonly FakeView[]): FakeView {
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('creating a page buffer (#119)', () => {
-  it('builds the view hardened, without a preload, in persist:default', () => {
+  it('builds the view hardened, with the page door preload only, in persist:default', () => {
     const { pages, views } = rig()
     const buffer = pages.createPage()
     expect(buffer).toMatchObject({ kind: 'page', title: 'Page', elementId: 'page' })
     const prefs = only(views).webPreferences
-    expect(prefs).toEqual({ ...HARDENED_WEB_PREFERENCES, partition: 'persist:default' })
-    expect(prefs).not.toHaveProperty('preload')
+    expect(prefs).toEqual({
+      ...HARDENED_WEB_PREFERENCES,
+      partition: 'persist:default',
+      preload: PAGE_PRELOAD,
+    })
+    // ADR 0009's preload, never the cockpit's bridge (#130).
+    expect(prefs.preload).toMatch(/preload[\\/]page\.js$/)
   })
 
   it('uses the ephemeral partition on request', () => {

@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import type { WebPreferences } from 'electron'
 import type { AgentEvent, AgentEventListener } from './agent/events'
 import type { BufferInfo, PageBounds, PageEvent, PageSpec } from '../shared/buffers'
@@ -14,7 +15,8 @@ import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
  * that holds a web page, on a `WebContentsView` the main process creates
  * (SECURITY.org T1), under the whole baseline.
  *
- * - `createPage` builds the view with HARDENED_WEB_PREFERENCES and no preload,
+ * - `createPage` builds the view with HARDENED_WEB_PREFERENCES and the page
+ *   preload of ADR 0009 (#130), not the cockpit's,
  *   in `persist:default` unless the spec asks for `ephemeral` (#54), and runs
  *   the navigation policy (#48), the transport watch (#52) and the permission
  *   policy (#49) before the first load. `web-contents-created` has already
@@ -56,6 +58,13 @@ const PARTITIONS: Readonly<Record<NonNullable<PageSpec['partition']>, string>> =
   persistent: 'persist:default',
   ephemeral: 'ephemeral',
 }
+
+/**
+ * The page-script door's preload (ADR 0009, #130), built as its own entry
+ * beside the cockpit's (electron.vite.config.ts); the door's main side is
+ * src/main/page-door.ts.
+ */
+export const PAGE_PRELOAD = join(__dirname, '../preload/page.js')
 
 /** Where every page buffer's section is in the renderer. */
 export const PAGE_ELEMENT_ID = 'page'
@@ -401,8 +410,12 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   createPage(spec: PageSpec = {}): BufferInfo {
     const partitionName = spec.partition ?? 'persistent'
     const partition = PARTITIONS[partitionName]
-    // No preload: the bridge belongs to internal pages only (T1, ADR 0009 for any later door).
-    const view = this.options.createView({ ...HARDENED_WEB_PREFERENCES, partition })
+    // The page-script door's preload only (ADR 0009): the bridge belongs to internal pages (T1).
+    const view = this.options.createView({
+      ...HARDENED_WEB_PREFERENCES,
+      partition,
+      preload: PAGE_PRELOAD,
+    })
     const contents = view.webContents
     const { policies } = this.options
     policies.navigation(contents)

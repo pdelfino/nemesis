@@ -5,7 +5,16 @@ import { defineConfig } from 'electron-vite'
 // every deviation from the template is a line someone has to understand.
 export default defineConfig({
   main: {},
-  preload: {},
+  // Two preloads, each its own bundle: the cockpit's bridge and the page-script
+  // door of page buffers (ADR 0009). A sandboxed preload can require nothing
+  // but electron, so the two must share no chunk.
+  preload: {
+    build: {
+      rollupOptions: {
+        input: { index: 'src/preload/index.ts', page: 'src/preload/page.ts' },
+      },
+    },
+  },
   renderer: {
     build: {
       rollupOptions: {

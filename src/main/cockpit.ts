@@ -290,8 +290,8 @@ export function createCockpit(
   // Eval in the config scope (#72): the app's evaluator and journal, this
   // window's `*repl*` buffer.
   const repl = new Repl(buffers, { journal, evaluate: shared.evaluate })
-  // The page buffers (#119): a WebContentsView each, built hardened and
-  // without a preload, attached over the renderer's page section while its
+  // The page buffers (#119): a WebContentsView each, built hardened with
+  // only the page-script door's preload (#130), attached over the renderer's page section while its
   // buffer is current. They go with the window.
   const pages = new PageBuffers<WebContentsView>({
     buffers,

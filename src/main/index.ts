@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   clipboard,
   desktopCapturer,
+  ipcMain,
   nativeImage,
   nativeTheme,
   net,
@@ -33,6 +34,7 @@ import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './co
 import type { HelpBuffers } from './help'
 import { McpDoor } from './mcp/socket'
 import type { PagePolicies } from './page-buffer'
+import { installPageDoor, PageScriptDoor, pingPrompt } from './page-door'
 import { installMenu } from './menu'
 import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
 import type { WindowCapturer } from './screenshots'
@@ -308,6 +310,32 @@ const RELOAD_CONFIG_DOC =
  * window's buffers from here.
  */
 const cockpits = new Map<number, Cockpit>()
+
+/** The cockpit and buffer id of the page buffer whose WebContents has this id, if any. */
+function pageBufferOf(contentsId: number): { cockpit: Cockpit; bufferId: string } | null {
+  for (const cockpit of cockpits.values()) {
+    for (const buffer of cockpit.pages.list()) {
+      if (cockpit.pages.viewOf(buffer.id)?.webContents.id === contentsId) {
+        return { cockpit, bufferId: buffer.id }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * The page-script door (ADR 0009, #130): one for the app, answering only a
+ * page buffer some window still holds. Its reply path is installed in
+ * whenReady below; consumers ask through `pageDoor.request`.
+ */
+const pageDoor = new PageScriptDoor({ isPage: (id) => pageBufferOf(id) !== null })
+
+/**
+ * How the door spec asks a page buffer, forges a reply and sends `ping`'s
+ * answer to the agent (#130), through `app.evaluate`. Main process only,
+ * under test only.
+ */
+const PAGE_SCRIPT_DOOR = '__nemesisPageDoor'
 /** The window focused last, for the app's notices and questions while no window has focus. */
 let lastFocused: number | null = null
 /** How many windows were opened, for the next window's name. */
@@ -360,6 +388,7 @@ function rebuildMenu(): void {
 }
 
 void app.whenReady().then(() => {
+  installPageDoor(ipcMain, pageDoor)
   // T3 (#50): the built renderer is served on nemesis://app before the
   // cockpit window asks for it. The dev server path above skips this origin.
   serveInternalPages(join(__dirname, '../renderer'))
@@ -439,6 +468,52 @@ void app.whenReady().then(() => {
             loaded: cockpit.pages.viewOf(buffer.id)?.webContents.getURL() ?? '',
           })),
         })),
+    }
+    // The door's spec (#130): a request as a consumer makes it, a reply
+    // forged around an id the door opened, fed to the reply check as IPC
+    // would feed it, and `ping`'s answer sent to the agent as T4 sends it.
+    const pageContents = (windowId: number, bufferId: string): Electron.WebContents => {
+      const contents = cockpits.get(windowId)?.pages.viewOf(bufferId)?.webContents
+      if (contents === undefined)
+        throw new Error(`No page buffer ${bufferId} in window ${windowId}`)
+      return contents
+    }
+    const outcome = (
+      answer: Promise<unknown>,
+    ): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> =>
+      answer.then(
+        (data) => ({ ok: true, data }),
+        (error: unknown) => ({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    ;(globalThis as { [PAGE_SCRIPT_DOOR]?: unknown })[PAGE_SCRIPT_DOOR] = {
+      ping: (windowId: number, bufferId: string) =>
+        outcome(pageDoor.request(pageContents(windowId, bufferId), 'ping')),
+      forge: (
+        windowId: number,
+        bufferId: string,
+        reply: (id: string) => unknown,
+        sender: 'top' | 'subframe' | 'cockpit',
+      ) => {
+        const contents = pageContents(windowId, bufferId)
+        // Short, so a dropped reply that settles nothing times out quickly.
+        const opened = pageDoor.expect(contents, 'ping', 1000)
+        const from =
+          sender === 'cockpit' ? (cockpits.get(windowId)?.window.webContents ?? contents) : contents
+        const top = from.mainFrame
+        const frame = sender === 'subframe' ? { url: top.url, parent: top } : top
+        pageDoor.receive({ sender: from, senderFrame: frame }, reply(opened.id))
+        return outcome(opened.answer)
+      },
+      prompt: async (windowId: number, bufferId: string, instruction: string): Promise<void> => {
+        const cockpit = cockpits.get(windowId)
+        if (cockpit === undefined) throw new Error(`No window ${windowId}`)
+        const contents = pageContents(windowId, bufferId)
+        const answer = await pageDoor.request(contents, 'ping')
+        await cockpit.prompts.submit(pingPrompt(instruction, contents.getURL(), answer))
+      },
     }
   }
   // app.dock exists on macOS only.
