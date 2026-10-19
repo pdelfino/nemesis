@@ -33,6 +33,18 @@ body {
   border-bottom: 1px solid var(--line);
   color: var(--muted);
 }
+/* The session's name (#104): gives way to the rest of the line before it wraps. */
+#session-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 24rem;
+  flex-shrink: 1;
+  min-width: 0;
+}
+#session-name:empty {
+  display: none;
+}
 /* The context meter (#80): muted until the guide's step, then it says so. */
 #permission-mode {
   white-space: nowrap;
@@ -157,6 +169,32 @@ main {
   outline: none;
 }
 #spec .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+/* The environment buffer is a read-only document under the transcript (#86). */
+#environment {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+#environment[hidden] {
+  display: none;
+}
+#environment-keys {
+  margin: 0.3rem 0 0;
+}
+#environment .cm-editor {
+  min-height: 0;
+}
+#environment .cm-editor.cm-focused {
+  outline: none;
+}
+#environment .cm-scroller {
   overflow: auto;
   font-family: inherit;
   font-size: inherit;

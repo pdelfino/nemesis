@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import type {
   AgentEvent,
   AgentEventListener,
@@ -23,6 +24,15 @@ import { CommandError } from './commands/registry'
  * the user sends the evidence, and no permission rule is consulted or
  * relaxed. The command of an attached issue is shown in the notice when the
  * issue is attached, so the key that runs it is pressed knowing it.
+ *
+ * That command is remote text (#98): it came from GitHub, and the key turns
+ * it into a shell command. So it gets the yes or no a download gets: the
+ * exact command in the prompt buffer, "Do not run" highlighted, before the
+ * first run. The yes is remembered for the session, keyed by the command and
+ * a hash of the issue body, so the second `C-c C-v` on the same issue does
+ * not ask again and the same issue fetched with a different Verify section
+ * does. A command from the settings or the default is the user's own text
+ * and runs without a question.
  *
  * Plain data, no Electron: the unit tests run it with a fake runner, and
  * once with the real shell on an `echo`.
@@ -88,6 +98,11 @@ export function resolveVerifyCommand(
   return { command: DEFAULT_VERIFY_COMMAND, source: 'default' }
 }
 
+/** The question the prompt buffer asks before a command from an attached issue runs (#98). */
+export function verifyQuestion(command: string): string {
+  return `Run the attached issue's check in a shell? ${command}`
+}
+
 /** A source, as a notice names it. */
 export function describeSource(source: VerifySource): string {
   switch (source) {
@@ -136,6 +151,11 @@ export function runCheckInShell(command: string, cwd: string): Promise<CheckOutc
   })
 }
 
+/** A yes is to one command of one issue body: the same issue fetched again with another Verify section asks again. */
+function approvalKey(command: string, issueBody: string): string {
+  return `${createHash('sha256').update(issueBody, 'utf8').digest('hex')}\n${command}`
+}
+
 export interface VerifierOptions {
   /** Where the check runs: the folder the cockpit was started in, the session's cwd. */
   readonly cwd: string
@@ -143,6 +163,11 @@ export interface VerifierOptions {
   readonly settingsCommand: string | null
   /** The body of the issue attached to the session, or null, read at each run. */
   readonly issueBody: () => string | null
+  /**
+   * Asks before a command from the attached issue runs, with the exact
+   * command; true runs it (#98). Never asked for the settings or the default.
+   */
+  readonly confirm: (command: string) => Promise<boolean>
   /** Injected by the tests; production runs the shell. */
   readonly run?: CheckRunner | undefined
   readonly now?: (() => number) | undefined
@@ -154,6 +179,8 @@ export class Verifier {
   private readonly now: () => number
   private readonly listeners = new Set<AgentEventListener>()
   private current: VerifyCommand | null = null
+  /** The issue commands said yes to, as `approvalKey` names them; forgotten with the session or the issue. */
+  private readonly approved = new Set<string>()
 
   constructor(options: VerifierOptions) {
     this.options = options
@@ -174,28 +201,43 @@ export class Verifier {
     return resolveVerifyCommand(this.options.issueBody(), this.options.settingsCommand)
   }
 
-  /** The check in flight, or null. One at a time: a gate is minutes, and two would race. */
+  /** The check in flight, or being asked about, or null. One at a time: a gate is minutes, and two would race. */
   get running(): VerifyCommand | null {
     return this.current
   }
 
   /**
-   * Runs the check and resolves with the evidence once it ended. The notice
-   * at the start says what runs and where it came from; the evidence block
-   * carries the verdict.
+   * Forgets every yes given so far: a new task, a resumed session or a new
+   * attach starts over, and the next issue command is asked about again.
    */
-  async verify(): Promise<AgentEvidenceEvent> {
+  forgetApprovals(): void {
+    this.approved.clear()
+  }
+
+  /**
+   * Runs the check and resolves with the evidence once it ended, or with
+   * null when the user refused a command from the attached issue. The notice
+   * at the start says what runs and where it came from; the evidence block
+   * carries the verdict. The question, when there is one, holds the
+   * verifier like a run does, so one key press is one question.
+   */
+  async verify(): Promise<AgentEvidenceEvent | null> {
     if (this.current !== null) {
       throw new CommandError(`A check is already running: ${this.current.command}`)
     }
-    const check = this.command()
+    const issueBody = this.options.issueBody()
+    const check = resolveVerifyCommand(issueBody, this.options.settingsCommand)
     this.current = check
-    this.emit({
-      type: 'notice',
-      text: `Verifying: ${check.command} (${describeSource(check.source)})`,
-    })
-    const startedAt = this.now()
     try {
+      if (check.source === 'issue' && !(await this.approve(check.command, issueBody ?? ''))) {
+        this.emit({ type: 'notice', text: `Not run: ${check.command}` })
+        return null
+      }
+      this.emit({
+        type: 'notice',
+        text: `Verifying: ${check.command} (${describeSource(check.source)})`,
+      })
+      const startedAt = this.now()
       const outcome = await this.run(check.command, this.options.cwd)
       const evidence: AgentEvidenceEvent = {
         type: 'evidence',
@@ -211,6 +253,15 @@ export class Verifier {
     } finally {
       this.current = null
     }
+  }
+
+  /** True once the user said yes to this command of this issue body, now or earlier in the session. */
+  private async approve(command: string, issueBody: string): Promise<boolean> {
+    const key = approvalKey(command, issueBody)
+    if (this.approved.has(key)) return true
+    if (!(await this.options.confirm(command))) return false
+    this.approved.add(key)
+    return true
   }
 
   private emit(event: AgentEvent): void {

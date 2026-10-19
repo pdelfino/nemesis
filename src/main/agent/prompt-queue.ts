@@ -6,6 +6,15 @@ import type {
   QueuedPrompt,
 } from '../../shared/agent'
 import { MAX_PROMPT_LENGTH } from '../../shared/agent'
+import { CommandError } from '../commands/registry'
+import {
+  assertImageFits,
+  imageBlock,
+  imageMarker,
+  MAX_IMAGES_PER_PROMPT,
+  type ClipboardImage,
+  type PromptImage,
+} from './images'
 import type { AgentSession } from './session'
 
 /**
@@ -17,6 +26,12 @@ import type { AgentSession } from './session'
  * One prompt goes to the agent at a time. The SDK would take a second user
  * message mid-turn, but the cockpit wants to show what waits and in what
  * order, so the queue is held here and advanced when a turn ends.
+ *
+ * Images attached to the prompt being composed (#83) wait here too, as PNG
+ * bytes behind a marker line in the text. The send takes the images whose
+ * marker is still in the prompt, as content blocks next to the text; a
+ * marker deleted from the prompt drops its image. The state the window
+ * sees, the history and the draft carry the text alone.
  *
  * Plain data, no Electron types, like src/main/buffers.ts: the unit tests
  * drive it with a fake session and the bridge wires it to the window.
@@ -32,12 +47,18 @@ export type PromptInsertListener = (insert: PromptInsert) => void
 /** What the queue needs from a session: send, and say when a turn is over. */
 export type PromptTarget = Pick<AgentSession, 'send' | 'on'>
 
+/** A queued prompt with the images that go with it; the window sees the text only. */
+interface PendingPrompt extends QueuedPrompt {
+  readonly images: readonly PromptImage[]
+}
+
 export class PromptQueue {
   private readonly session: PromptTarget
   private readonly listeners = new Set<PromptQueueListener>()
   private readonly insertListeners = new Set<PromptInsertListener>()
-  private readonly queued: QueuedPrompt[] = []
+  private readonly queued: PendingPrompt[] = []
   private readonly sent: string[] = []
+  private attachedImages: PromptImage[] = []
   private draftText = ''
   private busy = false
   private counter = 0
@@ -68,22 +89,60 @@ export class PromptQueue {
     return [...this.sent]
   }
 
+  /**
+   * The prompts of a resumed session become the history (#104), oldest
+   * first, so `M-p` walks back across a restart. What was sent in this
+   * window before the resume belonged to the session that was dropped and
+   * goes with it; the same limit and the same repeat rule apply.
+   */
+  seedHistory(prompts: readonly string[]): void {
+    this.sent.splice(0)
+    for (const text of prompts) this.remember(text)
+  }
+
   state(): PromptQueueState {
-    return { busy: this.busy, queued: [...this.queued] }
+    return { busy: this.busy, queued: this.queued.map(({ id, text }) => ({ id, text })) }
   }
 
   promptState(): PromptState {
     return { draft: this.draftText, history: this.history(), queue: this.state() }
   }
 
+  /** The images attached to the prompt being composed, in order (#83). */
+  attached(): readonly PromptImage[] {
+    return [...this.attachedImages]
+  }
+
+  /**
+   * Attaches an image to the prompt being composed (#83): kept here as PNG,
+   * its marker line put in the prompt, where it stands for the image until
+   * the send. Refuses an image over the cap and a fifth image.
+   */
+  attachImage(image: ClipboardImage): PromptImage {
+    assertImageFits(image)
+    if (this.attachedImages.length >= MAX_IMAGES_PER_PROMPT) {
+      throw new CommandError(
+        `${MAX_IMAGES_PER_PROMPT} images are already attached; a prompt carries ${MAX_IMAGES_PER_PROMPT} at most`,
+      )
+    }
+    const index = this.attachedImages.length + 1
+    const attached: PromptImage = { ...image, index, marker: imageMarker(index, image) }
+    this.attachedImages.push(attached)
+    this.insert(attached.marker)
+    return attached
+  }
+
   /**
    * Sends the prompt now when the agent is idle, otherwise queues it. Rejects
    * when the send itself fails, with the prompt dropped from the queue, so the
-   * renderer keeps the text and nothing is lost.
+   * renderer keeps the text and nothing is lost. The images whose marker is
+   * in the text go with it; the rest are dropped with their markers.
    */
   async submit(text: string): Promise<PromptReceipt> {
     this.counter += 1
-    const prompt: QueuedPrompt = { id: `p${this.counter}`, text }
+    const images = this.attachedImages.filter((image) => text.includes(image.marker))
+    this.attachedImages = []
+    const prompt: PendingPrompt = { id: `p${this.counter}`, text, images }
     this.queued.push(prompt)
     this.remember(text)
     if (this.busy) {
@@ -93,6 +152,8 @@ export class PromptQueue {
         await this.advance()
       } catch (error) {
         this.forget(prompt.id)
+        // The text stays in the editor, so its images stay attached to it.
+        this.attachedImages = [...images]
         this.announce()
         throw error
       }
@@ -113,11 +174,12 @@ export class PromptQueue {
 
   /**
    * Adds text to the prompt being composed (#81). The editor in the window
-   * holds the draft and appends it there; the draft parked here follows
-   * when the editor parks it again, so nothing typed since is overwritten.
+   * holds the draft and appends it there, or puts it at the point for a
+   * file mention (#83); the draft parked here follows when the editor parks
+   * it again, so nothing typed since is overwritten.
    */
-  insert(text: string): void {
-    const insert: PromptInsert = { text }
+  insert(text: string, at?: 'point'): void {
+    const insert: PromptInsert = at === undefined ? { text } : { text, at }
     for (const listener of [...this.insertListeners]) listener(insert)
   }
 
@@ -142,7 +204,7 @@ export class PromptQueue {
     }
     this.setBusy(true)
     try {
-      await this.session.send(next.text)
+      await this.session.send(next.text, next.images.map(imageBlock))
     } catch (error) {
       this.setBusy(false)
       throw error

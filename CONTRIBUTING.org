@@ -8,9 +8,31 @@ Nemesis is developed on macOS first and mostly by Claude Code under the rules in
 - npm with the committed =package-lock.json=. Install with =npm ci --ignore-scripts= and then =node node_modules/electron/install.js=. Lifecycle scripts from dependencies are never run; Electron's binary download is the single explicit exception.
 - No global tools are required. Playwright downloads nothing extra for Electron.
 
+** Seeing the window: =dev:debug= and =peek=
+
+Claude Code builds the app without seeing it, so the development build can open a Chrome DevTools Protocol port and a script can look through it (#102):
+
+- =npm run dev:debug= is =electron-vite dev= with =--remoteDebuggingPort 9222=. The port is a developer switch on loopback only: Chromium binds it to 127.0.0.1, electron-vite passes it only in development, and the packaged app never sets one.
+- =npm run peek -- [--port 9222] [--out /tmp/peek.png]= attaches to that port with Playwright's =connectOverCDP= (=scripts/peek.mts=, no build step, no new dependency), prints an Org document on stdout with the window title, the mode line, one heading per visible buffer with its text (the CodeMirror documents included) and the palette state, then saves a PNG of the window. It launches nothing and sends no input; it only reads. When nothing listens it exits non-zero with one line on stderr. The end-to-end spec =tests/e2e/peek.spec.ts= runs the script against the built app on port 9333.
+
+The same port serves the chrome-devtools MCP server for live inspection from a Claude Code session. It is added in local scope, so the repository carries no =.mcp.json= (a project server would be spawned by every headless queue run):
+
+#+begin_src sh
+claude mcp add --scope local chrome-devtools -- npx chrome-devtools-mcp@1.11.0 --browserUrl http://127.0.0.1:9222
+#+end_src
+
 * The gate
 
 =npm run gate= runs the dependency script check (=scripts/check-deps.mjs=, SECURITY.org T5), typecheck, lint, unit tests, the end-to-end smoke and the security specs. It runs locally before every commit. GitHub Actions runs the same gate plus a secret scan and =npm audit= as a second opinion when a pull request is marked ready for review.
+
+When an end-to-end or security spec goes red, the evidence is next to the result, not only in the assertion text. Every spec imports =test= and =expect= from =tests/e2e/_test.ts=, whose automatic fixture leaves two files in the test's folder under =test-results/= whenever a test ends in a status it was not expected to: =window-<n>.png=, the first window of the n-th app the test launched through =launchApp=, and =main.log=, everything the Electron main process wrote to stdout and stderr. Both are also attached to the Playwright report. The specs keep their own cleanup, so the frame is taken as =app.close()= begins, right after the assertion threw; a test that timed out still has its window open and gets a live screenshot. To prove the mechanism with one command, run the probe, which launches the app and fails on purpose (the run exits non-zero by design):
+
+#+begin_src sh
+ARTIFACT_PROBE=1 npx playwright test --project=app -g artifact-probe
+ls test-results/*/window-1.png test-results/*/main.log
+#+end_src
+
+Without =ARTIFACT_PROBE=1= the probe is skipped, so the gate never sees it.
 
 * Issues are the unit of work
 

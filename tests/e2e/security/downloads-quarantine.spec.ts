@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from '../_test'
 import { QUARANTINE_ATTRIBUTE, QUARANTINE_FOLDER } from '../../../src/main/security/downloads'
 import { fixtureServer, launchNemesis } from './_harness'
 

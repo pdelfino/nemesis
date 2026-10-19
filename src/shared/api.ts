@@ -8,6 +8,7 @@ import type {
 } from './agent'
 import type { BufferInfo, BufferList, BufferSpec } from './buffers'
 import type { DiffContent } from './diff'
+import type { EnvironmentContent } from './environment'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 import type { PlanAnswer, PlanContent } from './plan'
@@ -57,6 +58,8 @@ export interface NemesisApi {
   onSpecShown(listener: (content: SpecContent) => void): void
   /** A command adds text to the prompt being composed: attach-check, screenshot-window (#81). */
   onPromptInsert(listener: (insert: PromptInsert) => void): void
+  /** The environment buffer has content: the environment command listed the session's files and servers (#86). */
+  onEnvironmentShown(listener: (content: EnvironmentContent) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

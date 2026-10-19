@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import { warnLimited } from './warn-limited'
 
 /**
  * Where a WebContents may go and what it may spawn (#48, SECURITY.org T1 and T3).
@@ -51,55 +52,86 @@ function schemeOf(url: string): string | null {
   }
 }
 
+/** The origin of a URL as `originOf` in permissions.ts spells it, or null. */
+function originOf(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.protocol}//${parsed.host}`
+  } catch {
+    return null
+  }
+}
+
 /**
  * The decision, on its own so the unit tests can run it on strings. An
  * unparseable URL is refused for either kind.
+ *
+ * `allowedOrigins` is the development exception (#96): in a development run
+ * the cockpit is loaded from the Vite server, and Vite's full page reload is
+ * a navigation of that page to its own `http:` origin, which the internal
+ * rule would refuse. Internal contents accept a URL whose origin is listed,
+ * in addition to the internal scheme; a page buffer never reads the list.
  */
-export function navigationAllowed(kind: ContentsKind, url: string): boolean {
+export function navigationAllowed(
+  kind: ContentsKind,
+  url: string,
+  allowedOrigins: readonly string[] = [],
+): boolean {
   const scheme = schemeOf(url)
   if (scheme === null) return false
-  return kind === 'internal' ? scheme === INTERNAL_SCHEME : PAGE_SCHEMES.includes(scheme)
+  if (kind === 'page') return PAGE_SCHEMES.includes(scheme)
+  if (scheme === INTERNAL_SCHEME) return true
+  const origin = originOf(url)
+  return origin !== null && allowedOrigins.includes(origin)
 }
 
 interface Policy {
   kind: ContentsKind
   host: NavigationHost
+  allowedOrigins: readonly string[]
 }
 
 const policies = new WeakMap<WebContents, Policy>()
 
-/** The log never carries the URL: a path or a query can hold a secret. */
+/** The log never carries the URL: a path or a query can hold a secret. Bounded per scheme (#100). */
 function refuse(what: string, policy: Policy, url: string, contents: WebContents): void {
   const scheme = schemeOf(url) ?? 'an unparseable URL'
-  console.warn(
+  warnLimited(
+    `navigation ${scheme}`,
     `navigation: blocked ${what} to ${scheme} from ${policy.kind} contents ${contents.id}`,
   )
 }
 
 /**
  * Installs the guards on `contents` as `kind`, or, when they are already
- * installed, records the new kind and host for the guards to read.
+ * installed, records the new kind, host and origins for the guards to read.
+ * `allowedOrigins` is read for internal contents only (#96): the dev server
+ * origin in a development run, nothing in a packaged one.
  */
 export function applyNavigationPolicy(
   contents: WebContents,
   kind: ContentsKind,
   host: NavigationHost = {},
+  allowedOrigins: readonly string[] = [],
 ): void {
   const existing = policies.get(contents)
   if (existing !== undefined) {
     existing.kind = kind
     existing.host = host
+    existing.allowedOrigins = allowedOrigins
     return
   }
-  const policy: Policy = { kind, host }
+  const policy: Policy = { kind, host, allowedOrigins }
   policies.set(contents, policy)
 
   contents.on('will-navigate', (event, url) => {
-    if (navigationAllowed(policy.kind, url)) return
+    if (navigationAllowed(policy.kind, url, policy.allowedOrigins)) return
     refuse('navigation', policy, url, contents)
     event.preventDefault()
   })
 
+  // A redirect reads no origin list: the development exception covers the
+  // page reload Vite issues through will-navigate and nothing else (#96).
   contents.on('will-redirect', (event, url) => {
     if (navigationAllowed(policy.kind, url)) return
     refuse('redirect', policy, url, contents)
@@ -121,7 +153,10 @@ export function applyNavigationPolicy(
   // webviewTag is off in HARDENED_WEB_PREFERENCES, so no page should get this
   // far; a WebContents that somehow did is stopped here as well (T1).
   contents.on('will-attach-webview', (event) => {
-    console.warn(`navigation: blocked webview in ${policy.kind} contents ${contents.id}`)
+    warnLimited(
+      'navigation webview',
+      `navigation: blocked webview in ${policy.kind} contents ${contents.id}`,
+    )
     event.preventDefault()
   })
 }

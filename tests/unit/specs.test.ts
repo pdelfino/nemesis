@@ -185,6 +185,10 @@ describe('the three commands and the fresh session', () => {
       prompts: {
         submit: submit as unknown as (text: string) => Promise<never>,
         insert: () => undefined,
+        attachImage: () => {
+          throw new Error('unused')
+        },
+        draft: '',
       },
     })
     const registry = createCockpitRegistry(deps)

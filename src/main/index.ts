@@ -1,5 +1,15 @@
-import { app, BrowserWindow, desktopCapturer, nativeTheme, session, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  nativeImage,
+  nativeTheme,
+  session,
+  shell,
+} from 'electron'
 import { join } from 'node:path'
+import type { ClipboardImage } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { SessionManager } from './agent/session-manager'
@@ -11,6 +21,7 @@ import {
   DOWNLOAD_SOURCE,
   EXTERNAL_SOURCE,
   OPEN_FILE_SOURCE,
+  VERIFY_SOURCE,
 } from './commands/confirm'
 import { installKeyBridge } from './commands/key-bridge'
 import {
@@ -21,6 +32,9 @@ import {
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import { DiffBuffers } from './diffs'
+import { EnvironmentBuffers } from './environment'
+import { UrlFetcher } from './fetch-url'
+import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installMenu } from './menu'
 import { PlanBuffers } from './plans'
@@ -50,7 +64,7 @@ import { SpecBuffers } from './specs'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
-import { Verifier } from './verify'
+import { Verifier, verifyQuestion } from './verify'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
@@ -97,6 +111,8 @@ const downloads = new DownloadPolicy({
 const external = new ExternalPolicy({
   confirm: (request) => confirm(prompter, EXTERNAL_SOURCE, describeExternal(request)),
 })
+// A yes for a download is good for one request within 30 seconds (#100); on quit none survives.
+app.on('will-quit', () => downloads.clear())
 
 app.on('web-contents-created', (_event, contents) => {
   // T6 (#49): whatever partition this WebContents uses gets the deny-by-default
@@ -147,8 +163,11 @@ function createWindow(): BrowserWindow {
   win.once('ready-to-show', () => win.show())
 
   // The cockpit is an internal page: it may navigate on the internal scheme
-  // only, and it opens no windows (#48).
-  applyNavigationPolicy(win.webContents, 'internal')
+  // only, and it opens no windows (#48). A development run adds the dev
+  // server origin the page is loaded from, so Vite's full reload, a
+  // navigation of the page to itself, lands (#96); a packaged run, or a run
+  // without the variable, adds nothing.
+  applyNavigationPolicy(win.webContents, 'internal', {}, devOrigin === null ? [] : [devOrigin])
 
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devServer) {
@@ -187,6 +206,39 @@ const EXTERNAL_LOG = '__nemesisExternal'
 
 /** A window screenshot is scaled to fit this (#81): enough to read a UI, small enough to send. */
 const SCREENSHOT_SIZE = { width: 1920, height: 1200 }
+
+/**
+ * The image on the clipboard as attach-image takes it (#83), or null when
+ * the clipboard holds none: the first entry with an image type, decoded and
+ * re-encoded as PNG whatever the clipboard's own format. Electron's
+ * clipboard is the W3C-shaped asynchronous one, so this reads through
+ * `clipboard.read()`. Under test a PNG file named by NEMESIS_CLIPBOARD_IMAGE
+ * stands in for the clipboard, so a spec never writes the user's clipboard;
+ * the variable is ignored in any other run.
+ */
+async function readClipboardImage(): Promise<ClipboardImage | null> {
+  const standIn = process.env['NEMESIS_CLIPBOARD_IMAGE']
+  if (process.env['NODE_ENV'] === 'test' && standIn !== undefined && standIn.length > 0) {
+    return clipboardImageOf(nativeImage.createFromPath(standIn))
+  }
+  for (const item of await clipboard.read()) {
+    const type = item.types.find((candidate) => candidate.startsWith('image/'))
+    if (type === undefined) continue
+    const blob = await item.getType(type)
+    if (!(blob instanceof Blob)) continue
+    const image = clipboardImageOf(
+      nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer())),
+    )
+    if (image !== null) return image
+  }
+  return null
+}
+
+function clipboardImageOf(image: Electron.NativeImage): ClipboardImage | null {
+  if (image.isEmpty()) return null
+  const { width, height } = image.getSize()
+  return { png: image.toPNG(), width, height }
+}
 
 /** One stream of the cockpit's own notices out of several policies. */
 function mergeNotices(...sources: readonly EventSource[]): EventSource {
@@ -262,7 +314,8 @@ void app.whenReady().then(() => {
   // buffers (#68). The collector reads the live events and a resumed
   // session's history before the bridge pushes them, so list-diffs is never
   // behind the window; `C-c C-o` asks in the prompt buffer, then hands the
-  // file to the system through the one `shell.openPath` call site.
+  // file to the system through `shell.openPath`, a door the environment
+  // panel below shares.
   const diffs = new DiffBuffers(buffers, {
     confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
     open: (path) => shell.openPath(path),
@@ -276,15 +329,36 @@ void app.whenReady().then(() => {
   // Live events only: a resumed history reopens no spec.
   const specs = new SpecBuffers(buffers)
   agent.on((event) => specs.observe(event))
+  // The environment of the working directory as one buffer (#86): the
+  // CLAUDE.md files, rules, hooks, skills, servers and subagents off disk
+  // and off the session's init frame. A listed file opens through the same
+  // door as a diff's: the question in the prompt buffer, then shell.openPath.
+  // Under test a home named by NEMESIS_HOME stands in for the user's, so a
+  // spec reads a fixture and never the developer's own ~/.claude.
+  const testHome = process.env['NEMESIS_HOME']
+  const home =
+    process.env['NODE_ENV'] === 'test' && testHome !== undefined && testHome.length > 0
+      ? testHome
+      : app.getPath('home')
+  const environment = new EnvironmentBuffers(buffers, {
+    cwd: process.cwd(),
+    home,
+    started: () => agent.started,
+    confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
+    open: (path) => shell.openPath(path),
+  })
   // The verify key (#81): the check of the attached issue, else the settings'
   // verify entry, else npm run gate, run as a child of the cockpit with the
   // user's permissions in the folder it was started in, never through the
-  // agent's tool path. The issue comes through the user's own gh login.
+  // agent's tool path. The issue comes through the user's own gh login, and
+  // its command, remote text, is confirmed in the prompt buffer before its
+  // first run (#98).
   const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
   const verifier = new Verifier({
     cwd: process.cwd(),
     settingsCommand: settings.verify,
     issueBody: () => issues.current?.body ?? null,
+    confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
   })
   // A window of the screen into the prompt as an image (#81): the system's
   // capture under the user's screen-recording permission, the file written
@@ -309,6 +383,11 @@ void app.whenReady().then(() => {
       },
     },
   })
+  // The guide's rich prompts (#83): the files `@` lists come from git in the
+  // folder the app was started in; a URL the user asks for is fetched once,
+  // within the limits of fetch-url.ts, and wrapped as untrusted content.
+  const files = new WorkingFiles({ cwd: process.cwd() })
+  const fetcher = new UrlFetcher()
   const prompts = installSessionBridge({
     agent,
     permissions,
@@ -323,6 +402,8 @@ void app.whenReady().then(() => {
       issues,
       verifier,
       screenshots,
+      fetcher,
+      environment,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -341,6 +422,10 @@ void app.whenReady().then(() => {
     verifier,
     issues,
     screenshots,
+    files,
+    clipboard: { readImage: readClipboardImage },
+    fetcher,
+    environment,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
@@ -350,6 +435,7 @@ void app.whenReady().then(() => {
     diffs,
     plans,
     specs,
+    environment,
   })
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher = createCockpitDispatcher(deps)

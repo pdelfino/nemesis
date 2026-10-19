@@ -20,6 +20,8 @@
     <header id="modeline">
       <span id="app-name">Nemesis</span>
       <span id="app-version"></span>
+      <!-- The session's name (#104): shown while the named session is up, cut where the line runs out of room. -->
+      <span id="session-name" aria-label="session name"></span>
       <!-- The buffer list, current buffer in brackets (#60). -->
       <span id="buffer-list" aria-label="buffer list"></span>
       <!-- The permission mode (#82): default until the session says otherwise; C-c C-p toggles plan. -->
@@ -49,6 +51,11 @@
         <p id="spec-file"></p>
         <div id="spec-editor"></div>
         <p id="spec-keys" class="placeholder"></p>
+      </section>
+      <!-- The environment buffer (#86): the session's CLAUDE.md files, rules, hooks, skills, servers and subagents, read-only. -->
+      <section id="environment" aria-label="environment" data-buffer-type="environment" hidden>
+        <div id="environment-editor"></div>
+        <p id="environment-keys" class="placeholder"></p>
       </section>
       <!-- The help buffer (#65): a read-only document, shown while a help buffer exists. -->
       <section id="help" aria-label="help" data-buffer-type="help" hidden>

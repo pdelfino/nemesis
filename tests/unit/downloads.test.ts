@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentNoticeEvent } from '../../src/main/agent/events'
 import {
+  APPROVAL_TTL_MS,
   describeDownload,
   DownloadPolicy,
   formatBytes,
@@ -166,17 +167,19 @@ describe('the download policy (SECURITY.org T2)', () => {
       if (answer instanceof Error) throw answer
       return answer
     })
+    const clock = { now: 1_000_000 }
     const policy = new DownloadPolicy({
       quarantineDir: dir,
       confirm,
       attributes: attributes ?? fakeAttributes(new Map()),
       platform: 'darwin',
+      now: () => clock.now,
     })
     const notices: string[] = []
     policy.on((event: AgentNoticeEvent) => notices.push(event.text))
     const session = fakeSession()
     policy.apply(session)
-    return { dir, policy, confirm, notices, session }
+    return { dir, policy, confirm, notices, session, clock }
   }
 
   it('installs once per session and points the session at the quarantine folder', () => {
@@ -238,6 +241,52 @@ describe('the download policy (SECURITY.org T2)', () => {
     expect(notices).toEqual([
       `Saved report.pdf (1.0 KB) from https://example.org to ${dir}: quarantined, not opened`,
     ])
+  })
+
+  it('honours a yes that the request answers within 30 seconds', async () => {
+    const { clock, confirm, dir, session } = setUp(true)
+    const url = 'https://files.example.org/report.pdf'
+    offer(session, fakeItem({ url }))
+    await tick()
+    clock.now += APPROVAL_TTL_MS
+    const item = fakeItem({ url })
+    expect(offer(session, item)).toBe(true)
+    expect(item.savePath).toBe(join(dir, 'report.pdf'))
+    expect(confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a yes nothing answered within 30 seconds: the late item is refused, noted and asked about again', async () => {
+    const { clock, confirm, notices, policy, session } = setUp(true)
+    const url = 'https://files.example.org/report.pdf?token=secret'
+    offer(session, fakeItem({ url }))
+    await tick()
+    expect(session.requested).toEqual([url])
+    clock.now += APPROVAL_TTL_MS + 1
+    const late = fakeItem({ url, filename: 'something-else.exe' })
+    expect(offer(session, late)).toBe(false)
+    expect(late.savePath).toBeNull()
+    expect(notices).toEqual(['Approval for report.pdf expired, ask again'])
+    expect(notices.join(' ')).not.toContain('secret')
+    // Asked again, about the item that arrived; a yes to that one is good anew.
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(confirm).toHaveBeenLastCalledWith({
+      filename: 'something-else.exe',
+      bytes: 1024,
+      origin: 'https://example.org',
+    })
+    await tick()
+    expect(session.requested).toEqual([url, url])
+    const second = fakeItem({ url })
+    expect(offer(session, second)).toBe(true)
+    // And an expired approval is gone for good: the same URL is not let through on a later try.
+    clock.now += APPROVAL_TTL_MS + 1
+    offer(session, fakeItem({ url }))
+    expect(confirm).toHaveBeenCalledTimes(3)
+    // On quit nothing survives: a yes given and then cleared lets nothing through.
+    await tick()
+    policy.clear()
+    expect(offer(session, fakeItem({ url }))).toBe(false)
+    expect(confirm).toHaveBeenCalledTimes(4)
   })
 
   it('removes a completed file that cannot be given the quarantine attribute', async () => {

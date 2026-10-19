@@ -262,6 +262,8 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
       return appendBlock(state, 'note', event.text, '')
     case 'permission-mode':
       return appendBlock(state, 'note', `Permission mode: ${event.mode}`, '')
+    case 'named':
+      return appendBlock(state, 'note', `Session named: ${event.name}`, '')
     case 'context-usage':
       // The mode line shows the meter; the document has nothing to add.
       return null

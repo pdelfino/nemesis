@@ -90,6 +90,30 @@ describe('an agent session', () => {
     await agent.stop()
   })
 
+  it('sends an image next to the text in one message, and keeps the bytes out of the events (#83)', async () => {
+    const driver = mockDriver()
+    const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    const events = collect(agent)
+    const data = Buffer.from(new Uint8Array(64)).toString('base64')
+    await agent.send('Compare. [image 1: 8x8 png, 1 KB]', [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+    ])
+    await agent.waitForTurn()
+
+    expect(driver.received.at(-1)).toEqual({
+      blocks: [
+        { type: 'text', text: 'Compare. [image 1: 8x8 png, 1 KB]' },
+        { type: 'image', mediaType: 'image/png', bytes: 64 },
+      ],
+    })
+    expect(events[0]).toEqual({ type: 'user-text', text: 'Compare. [image 1: 8x8 png, 1 KB]' })
+    expect(JSON.stringify(events)).not.toContain(data)
+    expect(agent.checkpoints().map((checkpoint) => checkpoint.text)).toEqual([
+      'Compare. [image 1: 8x8 png, 1 KB]',
+    ])
+    await agent.stop()
+  })
+
   it('maps a thinking block of its own', async () => {
     const agent = session()
     const events = collect(agent)

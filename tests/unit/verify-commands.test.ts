@@ -2,21 +2,24 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentEvent } from '../../src/main/agent/events'
 import type { PromptQueue } from '../../src/main/agent/prompt-queue'
 import { attachCheckPrompt, screenshotPrompt } from '../../src/main/commands/guide-prompts'
+import { confirm, CONFIRM_SOURCES, VERIFY_SOURCE } from '../../src/main/commands/confirm'
 import { createCockpitRegistry, resolveCockpitDeps } from '../../src/main/commands/keyscheme'
 import { Prompter } from '../../src/main/commands/prompter'
 import { CommandError } from '../../src/main/commands/registry'
 import { IssueAttachment } from '../../src/main/issues'
 import { Screenshots } from '../../src/main/screenshots'
-import { Verifier } from '../../src/main/verify'
+import { Verifier, verifyQuestion } from '../../src/main/verify'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // The verify practice as commands (#81): the key, the attached issue, the
-// criterion for the prompt and the window screenshot, over the palette.
+// criterion for the prompt and the window screenshot, over the palette. The
+// issue's command is confirmed through the same prompter before it runs (#98).
 
 function harness() {
   const prompter = new Prompter()
+  for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   const events: AgentEvent[] = []
   const issues = new IssueAttachment({
     cwd: '/work',
@@ -32,6 +35,7 @@ function harness() {
     cwd: '/work',
     settingsCommand: 'npm test',
     issueBody: () => issues.current?.body ?? null,
+    confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
     run: (command) => {
       runs.push(command)
       return Promise.resolve({ exitCode: 0, signal: null, output: 'ok\n' })
@@ -56,8 +60,9 @@ function harness() {
 }
 
 describe('the verify commands', () => {
-  it('runs the check of the settings, then of the issue once one is attached, as evidence', async () => {
-    const { prompter, registry, events, runs } = harness()
+  it('runs the check of the settings, then of the issue once one is attached and confirmed, as evidence', async () => {
+    const { deps, prompter, registry, events, runs } = harness()
+    const idle = (): Promise<void> => vi.waitFor(() => expect(deps.verifier.running).toBeNull())
     await registry.run('verify', { source: 'test' })
     await vi.waitFor(() =>
       expect(events.map((event) => event.type)).toEqual(['notice', 'evidence']),
@@ -74,11 +79,53 @@ describe('the verify commands', () => {
       type: 'notice',
       text: 'Attached issue #81: Verify. C-c C-v runs its check: make check.',
     })
+    // The issue's command is remote text: the key asks first, "Do not run"
+    // first among the candidates, and a cancel is a no (#98).
     await registry.run('verify', { source: 'test' })
+    const question = prompter.pending
+    expect(question).toMatchObject({
+      source: 'verify',
+      prompt: "Run the attached issue's check in a shell? make check",
+    })
+    expect(question?.candidates.map((candidate) => candidate.label)).toEqual([
+      'Do not run',
+      'Run it with your permissions',
+    ])
+    await prompter.answer({ id: question?.id ?? '', choice: null })
+    await vi.waitFor(() =>
+      expect(events.at(-1)).toEqual({ type: 'notice', text: 'Not run: make check' }),
+    )
+    expect(runs).toEqual(['npm test'])
+    await idle()
+    // A yes runs it, and the next press on the same issue runs without asking.
+    await registry.run('verify', { source: 'test' })
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
     await vi.waitFor(() => expect(runs).toEqual(['npm test', 'make check']))
     await vi.waitFor(() =>
       expect(events.at(-1)).toMatchObject({ type: 'evidence', source: 'issue' }),
     )
+    await idle()
+    await registry.run('verify', { source: 'test' })
+    expect(prompter.pending).toBeNull()
+    await vi.waitFor(() => expect(runs).toEqual(['npm test', 'make check', 'make check']))
+    await idle()
+    // Attaching again, even the same issue, asks again.
+    await registry.run('attach-issue', { source: 'test' })
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: null, text: '#81' })
+    await registry.run('verify', { source: 'test' })
+    expect(prompter.pending).toMatchObject({ source: 'verify' })
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: null })
+    expect(runs).toHaveLength(3)
+    await idle()
+    // So does a new task.
+    await registry.run('verify', { source: 'test' })
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    await vi.waitFor(() => expect(runs).toHaveLength(4))
+    await idle()
+    await registry.run('new-task', { source: 'test' })
+    await registry.run('verify', { source: 'test' })
+    expect(prompter.pending).toMatchObject({ source: 'verify' })
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: null })
   })
 
   it('attach-issue answers a refused number or a failed fetch in the help buffer', async () => {
@@ -100,6 +147,7 @@ describe('the verify commands', () => {
       cwd: '/work',
       settingsCommand: 'sleep',
       issueBody: () => null,
+      confirm: () => Promise.resolve(true),
       run: () =>
         new Promise((resolve) => {
           release = () => resolve({ exitCode: 0, signal: null, output: '' })

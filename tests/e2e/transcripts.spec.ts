@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './_test'
 import { launchApp } from './_launch'
 
 /** Types a prompt and sends it with C-c C-c, then waits for the reply to land. */

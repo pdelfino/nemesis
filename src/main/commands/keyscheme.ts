@@ -1,16 +1,26 @@
+import { homedir } from 'node:os'
 import { PermissionBridge } from '../agent/permission-bridge'
 import { PromptQueue } from '../agent/prompt-queue'
 import {
   describeCheckpoint,
   describeCheckpoints,
+  describeRewindPreview,
   REWIND_TARGETS,
+  rewindConversationQuestion,
+  rewindFilesQuestion,
   SessionManager,
+  turnsDropped,
   undoPrompt,
   type RewindTarget,
 } from '../agent/session-manager'
+import { wrapUntrusted } from '../agent/boundary'
+import type { ClipboardReader } from '../agent/images'
 import type { BufferRegistry } from '../buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
+import { EnvironmentBuffers } from '../environment'
+import { UrlFetcher } from '../fetch-url'
+import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
@@ -18,7 +28,8 @@ import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
-import { describeSource, Verifier } from '../verify'
+import { sessionName } from '../transcripts'
+import { describeSource, Verifier, verifyQuestion } from '../verify'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -31,8 +42,11 @@ import {
   freshSessionPrompt,
   interviewPrompt,
   investigatePrompt,
+  PATTERN_TEMPLATE,
   screenshotPrompt,
+  SYMPTOM_TEMPLATE,
 } from './guide-prompts'
+import { confirm, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -54,7 +68,9 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * buffer and reads one and what to restore, `undo` sends the guide's "undo
  * that" with the last tool calls quoted, and `new-task` drops the session.
  * `resume-session` (#67) reads a past session off the sessions folder and
- * picks it up through the manager. `search-transcripts` (#69) reads a query
+ * picks it up through the manager; `name-session` on `C-c C-n` (#104) reads
+ * a name as free text and the manager records it as an event, so the list,
+ * the window title and the mode line show it. `search-transcripts` (#69) reads a query
  * as free text, lists the matches of every transcript on disk, and opens
  * the session a match belongs to with the transcript's point on that line.
  * The guide's context management (#80): `clear` on `C-c C-l` is a fresh
@@ -78,7 +94,21 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * with the user's permissions, and the output lands as an evidence block;
  * `attach-issue` reads the issue number; `attach-check` adds a criterion to
  * the prompt, example cases and the check to run; `screenshot-window` puts
- * a window of the screen in the prompt as an image.
+ * a window of the screen in the prompt as an image. The guide's specific,
+ * rich prompts (#83): `complete-file`, on `@` at the start of a word in
+ * the prompt buffer, reads a file of the working directory off the palette
+ * and puts `@path` at the point; `attach-image` on `C-c C-i` takes the
+ * image on the clipboard for the next prompt, a marker line in its place;
+ * `fetch-url` on `C-c C-u` reads an https URL, the ones in the prompt as
+ * candidates, and puts the page's text in the prompt wrapped as untrusted
+ * content from its origin; `template-symptom` and `template-pattern` drop
+ * the guide's two prompt shapes in to fill. The guide's environment (#86):
+ * `environment` on `C-c C-e` shows the CLAUDE.md files, permission rules,
+ * hooks, skills, MCP servers and subagents of the working directory in one
+ * read-only buffer, where `RET` is `open-environment-file`, a listed file
+ * through the open door of #68; `edit-claude-md` takes the nearest CLAUDE.md
+ * through the same door with the guide's reminder, and `doctor` lists the
+ * CLAUDE.md files over the length threshold.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -94,8 +124,12 @@ export interface CockpitDeps {
   readonly keys: KeyReader
   /** The current agent session, and the way to replace it (#84). */
   readonly agent: SessionManager
-  /** Where a prompt a command composes goes, like one the user typed (#84), or is added to (#81). */
-  readonly prompts: Pick<PromptQueue, 'submit' | 'insert'>
+  /**
+   * Where a prompt a command composes goes, like one the user typed (#84),
+   * or is added to (#81); where an image waits for the send and the draft
+   * whose URLs `fetch-url` offers are read (#83).
+   */
+  readonly prompts: Pick<PromptQueue, 'submit' | 'insert' | 'attachImage' | 'draft'>
   /** The sessions folder, as `resume-session` lists and reads it (#67). */
   readonly sessions: SessionSource
   /** The transcripts on disk, as `search-transcripts` scans them (#69). */
@@ -112,6 +146,14 @@ export interface CockpitDeps {
   readonly issues: IssueAttachment
   /** The windows on the screen, as screenshot-window lists and captures them (#81). */
   readonly screenshots: Screenshots
+  /** The files of the working directory, as `@` lists them (#83). */
+  readonly files: WorkingFiles
+  /** The clipboard, as attach-image reads an image off it (#83). */
+  readonly clipboard: ClipboardReader
+  /** The one fetch fetch-url makes, within its limits (#83). */
+  readonly fetcher: UrlFetcher
+  /** The environment of the working directory, as one buffer (#86). */
+  readonly environment: EnvironmentBuffers
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -126,10 +168,11 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       cwd: process.cwd(),
       fetch: () => Promise.reject(new CommandError('No issue fetcher is installed')),
     })
+  const prompter = partial.prompter ?? new Prompter()
   return {
     buffers,
     permissions,
-    prompter: partial.prompter ?? new Prompter(),
+    prompter,
     help: partial.help ?? new HelpBuffers(buffers),
     keys: partial.keys ?? new KeyReader(),
     agent,
@@ -147,7 +190,9 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.plans ??
       new PlanBuffers(buffers, permissions, { leavePlanMode: () => agent.leavePlanMode() }),
     specs: partial.specs ?? new SpecBuffers(buffers),
-    // Without the app there is no gh login, no shell to run a check in and no screen.
+    // Without the app there is no gh login, no shell to run a check in and no
+    // screen; the question before an issue's command still goes through the
+    // prompter (#98).
     issues,
     verifier:
       partial.verifier ??
@@ -155,6 +200,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         cwd: process.cwd(),
         settingsCommand: null,
         issueBody: () => issues.current?.body ?? null,
+        confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
         run: () =>
           Promise.resolve({
             exitCode: null,
@@ -167,6 +213,22 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       new Screenshots({
         dir: process.cwd(),
         capturer: { list: () => Promise.resolve([]), capture: () => Promise.resolve(null) },
+      }),
+    // Without the app there is no clipboard; the files and the fetch need none.
+    files:
+      partial.files ?? new WorkingFiles({ cwd: process.cwd(), list: () => Promise.resolve([]) }),
+    clipboard: partial.clipboard ?? { readImage: () => Promise.resolve(null) },
+    fetcher: partial.fetcher ?? new UrlFetcher(),
+    // Without the window there is nobody to ask and nothing to open; the
+    // files are read where the process runs, as in the app.
+    environment:
+      partial.environment ??
+      new EnvironmentBuffers(buffers, {
+        cwd: process.cwd(),
+        home: homedir(),
+        started: () => agent.started,
+        confirm: () => Promise.resolve(false),
+        open: () => Promise.resolve('No file opener is installed'),
       }),
   }
 }
@@ -197,6 +259,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     verifier,
     issues,
     screenshots,
+    files,
+    clipboard,
+    fetcher,
+    environment,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -254,7 +320,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'rewind',
-      doc: 'List the checkpoints, then restore the conversation, the code or both at one.',
+      doc: 'List the checkpoints, then restore the conversation, the code or both at one, after a preview and a yes.',
       run: () => {
         const checkpoints = agent.checkpoints()
         help.show(describeCheckpoints(checkpoints))
@@ -263,7 +329,28 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           const checkpoint = checkpoints.find((candidate) => candidate.uuid === uuid)
           if (checkpoint === undefined) return
           prompter.read({ source: 'rewind-targets', prompt: 'Restore:' }, async (target) => {
-            if (isRewindTarget(target)) await agent.rewind(checkpoint, target)
+            if (!isRewindTarget(target)) return
+            // Restoring files is the one action that rewrites the working
+            // tree, so the SDK's dry run shows its list first and the
+            // question names the count (#99); a conversation-only rewind
+            // asks the one question, with the turns it drops.
+            const dropped = turnsDropped(checkpoints, checkpoint)
+            let question: string
+            if (target === 'conversation') {
+              question = rewindConversationQuestion(checkpoint, dropped)
+            } else {
+              const preview = await agent.previewRewind(checkpoint)
+              if (!preview.canRewind) return
+              help.show(
+                describeRewindPreview(checkpoint, preview, target === 'both' ? dropped : null),
+              )
+              question = rewindFilesQuestion(checkpoint, preview)
+            }
+            if (await confirm(prompter, REWIND_SOURCE, question)) {
+              await agent.rewind(checkpoint, target)
+            } else {
+              agent.declineRewind(checkpoint)
+            }
           })
         })
       },
@@ -279,6 +366,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       name: 'new-task',
       doc: 'Start a fresh session in this window; the next prompt carries no context over.',
       run: () => {
+        // A fresh session forgets the yes given to an issue's check (#98).
+        verifier.forgetApprovals()
         agent.newTask().catch(report('new-task'))
       },
     }),
@@ -286,6 +375,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       name: 'clear',
       doc: 'Clear the context: a fresh session in this window, as /clear does between tasks.',
       run: () => {
+        verifier.forgetApprovals()
         agent.newTask().catch(report('clear'))
       },
     }),
@@ -333,8 +423,29 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       doc: 'Resume a past session: its transcript is shown and the next prompt continues it.',
       run: () => {
         prompter.read({ source: 'sessions', prompt: 'Resume session:' }, async (id) => {
+          verifier.forgetApprovals()
           await agent.resume(id, sessions.history(id))
         })
+      },
+    }),
+    defineCommand({
+      name: 'name-session',
+      doc: 'Name the session, for the sessions list, the window title and the mode line; naming it again replaces the name.',
+      run: () => {
+        // The name is one event in the session's log (#104), appended like
+        // every other; the palette refuses an empty line, and a name with
+        // nothing printable is refused here, once the palette has closed.
+        prompter.read(
+          { source: 'session-name', prompt: 'Name session:', freeText: true },
+          (text) => {
+            const name = sessionName(text)
+            if (name === null) {
+              help.show('The session was not named: a name needs a printable character.')
+              return
+            }
+            agent.nameSession(name)
+          },
+        )
       },
     }),
     defineCommand({
@@ -353,6 +464,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             prompter.read({ source: 'matches', prompt }, async (id) => {
               const match = transcripts.matches[Number(id)]
               if (match === undefined) return
+              verifier.forgetApprovals()
               await agent.resume(match.sessionId, sessions.history(match.sessionId))
               const transcript = buffers.list().find((buffer) => buffer.kind === 'transcript')
               if (transcript !== undefined) buffers.switchTo(transcript.id)
@@ -451,6 +563,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         const spec = specs.current
         if (spec === null) throw new CommandError('No spec buffer is open')
         specs.take(spec.bufferId)
+        verifier.forgetApprovals()
         agent
           .newTask()
           .then(() => prompts.submit(freshSessionPrompt(spec.filePath, spec.text)))
@@ -480,6 +593,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           async (text) => {
             try {
               await issues.attach(text)
+              // A new attach, even of the same issue, asks before its check runs (#98).
+              verifier.forgetApprovals()
             } catch (error) {
               help.show(
                 `Could not attach the issue: ${error instanceof Error ? error.message : String(error)}`,
@@ -528,6 +643,130 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             })
           })
           .catch(report('screenshot-window'))
+      },
+    }),
+    defineCommand({
+      name: 'complete-file',
+      doc: 'Mention a file of the working directory in the prompt: @ at the start of a word opens the list, the pick goes in at the point.',
+      run: (context) => {
+        // When the `@` key ran it, the prompt buffer typed the `@` itself and
+        // the pick adds the path after it; from the palette, the whole mention.
+        const typed = context.source === 'key' && context.chord === '@'
+        files
+          .refresh()
+          .then((paths) => {
+            if (paths.length === 0) {
+              help.show('No files to mention: the working directory lists none.')
+              return
+            }
+            prompter.read({ source: 'files', prompt: 'Mention file:' }, (path) => {
+              prompts.insert(`${typed ? '' : '@'}${path} `, 'point')
+              switchToPrompt()
+            })
+          })
+          .catch(report('complete-file'))
+      },
+    }),
+    defineCommand({
+      name: 'attach-image',
+      doc: 'Attach the image on the clipboard to the next prompt as PNG; a marker line stands for it in the text.',
+      run: () => {
+        // The bytes stay in the main process until the send; the help buffer
+        // answers an empty clipboard or an image over the cap, since the key
+        // has been answered by then.
+        clipboard
+          .readImage()
+          .then((image) => {
+            if (image === null) {
+              help.show('No image on the clipboard. Copy one, then C-c C-i again.')
+              return
+            }
+            try {
+              prompts.attachImage(image)
+            } catch (error) {
+              help.show(
+                `Could not attach the image: ${error instanceof Error ? error.message : String(error)}`,
+              )
+              return
+            }
+            switchToPrompt()
+          })
+          .catch(report('attach-image'))
+      },
+    }),
+    defineCommand({
+      name: 'fetch-url',
+      doc: 'Fetch an https URL as text into the prompt, wrapped as untrusted content from its origin; the URLs in the prompt are the candidates.',
+      run: () => {
+        // The text of the page is data from a named origin: it enters the
+        // prompt through the one wrapper and nowhere else (SECURITY.org, T4).
+        prompter.read(
+          { source: 'urls', prompt: 'Fetch URL (https only):', freeText: true },
+          async (url) => {
+            try {
+              const page = await fetcher.fetchText(url)
+              prompts.insert(wrapUntrusted(page.origin, page.text))
+              switchToPrompt()
+            } catch (error) {
+              help.show(
+                `Could not fetch ${url.trim()}: ${error instanceof Error ? error.message : String(error)}`,
+              )
+            }
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'template-symptom',
+      doc: 'Add the symptom template to the prompt: what happens, what should, how to reproduce, where it last worked.',
+      run: () => {
+        prompts.insert(SYMPTOM_TEMPLATE)
+        switchToPrompt()
+      },
+    }),
+    defineCommand({
+      name: 'template-pattern',
+      doc: 'Add the pattern template to the prompt: the file that does it right, what to copy, what differs.',
+      run: () => {
+        prompts.insert(PATTERN_TEMPLATE)
+        switchToPrompt()
+      },
+    }),
+    defineCommand({
+      name: 'environment',
+      doc: 'Show the environment of the working directory: CLAUDE.md files, permission rules, hooks, skills, MCP servers, subagents, plugins.',
+      run: () => {
+        environment.show()
+      },
+    }),
+    defineCommand({
+      name: 'open-environment-file',
+      doc: 'Open a file the environment panel lists with the default application, after a yes.',
+      run: () => {
+        // The renderer holds the point and the preload gains no channel for
+        // it, so the file is read off the palette over the panel's own list,
+        // which is the allowlist the open checks again (#86).
+        if (environment.files().length === 0) {
+          help.show('No file to open: the environment panel lists none.')
+          return
+        }
+        prompter.read({ source: 'environment-files', prompt: 'Open file:' }, async (path) => {
+          await environment.open(path)
+        })
+      },
+    }),
+    defineCommand({
+      name: 'edit-claude-md',
+      doc: "Open the nearest CLAUDE.md with the default application, after a yes, with the guide's reminder to keep it short.",
+      run: () => {
+        environment.editClaudeMd().catch(report('edit-claude-md'))
+      },
+    }),
+    defineCommand({
+      name: 'doctor',
+      doc: 'Check every CLAUDE.md that applies against the length threshold; the files over it are listed.',
+      run: () => {
+        help.show(environment.doctor())
       },
     }),
     defineCommand({
@@ -601,14 +840,19 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
 /**
  * The palette sources of M1 (#65): the commands, with their keys, and the
  * buffers; the rewind reads of #84, the checkpoints and what to restore;
- * the sessions on disk (#67), newest first, titled by their first prompt;
+ * the sessions on disk (#67), newest first, titled by their name (#104) or
+ * else their first prompt, and the name read over nothing, like a query;
  * and the two reads of a search (#69): the query, over nothing, since the
  * text typed is the answer, and the matches of the last search; and the
  * diffs of the session (#68), oldest first; and the one line the three
  * guideline commands read (#85), over nothing, like a search query; and the
  * reads of the verify practice (#81): an issue number and the example cases
  * over nothing, the check with the one the verify key would run as its
- * candidate, and the windows on the screen as of the last refresh.
+ * candidate, and the windows on the screen as of the last refresh; and the
+ * two reads of #83: the files of the working directory as of the last
+ * refresh, and the https URLs in the prompt draft, the last typed first,
+ * for a free-text read that takes any other; and the files the environment
+ * panel lists (#86), in the panel's order, for `RET` there.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -619,6 +863,9 @@ export function cockpitSources(
   diffs: DiffBuffers,
   verifier: Verifier,
   screenshots: Screenshots,
+  files: WorkingFiles,
+  prompts: Pick<PromptQueue, 'draft'>,
+  environment: EnvironmentBuffers,
 ): readonly PaletteSource[] {
   return [
     {
@@ -663,6 +910,10 @@ export function cockpitSources(
           detail: formatSessionDate(session.startedAt),
           doc: `${session.id} in ${session.cwd}${session.id === agent.sessionId ? ', current' : ''}`,
         })),
+    },
+    {
+      name: 'session-name',
+      candidates: () => [],
     },
     {
       name: 'search-query',
@@ -724,7 +975,41 @@ export function cockpitSources(
           doc: `Window ${window.id}`,
         })),
     },
+    {
+      name: 'files',
+      candidates: () =>
+        files.files.map((path) => ({ id: path, label: path, doc: `@${path} in the prompt` })),
+    },
+    {
+      name: 'urls',
+      candidates: () =>
+        httpsUrlsIn(prompts.draft).map((url) => ({
+          id: url,
+          label: url,
+          doc: 'In the prompt. Type another https URL to fetch it instead.',
+        })),
+    },
+    {
+      name: 'environment-files',
+      candidates: () =>
+        environment.files().map((path) => ({
+          id: path,
+          label: environment.label(path),
+          doc: path,
+        })),
+    },
   ]
+}
+
+/** The https URLs in a text, the last one first, each once. */
+export function httpsUrlsIn(text: string): readonly string[] {
+  const found = text.match(/https:\/\/[^\s<>"'`)\]]+/g) ?? []
+  const urls: string[] = []
+  for (const raw of found.reverse()) {
+    const url = raw.replace(/[.,;:!?]+$/, '')
+    if (!urls.includes(url)) urls.push(url)
+  }
+  return urls
 }
 
 function isRewindTarget(value: string): value is RewindTarget {
@@ -746,6 +1031,10 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-k': 'compact',
   'C-c C-p': 'toggle-plan-mode',
   'C-c C-v': 'verify',
+  'C-c C-i': 'attach-image',
+  'C-c C-u': 'fetch-url',
+  'C-c C-e': 'environment',
+  'C-c C-n': 'name-session',
   'C-x b': 'switch-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
@@ -757,6 +1046,11 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
 
 /** Per-buffer-type bindings. They are consulted before the global map. */
 export const BUFFER_KEYMAPS: BufferKeymaps = {
+  // In the prompt buffer `@` at the start of a word mentions a file (#83);
+  // the renderer keeps it as text inside a word, so an address stays one.
+  prompt: defineKeymap('prompt', {
+    '@': 'complete-file',
+  }),
   // A permission prompt is modal: an unmodified key is an answer, not text.
   permission: defineKeymap('permission', {
     y: 'answer-yes',
@@ -778,6 +1072,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   // In a spec buffer the send key starts the fresh session the guide says to (#85).
   spec: defineKeymap('spec', {
     'C-c C-c': 'start-fresh-session-from-spec',
+  }),
+  // In the environment buffer RET opens a listed file through the open door (#86).
+  environment: defineKeymap('environment', {
+    RET: 'open-environment-file',
   }),
 }
 
@@ -808,6 +1106,9 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.diffs,
     deps.verifier,
     deps.screenshots,
+    deps.files,
+    deps.prompts,
+    deps.environment,
   )) {
     deps.prompter.addSource(source)
   }

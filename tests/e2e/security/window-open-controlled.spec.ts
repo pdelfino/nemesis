@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../_test'
 import { INTERNAL_SCHEME } from '../../../src/main/security/navigation-policy'
 import { fixtureServer, launchNemesis } from './_harness'
 

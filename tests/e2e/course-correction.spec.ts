@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './_test'
 import { launchApp } from './_launch'
 
 interface AgentEvent {
@@ -55,9 +55,33 @@ async function runCommand(page: Page, name: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
+/** The palette's candidates in order, the highlighted one starred. */
+function candidates(page: Page): Promise<string[]> {
+  return page
+    .locator('#palette-candidates li')
+    .evaluateAll((items) =>
+      items.map(
+        (item) =>
+          `${item.firstChild?.textContent ?? ''}${item.getAttribute('aria-selected') === 'true' ? ' *' : ''}`,
+      ),
+    )
+}
+
+/** Runs rewind, picks the checkpoint by its prompt text and the target, up to the question. */
+async function startRewind(page: Page, checkpoint: string, target: string): Promise<void> {
+  await runCommand(page, 'rewind')
+  await expect(page.locator('#palette-prompt')).toHaveText('Rewind to:')
+  await page.keyboard.type(checkpoint)
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#palette-prompt')).toHaveText('Restore:')
+  await page.keyboard.type(target)
+  await page.keyboard.press('Enter')
+}
+
 // The guide's course corrections as keys (#84): C-g stops the turn and keeps
-// the context, C-x n starts over, rewind is a buffer over the checkpoints.
-test('C-g interrupts a streaming turn, C-x n starts a fresh session, rewind lists the checkpoints', async () => {
+// the context, C-x n starts over, rewind is a buffer over the checkpoints,
+// and a restore shows what it would change and asks first (#99).
+test('C-g interrupts a streaming turn, C-x n starts a fresh session, rewind previews and asks', async () => {
   const { app, sessionsDir } = await launchApp()
   try {
     const page = await app.firstWindow()
@@ -134,8 +158,9 @@ test('C-g interrupts a streaming turn, C-x n starts a fresh session, rewind list
     await expect(page.locator('#palette-prompt')).toHaveText('Rewind to:')
     await expect(page.locator('#palette-candidates li')).toHaveCount(2)
 
-    // Choose the second checkpoint and restore the code: the mock edits no
-    // files, so the notice says so, and the session goes on.
+    // Choose the second checkpoint and restore the code: nothing was edited,
+    // the dry run says so in the help buffer, and the question still asks,
+    // with "Do not restore" highlighted; RET is the no, a notice (#99).
     await page.keyboard.type('fresh two')
     await page.keyboard.press('Enter')
     await expect(page.locator('#palette-prompt')).toHaveText('Restore:')
@@ -148,9 +173,85 @@ test('C-g interrupts a streaming turn, C-x n starts a fresh session, rewind list
       ])
     await page.keyboard.type('code')
     await page.keyboard.press('Enter')
+    await expect(page.locator('#palette-prompt')).toHaveText('Restore 0 files to checkpoint 2?')
+    expect(await candidates(page)).toEqual(['Do not restore *', 'Restore'])
+    await expect
+      .poll(() => page.locator('#help .cm-line').allTextContents())
+      .toEqual([
+        'Rewind to checkpoint 2: the files that would change.',
+        '',
+        'None: no file changed since the checkpoint.',
+        '',
+        '0 files, 0 insertions, 0 deletions.',
+      ])
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#palette')).toBeHidden()
     await expect
       .poll(() => lines(page))
-      .toContain('Rewind: files restored to checkpoint 2, 0 files changed.')
+      .toContain('Rewind: checkpoint 2 left as is, nothing restored.')
+
+    // The palette hands the point back to the help buffer it opened over;
+    // kill it and bring the prompt back, as the diff spec does (#68).
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('k')
+    await expect(page.locator('#help')).toBeHidden()
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('b')
+    await expect(prompt).toBeFocused()
+
+    // A third turn edits the mock's file, allowed with y, so a restore of the
+    // code has something to list (#99).
+    await send(page, 'edit: beta changed')
+    await expect(page.locator('#buffer-list')).toHaveText('Transcript Prompt [Permission: Edit]')
+    await page.keyboard.press('y')
+    await expect(page.locator('#transcript .cm-content')).toContainText('Edited notes.txt.')
+    await expect(prompt).toBeFocused()
+
+    // Restore the code at checkpoint 2: the help buffer shows the SDK's dry
+    // run, the files and the counts, and the prompt buffer asks with "Do not
+    // restore" highlighted. RET is the no: a notice, and nothing restored.
+    await startRewind(page, 'fresh two', 'code')
+    await expect(page.locator('#palette-prompt')).toHaveText('Restore 1 file to checkpoint 2?')
+    expect(await candidates(page)).toEqual(['Do not restore *', 'Restore'])
+    const preview = [
+      'Rewind to checkpoint 2: the files that would change.',
+      '',
+      '  /mock/notes.txt',
+      '',
+      '1 file, 1 insertion, 1 deletion.',
+    ]
+    await expect.poll(() => page.locator('#help .cm-line').allTextContents()).toEqual(preview)
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#palette')).toBeHidden()
+    await expect
+      .poll(() => lines(page))
+      .toContain('Rewind: checkpoint 2 left as is, nothing restored.')
+    expect((await lines(page)).some((line) => line.includes('files restored'))).toBe(false)
+
+    // The no left the file: the next preview lists it again. The yes, a
+    // deliberate C-n away, runs the real rewind, and the session goes on.
+    await startRewind(page, 'fresh two', 'code')
+    await expect(page.locator('#palette-prompt')).toHaveText('Restore 1 file to checkpoint 2?')
+    await expect.poll(() => page.locator('#help .cm-line').allTextContents()).toEqual(preview)
+    await page.keyboard.press('Control+n')
+    expect(await candidates(page)).toEqual(['Do not restore', 'Restore *'])
+    await page.keyboard.press('Enter')
+    await expect
+      .poll(() => lines(page))
+      .toContain('Rewind: files restored to checkpoint 2, 1 file changed.')
+    expect((await kinds(page)).filter((kind) => kind === 'stopped')).toHaveLength(1)
+
+    // A conversation-only restore skips the dry run and asks the one
+    // question, with the turns it drops; RET is the no again.
+    await startRewind(page, 'edit: beta', 'conversation')
+    await expect(page.locator('#palette-prompt')).toHaveText(
+      'Restore the conversation to before checkpoint 3, dropping 1 turn?',
+    )
+    expect(await candidates(page)).toEqual(['Do not restore *', 'Restore'])
+    await page.keyboard.press('Enter')
+    await expect
+      .poll(() => lines(page))
+      .toContain('Rewind: checkpoint 3 left as is, nothing restored.')
     expect((await kinds(page)).filter((kind) => kind === 'stopped')).toHaveLength(1)
   } finally {
     await app.close()

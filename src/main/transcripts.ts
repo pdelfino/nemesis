@@ -37,6 +37,28 @@ export const TRANSCRIPT_FILE = 'session.org'
 /** A turn heading shows this much of the prompt's first line. */
 const EXCERPT_LENGTH = 72
 
+/** A session name is cut to this many printable characters (#104). */
+export const SESSION_NAME_LENGTH = 80
+
+/**
+ * A session name as the files and the window show it (#104): one line,
+ * runs of blanks squeezed, control characters dropped, cut to
+ * SESSION_NAME_LENGTH. Null when nothing printable is left, so a name of
+ * blanks is refused rather than recorded.
+ */
+export function sessionName(text: string): string | null {
+  const printable = Array.from(text)
+    .filter((char) => !/\p{Cc}/u.test(char) || char === '\n' || char === '\t')
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (printable.length === 0) return null
+  const chars = Array.from(printable)
+  return chars.length > SESSION_NAME_LENGTH
+    ? chars.slice(0, SESSION_NAME_LENGTH).join('')
+    : printable
+}
+
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 
 /** Org's inactive timestamp, in local time: `[2026-10-17 Fri 14:03]`. */
@@ -221,6 +243,14 @@ export class OrgTranscript {
         return note(event.text)
       case 'permission-mode':
         return note(`Permission mode: ${event.mode}`)
+      case 'named': {
+        // The name is a file-level property (#104): a keyword Org reads from
+        // anywhere in the file, so an append-only file can carry it and a
+        // later one wins, as a rename should. A name the log holds that is
+        // not printable renders nothing.
+        const name = sessionName(event.name)
+        return name === null ? '' : block(`#+property: session_name ${name}`)
+      }
       case 'context-usage':
         // The log keeps the numbers; a person reading the Org file does not need them.
         return ''

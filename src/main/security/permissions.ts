@@ -1,5 +1,6 @@
 import type { Session, WebContents } from 'electron'
 import type { AgentNoticeEvent } from '../agent/events'
+import { warnLimited } from './warn-limited'
 
 /**
  * Site permissions and device access, denied by default (#49, SECURITY.org
@@ -202,11 +203,11 @@ export class PermissionPolicy {
     })
   }
 
-  /** One stderr line per refusal, origin only; one transcript line per origin and permission. */
+  /** One stderr line per refusal, origin only, bounded per permission (#100); one transcript line per origin and permission. */
   private deny(names: readonly string[], origin: string | null, how: string): void {
     const site = origin ?? 'an unknown origin'
     for (const name of names) {
-      console.warn(`permissions: denied ${name} (${how}) for ${site}`)
+      warnLimited(`permissions ${name}`, `permissions: denied ${name} (${how}) for ${site}`)
       const key = `${site} ${name}`
       if (this.announced.has(key)) continue
       this.announced.add(key)

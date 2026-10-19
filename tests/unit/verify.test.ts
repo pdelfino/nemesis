@@ -5,6 +5,7 @@ import {
   DEFAULT_VERIFY_COMMAND,
   describeSource,
   resolveVerifyCommand,
+  verifyQuestion,
   runCheckInShell,
   Verifier,
   verifyCommandOf,
@@ -13,6 +14,9 @@ import {
 
 // The verify key (#81): one command from three sources, run with the user's
 // permissions outside the agent's tool path, its output an evidence event.
+// A command from the attached issue is remote text, so it is confirmed
+// before its first run and the yes is remembered while the issue is
+// unchanged (#98).
 
 const ISSUE = `## Why
 Something.
@@ -88,14 +92,26 @@ function harness(options: {
   readonly settings?: string | null
   readonly issue?: string | null
   readonly outcome?: CheckOutcome
-}): { verifier: Verifier; events: AgentEvent[]; runs: { command: string; cwd: string }[] } {
+  /** What the question is answered with; the default says yes. */
+  readonly answer?: boolean
+}): {
+  verifier: Verifier
+  events: AgentEvent[]
+  runs: { command: string; cwd: string }[]
+  asked: string[]
+} {
   const events: AgentEvent[] = []
   const runs: { command: string; cwd: string }[] = []
+  const asked: string[] = []
   let clock = 1000
   const verifier = new Verifier({
     cwd: '/work',
     settingsCommand: options.settings ?? null,
     issueBody: () => options.issue ?? null,
+    confirm: (command) => {
+      asked.push(command)
+      return Promise.resolve(options.answer ?? true)
+    },
     run: (command, cwd) => {
       runs.push({ command, cwd })
       clock += 1500
@@ -106,7 +122,7 @@ function harness(options: {
     now: () => clock,
   })
   verifier.on((event) => events.push(event))
-  return { verifier, events, runs }
+  return { verifier, events, runs, asked }
 }
 
 describe('the verifier', () => {
@@ -138,6 +154,7 @@ describe('the verifier', () => {
       cwd: '/work',
       settingsCommand: null,
       issueBody: () => issue,
+      confirm: () => Promise.resolve(true),
       run: () => Promise.resolve({ exitCode: 1, signal: null, output: 'red\n' }),
       now: () => 0,
     })
@@ -163,6 +180,7 @@ describe('the verifier', () => {
       cwd: '/work',
       settingsCommand: 'sleep 1',
       issueBody: () => null,
+      confirm: () => Promise.resolve(true),
       run: () => new Promise((resolve) => (release = resolve)),
     })
     const first = verifier.verify()
@@ -177,9 +195,105 @@ describe('the verifier', () => {
       cwd: '/work',
       settingsCommand: 'x',
       issueBody: () => null,
+      confirm: () => Promise.resolve(true),
       run: () => Promise.reject(new Error('spawn failed')),
     })
     await expect(broken.verify()).rejects.toThrow('spawn failed')
     expect(broken.running).toBeNull()
+  })
+})
+
+describe("the question before an issue's command (#98)", () => {
+  it('asks with the exact command, and a no is a notice and no run', async () => {
+    const { verifier, events, runs, asked } = harness({ issue: ISSUE, answer: false })
+    await expect(verifier.verify()).resolves.toBeNull()
+    expect(asked).toEqual(['npm run lint && npm test'])
+    expect(runs).toEqual([])
+    expect(events).toEqual([{ type: 'notice', text: 'Not run: npm run lint && npm test' }])
+    expect(verifier.running).toBeNull()
+    // A no is not remembered: the next press asks again.
+    await verifier.verify()
+    expect(asked).toHaveLength(2)
+    expect(runs).toEqual([])
+    expect(verifyQuestion('make check')).toBe(
+      "Run the attached issue's check in a shell? make check",
+    )
+  })
+
+  it('runs on a yes, and a second run on the same issue does not ask again', async () => {
+    const { verifier, events, runs, asked } = harness({ issue: ISSUE })
+    const first = await verifier.verify()
+    expect(first).toMatchObject({ type: 'evidence', source: 'issue', exitCode: 0 })
+    expect(asked).toEqual(['npm run lint && npm test'])
+    expect(events[0]).toEqual({
+      type: 'notice',
+      text: 'Verifying: npm run lint && npm test (from the attached issue)',
+    })
+    await verifier.verify()
+    expect(asked).toHaveLength(1)
+    expect(runs).toHaveLength(2)
+    // Forgetting, as new-task, resume-session and a new attach do, asks once more.
+    verifier.forgetApprovals()
+    await verifier.verify()
+    expect(asked).toHaveLength(2)
+    expect(runs).toHaveLength(3)
+  })
+
+  it('asks again when the same command comes from a changed issue body, and for another issue', async () => {
+    let issue = ISSUE
+    const asked: string[] = []
+    const runs: string[] = []
+    const verifier = new Verifier({
+      cwd: '/work',
+      settingsCommand: null,
+      issueBody: () => issue,
+      confirm: (command) => {
+        asked.push(command)
+        return Promise.resolve(true)
+      },
+      run: (command) => {
+        runs.push(command)
+        return Promise.resolve({ exitCode: 0, signal: null, output: '' })
+      },
+    })
+    await verifier.verify()
+    expect(asked).toEqual(['npm run lint && npm test'])
+    // The same issue fetched again, its Verify section reworded around the same command.
+    issue = `${ISSUE}\n- And the docs build.\n`
+    await verifier.verify()
+    expect(asked).toHaveLength(2)
+    // Another issue, another command.
+    issue = '## Verify\n`make check`\n'
+    await verifier.verify()
+    expect(asked).toEqual(['npm run lint && npm test', 'npm run lint && npm test', 'make check'])
+    expect(runs).toEqual(['npm run lint && npm test', 'npm run lint && npm test', 'make check'])
+  })
+
+  it("never asks for the settings' command or the default: they are the user's own text", async () => {
+    const settings = harness({ settings: 'npm test', answer: false })
+    await expect(settings.verifier.verify()).resolves.toMatchObject({ source: 'settings' })
+    expect(settings.asked).toEqual([])
+    expect(settings.runs).toEqual([{ command: 'npm test', cwd: '/work' }])
+    const fallback = harness({ issue: '## Verify\nlooks right', answer: false })
+    await expect(fallback.verifier.verify()).resolves.toMatchObject({ source: 'default' })
+    expect(fallback.asked).toEqual([])
+    expect(fallback.runs).toEqual([{ command: DEFAULT_VERIFY_COMMAND, cwd: '/work' }])
+  })
+
+  it('holds the verifier while the question is open, so one key press is one question', async () => {
+    let answer: (yes: boolean) => void = () => undefined
+    const verifier = new Verifier({
+      cwd: '/work',
+      settingsCommand: null,
+      issueBody: () => ISSUE,
+      confirm: () => new Promise((resolve) => (answer = resolve)),
+      run: () => Promise.resolve({ exitCode: 0, signal: null, output: '' }),
+    })
+    const pending = verifier.verify()
+    expect(verifier.running).toEqual({ command: 'npm run lint && npm test', source: 'issue' })
+    await expect(verifier.verify()).rejects.toThrow(CommandError)
+    answer(false)
+    await expect(pending).resolves.toBeNull()
+    expect(verifier.running).toBeNull()
   })
 })

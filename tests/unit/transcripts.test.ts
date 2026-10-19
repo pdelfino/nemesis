@@ -8,6 +8,8 @@ import {
   EVENT_LOG_FILE,
   orgTimestamp,
   OrgTranscript,
+  SESSION_NAME_LENGTH,
+  sessionName,
   SessionRecorder,
   TRANSCRIPT_FILE,
 } from '../../src/main/transcripts'
@@ -82,6 +84,34 @@ describe('the Org rendering', () => {
         '- Permission mode: plan',
         '',
       ].join('\n'),
+    )
+  })
+
+  it('renders a name as a file property, so the latest of an append-only file wins (#104)', () => {
+    const text = render([
+      { type: 'user-text', text: 'go' },
+      { type: 'assistant-text', text: 'first' },
+      { type: 'named', name: 'nemesis security review' },
+      { type: 'assistant-text', text: 'second' },
+      { type: 'named', name: '* not a heading' },
+      { type: 'named', name: '\u0007' },
+    ])
+    expect(text).toContain(
+      '** Claude\nfirst\n\n#+property: session_name nemesis security review\n\n** Claude\nsecond\n',
+    )
+    expect(text).toContain('\n#+property: session_name * not a heading\n')
+    expect(text.match(/#\+property: session_name/g)).toHaveLength(2)
+  })
+
+  it('squeezes a name to one line of printable characters, cut at the cap (#104)', () => {
+    expect(sessionName('  nemesis \n  security\treview  ')).toBe('nemesis security review')
+    expect(sessionName('a\u0000b\u001bc')).toBe('abc')
+    expect(sessionName(' \n\t ')).toBeNull()
+    expect(sessionName('')).toBeNull()
+    expect(sessionName('x'.repeat(SESSION_NAME_LENGTH + 5))).toBe('x'.repeat(SESSION_NAME_LENGTH))
+    // Characters, not UTF-16 units: an emoji counts once.
+    expect(sessionName('\u{1F600}'.repeat(SESSION_NAME_LENGTH + 1))).toBe(
+      '\u{1F600}'.repeat(SESSION_NAME_LENGTH),
     )
   })
 

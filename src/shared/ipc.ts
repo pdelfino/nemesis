@@ -33,6 +33,7 @@ import type {
   BufferSpec,
 } from './buffers'
 import type { DIFF_SHOWN_CHANNEL, DiffContent } from './diff'
+import type { ENVIRONMENT_SHOWN_CHANNEL, EnvironmentContent } from './environment'
 import type {
   BINDINGS_CHANNEL,
   DISPATCH_LOG_CHANNEL,
@@ -84,6 +85,7 @@ export interface PushChannels {
   readonly [PLAN_SHOWN_CHANNEL]: PlanContent
   readonly [SPEC_SHOWN_CHANNEL]: SpecContent
   readonly [PROMPT_INSERT_CHANNEL]: PromptInsert
+  readonly [ENVIRONMENT_SHOWN_CHANNEL]: EnvironmentContent
 }
 
 export type InvokeChannel = keyof InvokeChannels

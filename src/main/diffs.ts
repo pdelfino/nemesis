@@ -1,5 +1,5 @@
-import { statSync } from 'node:fs'
-import { basename, isAbsolute } from 'node:path'
+import { realpathSync, statSync } from 'node:fs'
+import { basename, isAbsolute, relative, sep } from 'node:path'
 import type { BufferInfo } from '../shared/buffers'
 import type { DiffContent, SessionDiff } from '../shared/diff'
 import type { AgentEvent, AgentNoticeEvent, AgentToolUseEvent } from './agent/events'
@@ -16,11 +16,16 @@ import { CommandError } from './commands/registry'
  * its recorded history replays and a fresh one lists nothing.
  *
  * `C-c C-o` in a diff buffer hands the file to the system's default
- * application, which is the one door out of here: the path must be absolute
- * and a regular file on disk, and the user must say yes in the prompt
- * buffer first, as for a download or an external link (SECURITY.org,
- * promise 2). Every outcome is a notice in the stream, so the transcript
- * says what was opened and the session folder keeps it.
+ * application, which is the one door out of here: the path must be absolute,
+ * a regular file on disk and inside the session's working folder, and the
+ * user must say yes in the prompt buffer first, as for a download or an
+ * external link (SECURITY.org, promise 2). The path is the agent's choice,
+ * read off its tool call, which is why the folder check (#97): a session
+ * cannot be talked into opening something elsewhere on disk, and the yes
+ * keeps its meaning, which file of this project. The folder is the one the
+ * session's `started` event names, so a resumed session is held to the
+ * folder it was recorded in. Every outcome is a notice in the stream, so
+ * the transcript says what was opened and the session folder keeps it.
  *
  * Plain data and Node built-ins, no Electron types, like the help buffers:
  * the unit tests drive it with a bare registry and fakes for the question
@@ -105,6 +110,26 @@ function isRegularFile(path: string): boolean {
   }
 }
 
+/**
+ * Whether `path` is a file strictly inside the folder `cwd` (#97). Both are
+ * resolved on disk first, so a symlink under the folder that points out of
+ * it is outside, and a path to the folder itself, a relative path, or one
+ * that cannot be resolved is never inside.
+ */
+export function insideSessionFolder(cwd: string, path: string): boolean {
+  if (!isAbsolute(cwd) || !isAbsolute(path)) return false
+  let realCwd: string
+  let realPath: string
+  try {
+    realCwd = realpathSync.native(cwd)
+    realPath = realpathSync.native(path)
+  } catch {
+    return false
+  }
+  const rel = relative(realCwd, realPath)
+  return rel.length > 0 && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`)
+}
+
 export class DiffBuffers {
   private readonly buffers: BufferRegistry
   private readonly options: DiffBuffersOptions
@@ -114,6 +139,8 @@ export class DiffBuffers {
   /** Buffer id by diff id, for the diffs open in a buffer. */
   private readonly openBuffers = new Map<string, string>()
   private sessionId: string | null = null
+  /** The working folder of the session, off its `started` event; the one folder a file may be opened from. */
+  private cwd: string | null = null
 
   constructor(buffers: BufferRegistry, options: DiffBuffersOptions) {
     this.buffers = buffers
@@ -148,6 +175,7 @@ export class DiffBuffers {
    */
   observe(event: AgentEvent): void {
     if (event.type === 'started') {
+      this.cwd = event.cwd
       if (this.sessionId !== event.sessionId) {
         this.sessionId = event.sessionId
         this.diffs.length = 0
@@ -191,7 +219,9 @@ export class DiffBuffers {
 
   /**
    * `C-c C-o`: hands the current diff's file to the system, after a yes.
-   * Resolves true only when the system was given the path.
+   * Resolves true only when the system was given the path. A path that is
+   * not a file inside the session folder is refused with a notice, and no
+   * question is asked.
    */
   async openCurrent(): Promise<boolean> {
     const diff = this.current
@@ -200,6 +230,10 @@ export class DiffBuffers {
     const shown = displayPath(path)
     if (!isAbsolute(path) || !isRegularFile(path)) {
       this.notify(`Not opened: ${shown} is not a file on disk`)
+      return false
+    }
+    if (this.cwd === null || !insideSessionFolder(this.cwd, path)) {
+      this.notify(`Not opened: ${shown} is not inside the session folder`)
       return false
     }
     let yes = false

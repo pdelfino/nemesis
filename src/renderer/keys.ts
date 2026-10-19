@@ -30,6 +30,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'diff',
   'plan',
   'spec',
+  'environment',
 ]
 
 /** Told what a key ran, so a buffer can act on it (the prompt sends on `send-prompt`). */
@@ -39,12 +40,19 @@ export interface KeyCapture {
   /** The shape of the keymaps, once the main process has answered. */
   bindings: KeyBindings | null
   onCommand: CommandListener | null
+  /**
+   * A buffer's say on a bound printable key (#83): `@` is a file mention at
+   * the start of a word in the prompt and text inside one, and only the
+   * editor knows where the point is. Asked for unmodified printable keys in
+   * a buffer that is not modal; true keeps the key as text.
+   */
+  keepAsText: ((press: KeyPress) => boolean) | null
 }
 
 let pending = false
 
 export function installKeyCapture(): KeyCapture {
-  const capture: KeyCapture = { bindings: null, onCommand: null }
+  const capture: KeyCapture = { bindings: null, onCommand: null, keepAsText: null }
   window.addEventListener(
     'keydown',
     (event) => {
@@ -107,7 +115,10 @@ function cockpitToken(press: KeyPress, capture: KeyCapture): string | null {
   if (capture.bindings === null) {
     return press.ctrlKey || press.altKey || press.metaKey ? token : null
   }
-  return startsCockpitChord(token, capture.bindings, press.bufferType) ? token : null
+  if (!startsCockpitChord(token, capture.bindings, press.bufferType)) return null
+  const printable = !press.ctrlKey && !press.altKey && !press.metaKey && stroke.key.length === 1
+  if (printable && capture.keepAsText?.(press) === true) return null
+  return token
 }
 
 function isPrefix(token: string, bindings: KeyBindings, bufferType: BufferType | null): boolean {

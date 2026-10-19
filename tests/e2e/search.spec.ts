@@ -1,6 +1,6 @@
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './_test'
 import { launchApp } from './_launch'
 
 /** The candidates the palette lists, highlighted one marked. */

@@ -4,23 +4,37 @@ import type { AgentEvent } from '../../src/main/agent/events'
 import { mockDriver } from '../../src/main/agent/mock'
 import { PromptQueue } from '../../src/main/agent/prompt-queue'
 import { denyEveryTool } from '../../src/main/agent/session'
+import type { PermissionHandler } from '../../src/main/agent/events'
 import {
   describeCheckpoints,
+  describeRewindPreview,
   PLAN_MODE_REMINDER,
+  rewindConversationQuestion,
+  rewindFilesQuestion,
   SessionManager,
+  turnsDropped,
   undoPrompt,
 } from '../../src/main/agent/session-manager'
 
 // The manager holds the current session and replaces it (#84): new-task,
 // a conversation rewind. One subscription hears every session in turn.
 
-function manager(): SessionManager {
+function manager(permissionHandler: PermissionHandler = denyEveryTool): SessionManager {
   return new SessionManager({
     cwd: '/tmp/nemesis-unit',
     model: null,
-    permissionHandler: denyEveryTool,
+    permissionHandler,
     driver: mockDriver(),
   })
+}
+
+/** Lets the mock's Edit through, so a rewind has a file to list (#99). */
+const allowEveryTool: PermissionHandler = {
+  requestPermission: () => Promise.resolve({ behavior: 'allow' }),
+}
+
+function notices(events: readonly AgentEvent[]): string[] {
+  return events.flatMap((event) => (event.type === 'notice' ? [event.text] : []))
 }
 
 function collect(agent: SessionManager): AgentEvent[] {
@@ -199,6 +213,17 @@ describe('the session manager', () => {
     await agent.stop()
   })
 
+  it('names the session as one event down the stream, which the recorder appends (#104)', () => {
+    const agent = manager()
+    const events = collect(agent)
+    agent.nameSession('nemesis security review')
+    agent.nameSession('renamed')
+    expect(events).toEqual([
+      { type: 'named', name: 'nemesis security review' },
+      { type: 'named', name: 'renamed' },
+    ])
+  })
+
   it('new-task with no session is a no-op', async () => {
     const agent = manager()
     const events = collect(agent)
@@ -280,18 +305,140 @@ describe('the session manager', () => {
     await agent.stop()
   })
 
+  // The dry run of #99: the preview lists the file and changes nothing, the
+  // real rewind after it restores, and the next preview is empty.
+  it('previews a file rewind without restoring, then the real rewind restores', async () => {
+    const agent = manager(allowEveryTool)
+    const events = collect(agent)
+    for (const text of ['one', 'edit: beta changed']) {
+      const turn = nextTurn(agent)
+      await agent.send(text)
+      await turn
+    }
+    const second = agent.checkpoints()[1]
+    if (second === undefined) throw new Error('no second checkpoint')
+    const expected = {
+      canRewind: true,
+      filesChanged: ['/mock/notes.txt'],
+      insertions: 1,
+      deletions: 1,
+    }
+    expect(await agent.previewRewind(second)).toEqual(expected)
+    // Nothing moved: the same preview again, and no notice in the stream.
+    expect(await agent.previewRewind(second)).toEqual(expected)
+    expect(notices(events)).toEqual([])
+
+    agent.declineRewind(second)
+    expect(notices(events)).toEqual(['Rewind: checkpoint 2 left as is, nothing restored.'])
+    expect(await agent.previewRewind(second)).toEqual(expected)
+
+    await agent.rewind(second, 'code')
+    expect(notices(events).at(-1)).toBe('Rewind: files restored to checkpoint 2, 1 file changed.')
+    expect(await agent.previewRewind(second)).toEqual({
+      canRewind: true,
+      filesChanged: [],
+      insertions: 0,
+      deletions: 0,
+    })
+    expect(agent.sessionId).toBe('mock-session')
+    await agent.stop()
+  })
+
+  it('a dry run the SDK refuses is a notice with its reason', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    for (const text of ['one', 'two']) {
+      const turn = nextTurn(agent)
+      await agent.send(text)
+      await turn
+    }
+    const second = agent.checkpoints()[1]
+    if (second === undefined) throw new Error('no second checkpoint')
+    // The resumed mock query knows only the messages it read itself, so the
+    // kept checkpoint is the SDK's refusal with a reason.
+    await agent.rewind(second, 'conversation')
+    const [first] = agent.checkpoints()
+    if (first === undefined) throw new Error('no kept checkpoint')
+    expect(await agent.previewRewind(first)).toEqual({
+      canRewind: false,
+      error: 'the mock query has no record of that message',
+    })
+    expect(notices(events).at(-1)).toBe(
+      'Rewind: files cannot be restored to checkpoint 1: the mock query has no record of that message.',
+    )
+    await agent.stop()
+  })
+
   it('refuses a checkpoint from another session', async () => {
     const agent = manager()
     const events = collect(agent)
     const turn = nextTurn(agent)
     await agent.send('one')
     await turn
-    await agent.rewind({ index: 9, uuid: 'nope', before: null, text: 'x', at: 0 }, 'code')
+    const foreign = { index: 9, uuid: 'nope', before: null, text: 'x', at: 0 }
+    await agent.rewind(foreign, 'code')
     expect(events.at(-1)).toMatchObject({
       type: 'notice',
       text: /checkpoint 9 is not in this session/,
     })
+    expect(await agent.previewRewind(foreign)).toEqual({
+      canRewind: false,
+      error: 'not in this session',
+    })
+    expect(notices(events)).toHaveLength(2)
     await agent.stop()
+  })
+})
+
+describe('the rewind preview text (#99)', () => {
+  const checkpoint = { index: 2, uuid: 'b', before: 'x', text: 'two', at: 0 }
+
+  it('lists the files with the counts, and the turns dropped for a rewind of both', () => {
+    const result = {
+      canRewind: true,
+      filesChanged: ['/work/a.ts', '/work/b.ts'],
+      insertions: 3,
+      deletions: 1,
+    }
+    expect(describeRewindPreview(checkpoint, result, null).split('\n')).toEqual([
+      'Rewind to checkpoint 2: the files that would change.',
+      '',
+      '  /work/a.ts',
+      '  /work/b.ts',
+      '',
+      '2 files, 3 insertions, 1 deletion.',
+    ])
+    expect(describeRewindPreview(checkpoint, result, 2).split('\n').at(-1)).toBe(
+      'The conversation goes back to before the checkpoint as well: 2 turns dropped.',
+    )
+    expect(rewindFilesQuestion(checkpoint, result)).toBe('Restore 2 files to checkpoint 2?')
+  })
+
+  it('says so when no file changed', () => {
+    const result = { canRewind: true, filesChanged: [], insertions: 0, deletions: 0 }
+    expect(describeRewindPreview(checkpoint, result, null).split('\n')).toEqual([
+      'Rewind to checkpoint 2: the files that would change.',
+      '',
+      'None: no file changed since the checkpoint.',
+      '',
+      '0 files, 0 insertions, 0 deletions.',
+    ])
+    expect(rewindFilesQuestion(checkpoint, result)).toBe('Restore 0 files to checkpoint 2?')
+  })
+
+  it('counts the turns a conversation rewind drops: the checkpoint and every later one', () => {
+    const checkpoints = [
+      { index: 1, uuid: 'a', before: null, text: 'one', at: 0 },
+      checkpoint,
+      { index: 3, uuid: 'c', before: 'y', text: 'three', at: 0 },
+    ]
+    expect(turnsDropped(checkpoints, checkpoint)).toBe(2)
+    expect(rewindConversationQuestion(checkpoint, 2)).toBe(
+      'Restore the conversation to before checkpoint 2, dropping 2 turns?',
+    )
+    expect(rewindConversationQuestion(checkpoints[2] ?? checkpoint, 1)).toBe(
+      'Restore the conversation to before checkpoint 3, dropping 1 turn?',
+    )
   })
 })
 
