@@ -45,6 +45,7 @@ import { FormGuideSession } from './agent/form-guide'
 import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { capturePage, captureFullPage } from './pages/capture'
 import { ConsoleLog } from './pages/console'
+import { NetworkLog, type CompletedRequests } from './pages/network'
 import { SemanticView, semanticText } from './pages/semantic'
 import { PAGES_FOLDER, ReaderBuffers, readerAttachment, type ReaderDocument } from './pages/reader'
 import { Repl } from './repl'
@@ -135,6 +136,8 @@ export interface CockpitShared {
   readonly blocker?: PageBlocker
   /** The page-script door of ADR 0009 (#130), the app's one, which the semantic view asks (#122). */
   readonly pageDoor: PageScriptDoor
+  /** Every request the page sessions completed (#29); each window keeps its own pages'. */
+  readonly completed?: CompletedRequests
 }
 
 /** One stream of notices out of several sources. */
@@ -329,6 +332,8 @@ export function createCockpit(
   const repl = new Repl(buffers, { journal, evaluate: shared.evaluate })
   // Each page's console, the last messages in memory, for the MCP page tier (#138).
   const consoleLog = new ConsoleLog(buffers)
+  // Each page's completed requests, no header and no body, for the network feed (#29).
+  const networkLog = new NetworkLog(buffers)
   // The page buffers (#119): a WebContentsView each, built hardened with
   // only the page-script door's preload (#130), attached over the renderer's page section while its
   // buffer is current. They go with the window.
@@ -465,8 +470,16 @@ export function createCockpit(
   // the profile's history (#125); an ephemeral page is never recorded.
   const stopHistory =
     shared.stores === null ? (): void => {} : recordHistory(pages, shared.stores.history)
+  const stopNetwork =
+    shared.completed?.on((details) => {
+      const page = pages
+        .list()
+        .find((buffer) => pages.viewOf(buffer.id)?.webContents.id === details.webContentsId)
+      if (page !== undefined) networkLog.record(page.id, details)
+    }) ?? ((): void => {})
   window.on('closed', () => {
     stopHistory()
+    stopNetwork()
     void formGuide.stopAll()
     pages.destroyAll()
   })
@@ -575,6 +588,20 @@ export function createCockpit(
         key: (pageId, key) => pages.pressKey(pageId, key),
         capture: (pageId, box) => capturePage(pages.viewOf(pageId), box),
         captureFull: (pageId) => captureFullPage(pages.viewOf(pageId)),
+      },
+      // The three feeds (#29): the console and network rings in main, and
+      // the mutations #94's observer keeps in the page, through the door.
+      feeds: {
+        console: consoleLog,
+        network: networkLog,
+        mutations: {
+          document: (pageId) => semantic.currentDocument(pageId),
+          read: (pageId, since) => {
+            const view = pages.viewOf(pageId)
+            if (view === undefined) return Promise.reject(new Error('The page is gone'))
+            return shared.pageDoor.request(view.webContents, 'mutations', [since])
+          },
+        },
       },
       buffers,
     },

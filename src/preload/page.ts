@@ -17,6 +17,8 @@ import {
   MAX_FORM_ALERTS,
   MAX_FORM_FIELDS,
   MAX_TEXT_CHARS,
+  MAX_MUTATION_SUMMARY,
+  MUTATION_RING,
   type DrawnLabel,
   type FormAlert,
   type FormAnswer,
@@ -24,6 +26,9 @@ import {
   type HintNode,
   type HintsAnswer,
   type HintsShowAnswer,
+  type MutationKind,
+  type MutationRecordAnswer,
+  type MutationsAnswer,
   type PageAnswers,
   type PageRequestName,
   type ReaderAnswer,
@@ -106,6 +111,23 @@ interface OverlayHost {
   addEventListener(type: string, listener: () => void): void
 }
 
+/** A node a mutation record names: an element, or a text node under one. */
+interface ChangedNode {
+  readonly nodeType: number
+  readonly tagName?: string
+  readonly textContent: string | null
+  readonly parentElement: PageElement | null
+}
+
+/** The parts of a MutationRecord the mutation feed reads (#29). */
+interface ChangeRecord {
+  readonly type: string
+  readonly target: ChangedNode
+  readonly addedNodes: ArrayLike<ChangedNode>
+  readonly removedNodes: ArrayLike<ChangedNode>
+  readonly attributeName: string | null
+}
+
 interface Observer {
   observe(target: unknown, options: Readonly<Record<string, boolean>>): void
   disconnect(): void
@@ -128,7 +150,7 @@ interface PageWorld {
   readonly scrollY: number
   readonly innerWidth: number
   readonly innerHeight: number
-  readonly MutationObserver: new (callback: () => void) => Observer
+  readonly MutationObserver: new (callback: (records: readonly ChangeRecord[]) => void) => Observer
   readonly CSSStyleSheet: new () => { replaceSync(text: string): void }
 }
 
@@ -659,7 +681,10 @@ function watchForm(): void {
   const bump = (): void => {
     formVersion += 1
   }
-  new world.MutationObserver(bump).observe(world.document, {
+  new world.MutationObserver((records) => {
+    bump()
+    if (mutationsWatched) recordMutations(records)
+  }).observe(world.document, {
     childList: true,
     subtree: true,
     attributes: true,
@@ -770,7 +795,95 @@ function text(args: readonly number[]): TextAnswer {
   }
 }
 
-/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138). */
+// The mutation feed of the MCP page tier (#29). #94's observer, once the
+// first `mutations` request asks, also keeps the last MUTATION_RING changes
+// it sees, each a kind, the element's number and a one-line summary: a tag,
+// an attribute's name, a cut of the text. An attribute's value is left out
+// on a secret field and for `value`, by the masking list of #94, and a
+// field's typed value is never in the document's mutations at all. The
+// hint overlay's own host is not a change of the page. It records; it writes
+// nothing to the page.
+
+let mutationsWatched = false
+let mutationSeq = 0
+const mutationRing: MutationRecordAnswer[] = []
+
+/** One line, cut to the summary's bound. */
+function summaryLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, MAX_MUTATION_SUMMARY)
+}
+
+/** `<tag> "text"` for an element, `text "..."` for a text node. */
+function nodeSummary(node: ChangedNode): string {
+  const text = line(node.textContent).slice(0, 80)
+  const what = node.nodeType === 1 ? `<${(node.tagName ?? '').toLowerCase()}>` : 'text'
+  return text.length === 0 ? what : `${what} "${text}"`
+}
+
+/** The element a change happened on: the node itself, or a text node's parent. */
+function elementOf(node: ChangedNode): PageElement | null {
+  return node.nodeType === 1 ? (node as unknown as PageElement) : node.parentElement
+}
+
+function pushMutation(kind: MutationKind, element: PageElement | null, summary: string): void {
+  mutationSeq += 1
+  mutationRing.push({
+    seq: mutationSeq,
+    at: Date.now(),
+    kind,
+    element: element === null ? 0 : elementId(element),
+    summary: summaryLine(summary),
+  })
+  if (mutationRing.length > MUTATION_RING)
+    mutationRing.splice(0, mutationRing.length - MUTATION_RING)
+}
+
+function isOverlay(node: ChangedNode): boolean {
+  return overlay !== null && (node as unknown) === overlay.host
+}
+
+function recordMutations(records: readonly ChangeRecord[]): void {
+  for (const record of records) {
+    if (isOverlay(record.target)) continue
+    const parent = elementOf(record.target)
+    if (record.type === 'childList') {
+      for (const node of Array.from(record.addedNodes)) {
+        if (isOverlay(node)) continue
+        const element = node.nodeType === 1 ? elementOf(node) : parent
+        pushMutation('added', element, nodeSummary(node))
+      }
+      for (const node of Array.from(record.removedNodes)) {
+        if (isOverlay(node)) continue
+        pushMutation('removed', parent, nodeSummary(node))
+      }
+    } else if (record.type === 'attributes' && parent !== null) {
+      const name = record.attributeName ?? ''
+      const tag = `<${parent.tagName.toLowerCase()}>`
+      const value = name === 'value' || holdsSecret(parent) ? null : parent.getAttribute(name)
+      pushMutation(
+        'attribute',
+        parent,
+        value === null ? `${name} on ${tag}` : `${name} on ${tag}: "${line(value).slice(0, 80)}"`,
+      )
+    } else if (record.type === 'characterData') {
+      pushMutation('text', parent, nodeSummary(record.target))
+    }
+  }
+}
+
+/** `mutations`: the one arg is the last record main holds; past the newest, the whole ring. */
+function mutations(args: readonly number[]): MutationsAnswer {
+  const [since] = args
+  if (args.length !== 1 || since === undefined || since < 0) {
+    throw new TypeError('mutations takes the last record main holds')
+  }
+  watchForm()
+  mutationsWatched = true
+  const from = since > mutationSeq ? 0 : since
+  return { last: mutationSeq, records: mutationRing.filter((record) => record.seq > from) }
+}
+
+/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138, #29). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
 } = Object.freeze({
@@ -784,6 +897,7 @@ const HANDLERS: {
   reader,
   form,
   text,
+  mutations,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  MAX_MUTATION_SUMMARY,
   MAX_PAGE_TITLE,
   MAX_TEXT_CHARS,
+  MUTATION_RING,
   PAGE_DOOR_REPLY_CHANNEL,
   PAGE_DOOR_REQUEST_CHANNEL,
   parsePageAnswer,
@@ -146,6 +148,35 @@ describe('the text answer (#138)', () => {
       { status: 'ok', total: 0 },
     ]) {
       expect(() => parsePageAnswer('text', bad)).toThrow()
+    }
+  })
+})
+
+describe('the mutations answer (#29)', () => {
+  const record = { seq: 1, at: 1_700_000_000_000, kind: 'added', element: 4, summary: '<li> "x"' }
+
+  it('takes the last record number and bounded records of a closed kind, nothing else', () => {
+    expect(parsePageAnswer('mutations', { last: 1, records: [record] })).toEqual({
+      last: 1,
+      records: [record],
+    })
+    expect(parsePageAnswer('mutations', { last: 0, records: [] }).records).toEqual([])
+    const many = Array.from({ length: MUTATION_RING + 1 }, (_, index) => ({
+      ...record,
+      seq: index + 1,
+    }))
+    for (const bad of [
+      { last: 1, records: many },
+      { last: -1, records: [] },
+      { last: 1, records: [{ ...record, kind: 'script' }] },
+      { last: 1, records: [{ ...record, seq: 0 }] },
+      { last: 1, records: [{ ...record, element: 1.5 }] },
+      { last: 1, records: [{ ...record, summary: 'x'.repeat(MAX_MUTATION_SUMMARY + 1) }] },
+      { last: 1, records: [{ ...record, value: 'hunter2' }] },
+      { last: 1, records: [record], html: '<li>' },
+      { records: [] },
+    ]) {
+      expect(() => parsePageAnswer('mutations', bad)).toThrow()
     }
   })
 })

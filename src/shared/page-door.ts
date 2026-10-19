@@ -10,14 +10,15 @@
  * channel. Version 1 shipped one name, `ping`, so the door was testable
  * before a consumer existed; the semantic view (#122) adds `snapshot`, and
  * hint mode (#123) adds `hints` and `hints-show`, reader mode (#128)
- * adds `reader`, the form guide (#94) adds `form`, and the MCP page tier
- * (#138) adds `text`.
+ * adds `reader`, the form guide (#94) adds `form`, the MCP page tier
+ * (#138) adds `text`, and its mutation feed (#29) adds `mutations`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
  * text a page wrote. `hints-show` takes labels as code points, `form`
- * takes one number, the change count main last saw, and `text` takes three:
- * the element's number, the first character and how many.
+ * takes one number, the change count main last saw, `text` takes three:
+ * the element's number, the first character and how many, and `mutations`
+ * one, the last record number main holds.
  */
 
 /** Main to the page preload: `{ id, name }`, no code and no free text. */
@@ -350,6 +351,46 @@ export interface TextAnswer {
   readonly text: string
 }
 
+/** The most records the page keeps, and so the most one `mutations` answer carries. */
+export const MUTATION_RING = 200
+
+/** The longest summary one mutation record carries. */
+export const MAX_MUTATION_SUMMARY = 200
+
+/**
+ * What a mutation did (#29): an element or text added under an element, one
+ * removed from it, an attribute set or removed, a text node's text changed.
+ */
+export const MUTATION_KINDS = ['added', 'removed', 'attribute', 'text'] as const
+
+export type MutationKind = (typeof MUTATION_KINDS)[number]
+
+/**
+ * One change to the document, as #94's observer saw it. `seq` counts from 1
+ * for the document's life; `element` is the preload's number for the element
+ * it happened on, the snapshot's own (#122), so main makes a ref of it, or
+ * 0 when it happened on no element. `summary` is page content: a tag, an attribute's name, a cut of the text.
+ */
+export interface MutationRecordAnswer {
+  readonly seq: number
+  /** When the page's isolated world saw it, in milliseconds since the epoch. */
+  readonly at: number
+  readonly kind: MutationKind
+  readonly element: number
+  readonly summary: string
+}
+
+/**
+ * `mutations` (#29): the records after the one main last holds, oldest
+ * first, and `last`, the number of the newest the page has made. Asked with
+ * a number past `last`, which a new document has, it answers every record it
+ * keeps. The first request starts the recording, for the document's life.
+ */
+export interface MutationsAnswer {
+  readonly last: number
+  readonly records: readonly MutationRecordAnswer[]
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
@@ -359,6 +400,7 @@ export interface PageAnswers {
   readonly reader: ReaderAnswer
   readonly form: FormAnswer
   readonly text: TextAnswer
+  readonly mutations: MutationsAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -477,6 +519,20 @@ export const PAGE_ANSWERS: {
     status: { kind: 'enum', values: TEXT_STATUSES } as const,
     total: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
     text: { kind: 'string', max: MAX_TEXT_CHARS } as const,
+  }),
+  mutations: Object.freeze({
+    last: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    records: {
+      kind: 'list',
+      max: MUTATION_RING,
+      item: Object.freeze({
+        seq: { kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+        at: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER } as const,
+        kind: { kind: 'enum', values: MUTATION_KINDS } as const,
+        element: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+        summary: { kind: 'string', max: MAX_MUTATION_SUMMARY } as const,
+      }),
+    } as const,
   }),
 })
 

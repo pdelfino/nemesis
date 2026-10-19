@@ -13,6 +13,7 @@ import { upgradeOf } from '../security/transport'
 import { keyStroke } from '../page-buffer'
 import { normalizeUrl } from '../url-sources'
 import type { ConsoleEntry } from '../pages/console'
+import type { PageFeedSources } from './page-feeds'
 import { formReading, formText } from '../pages/form-guide'
 import { readerBody, type ReaderDocument } from '../pages/reader'
 import {
@@ -104,6 +105,8 @@ export interface PageTierDeps {
   readonly moves: PageMoves
   /** The acting tools' input and captures (#140); absent, every acting call is an error. */
   readonly acts?: PageActs | undefined
+  /** The three feeds of #29, served as resources by page-feeds.ts; absent, none is served. */
+  readonly feeds?: PageFeedSources | undefined
   readonly buffers: {
     readonly current: BufferInfo | null
     subscribe(listener: (list: BufferList) => void): unknown

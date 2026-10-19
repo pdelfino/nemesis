@@ -32,6 +32,7 @@ export interface ConsoleEntry {
 
 export class ConsoleLog {
   private readonly rings = new Map<string, ConsoleEntry[]>()
+  private readonly listeners = new Set<(pageId: string) => void>()
 
   constructor(
     buffers: { subscribe(listener: (list: BufferList) => void): unknown },
@@ -58,6 +59,15 @@ export class ConsoleLog {
       text: message.slice(0, MAX_CONSOLE_TEXT),
     })
     if (ring.length > CONSOLE_RING) ring.splice(0, ring.length - CONSOLE_RING)
+    for (const listener of [...this.listeners]) listener(pageId)
+  }
+
+  /** Hears the page of every entry recorded, for the console feed of #29. */
+  on(listener: (pageId: string) => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
   }
 
   /** The last `limit` entries of a page, oldest first, and whether older ones were left out. */

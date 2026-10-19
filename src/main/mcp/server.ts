@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
   SubscribeRequestSchema,
@@ -22,9 +22,12 @@ import {
   catalogTool,
   EVENTS_RESOURCE,
   IN_APP_HIDDEN_COMMANDS,
+  PAGE_FEEDS,
+  PAGE_RESOURCES,
   READ_BYTES_CAP,
   READ_LINES_CAP,
 } from './catalog'
+import { PageFeeds } from './page-feeds'
 import { ACTING_TOOLS, PageTier, type PageTierDeps } from './page-tier'
 
 /**
@@ -65,6 +68,10 @@ import { ACTING_TOOLS, PageTier, type PageTierDeps } from './page-tier'
  * current session's `events.jsonl` as recorded, so a tool result that came
  * from a page keeps the wrapper it was recorded with. A subscriber hears
  * `notifications/resources/updated` after every event the log took.
+ *
+ * And three per page buffer (#29): its mutations, console and network as
+ * feeds, from page-feeds.ts, listed while the buffer lives; the list moves,
+ * with `notifications/resources/list_changed`, as page buffers open and go.
  *
  * Plain data and no Electron types, so the unit tests drive it over the MCP
  * SDK's in-memory transport.
@@ -137,6 +144,7 @@ export type NoticeListener = (event: AgentNoticeEvent) => void
 export class CockpitMcp {
   private readonly deps: CockpitMcpDeps
   private readonly pages: PageTier | null
+  private readonly feeds: PageFeeds<McpServer> | null
   private readonly servers = new Set<McpServer>()
   /** The servers whose client subscribed to the events resource. */
   private readonly subscribed = new Set<McpServer>()
@@ -156,6 +164,23 @@ export class CockpitMcp {
   constructor(deps: CockpitMcpDeps) {
     this.deps = deps
     this.pages = deps.pages === undefined ? null : new PageTier(deps.pages)
+    const sources = deps.pages?.feeds
+    this.feeds =
+      deps.pages === undefined || sources === undefined
+        ? null
+        : new PageFeeds<McpServer>(
+            { ...deps.pages, feeds: sources },
+            (server, uri) => {
+              if (server.isConnected()) {
+                server.server.sendResourceUpdated({ uri }).catch(() => undefined)
+              }
+            },
+            () => {
+              for (const server of this.servers) {
+                if (server.isConnected()) server.sendResourceListChanged()
+              }
+            },
+          )
     deps.agent.on((event) => {
       this.track(event)
       this.eventsChanged()
@@ -190,6 +215,7 @@ export class CockpitMcp {
     server.server.onclose = () => {
       this.servers.delete(server)
       this.subscribed.delete(server)
+      this.feeds?.drop(server)
     }
     return server
   }
@@ -201,7 +227,7 @@ export class CockpitMcp {
     return server
   }
 
-  /** The events resource on `server`, read-only, and its subscription. */
+  /** The events resource on `server`, the page feeds (#29), read-only, and their subscriptions. */
   private serveEvents(server: McpServer): void {
     server.registerResource(
       'session-events',
@@ -213,16 +239,43 @@ export class CockpitMcp {
         ],
       }),
     )
+    const feeds = this.feeds
+    if (feeds !== null) {
+      for (const feed of PAGE_FEEDS) {
+        const { uriTemplate, mimeType, description } = PAGE_RESOURCES[feed]
+        server.registerResource(
+          `page-${feed}`,
+          new ResourceTemplate(uriTemplate, {
+            list: () => ({
+              resources: feeds.list().filter((one) => one.uri.endsWith(`/${feed}`)),
+            }),
+          }),
+          { description, mimeType },
+          async (uri) => {
+            try {
+              return { contents: (await feeds.read(uri.href)).contents }
+            } catch (error) {
+              throw new McpToolError(error instanceof Error ? error.message : String(error))
+            }
+          },
+        )
+      }
+    }
     server.server.registerCapabilities({ resources: { subscribe: true } })
     server.server.setRequestHandler(SubscribeRequestSchema, (request) => {
-      if (request.params.uri !== EVENTS_RESOURCE.uri) {
-        throw new McpToolError(`No resource ${request.params.uri}`)
+      const { uri } = request.params
+      if (uri === EVENTS_RESOURCE.uri) {
+        this.subscribed.add(server)
+      } else if (feeds !== null && feeds.has(uri)) {
+        feeds.subscribe(uri, server)
+      } else {
+        throw new McpToolError(`No resource ${uri}`)
       }
-      this.subscribed.add(server)
       return {}
     })
     server.server.setRequestHandler(UnsubscribeRequestSchema, (request) => {
       if (request.params.uri === EVENTS_RESOURCE.uri) this.subscribed.delete(server)
+      else feeds?.unsubscribe(request.params.uri, server)
       return {}
     })
   }

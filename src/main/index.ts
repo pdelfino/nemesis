@@ -39,6 +39,7 @@ import { installPageDoor, PageScriptDoor, pingPrompt } from './page-door'
 import { snapshotPrompt } from './pages/semantic'
 import { installMenu } from './menu'
 import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
+import { CompletedRequests } from './pages/network'
 import type { WindowCapturer } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
@@ -468,6 +469,11 @@ void app.whenReady().then(() => {
     persistent: blocker.install(partitions.persistent),
     ephemeral: blocker.install(partitions.ephemeral),
   }
+  // #29: the network feed hears every request the page partitions complete,
+  // and each window keeps the ones of its own page buffers.
+  const completed = new CompletedRequests()
+  completed.install(partitions.persistent)
+  completed.install(partitions.ephemeral)
   if (underTest) {
     // Installed before the cockpit window loads, so the first request the
     // app makes is already in the log the spec reads. On the partitions the
@@ -884,6 +890,7 @@ void app.whenReady().then(() => {
         stores,
         blocker,
         pageDoor,
+        completed,
       },
       place.cwd,
     )

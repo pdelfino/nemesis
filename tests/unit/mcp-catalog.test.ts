@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  ResourceListChangedNotificationSchema,
   ResourceUpdatedNotificationSchema,
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js'
@@ -15,15 +16,27 @@ import {
   CATALOG_VERSION,
   EVENTS_RESOURCE,
   FREE_IN_APP_TOOLS,
+  MUTATION_POLL_MS,
+  PAGE_FEEDS,
+  PAGE_RESOURCES,
+  pageFeedUri,
+  parsePageFeedUri,
   TIER_PREFIX,
 } from '../../src/main/mcp/catalog'
 import type { PageTierDeps } from '../../src/main/mcp/page-tier'
 import type { BufferRegistry } from '../../src/main/buffers'
 import { CONSOLE_RING, ConsoleLog } from '../../src/main/pages/console'
+import { NETWORK_RING, NetworkLog } from '../../src/main/pages/network'
 import { buildTree, formatRef, type SemanticSnapshot } from '../../src/main/pages/semantic'
 import { EVENT_LOG_FILE } from '../../src/main/transcripts'
 import type { PageEvent } from '../../src/shared/buffers'
-import { FORM_FLAGS, SEMANTIC_STATES, type TextAnswer } from '../../src/shared/page-door'
+import {
+  FORM_FLAGS,
+  MUTATION_RING,
+  SEMANTIC_STATES,
+  type MutationRecordAnswer,
+  type TextAnswer,
+} from '../../src/shared/page-door'
 import { connectClient, fakeCockpit } from './mcp-fakes'
 
 const COCKPIT_TOOLS = [
@@ -318,6 +331,15 @@ interface PageRig {
   load: string | null | 'hang'
   /** What the next history step answers. */
   step: 'moved' | 'none' | 'refused'
+  /** The page's completed requests (#29). */
+  network: NetworkLog
+  /** The mutations the page's observer holds, and the `since` of every ask (#29). */
+  mutations: MutationRecordAnswer[]
+  asked: number[]
+  /** The document number main gives the page now. */
+  document: number
+  /** The mutation polls running, each a tick to fire by hand. */
+  polls: Set<() => void>
 }
 
 function hostilePages(rig: Partial<PageRig> = {}): {
@@ -336,6 +358,11 @@ function hostilePages(rig: Partial<PageRig> = {}): {
     moves: [],
     load: null,
     step: 'moved',
+    network: undefined as unknown as NetworkLog,
+    mutations: [],
+    asked: [],
+    document: 7,
+    polls: new Set(),
     ...rig,
   }
   const emit = (event: PageEvent): void => {
@@ -348,6 +375,7 @@ function hostilePages(rig: Partial<PageRig> = {}): {
     buffers.update(page.id, { url: URL_PATH })
     state.pageId = page.id
     state.console = new ConsoleLog(buffers, () => state.clock.now)
+    state.network = new NetworkLog(buffers, () => state.clock.now)
     const snapshot = (): SemanticSnapshot => {
       const { nodes, count } = buildTree(document, {
         nodes: [
@@ -466,6 +494,24 @@ function hostilePages(rig: Partial<PageRig> = {}): {
         close: (id) => {
           state.moves.push(`close ${id}`)
           buffers.kill(id)
+        },
+      },
+      feeds: {
+        console: state.console,
+        network: state.network,
+        mutations: {
+          document: () => state.document,
+          read: async (_id, since) => {
+            state.asked.push(since)
+            const last = state.mutations.at(-1)?.seq ?? 0
+            const from = since > last ? 0 : since
+            return { last, records: state.mutations.filter((record) => record.seq > from) }
+          },
+        },
+        every: (ms, run) => {
+          expect(ms).toBe(MUTATION_POLL_MS)
+          state.polls.add(run)
+          return () => state.polls.delete(run)
         },
       },
       buffers,
@@ -755,5 +801,254 @@ describe('the page tier, navigation (#139, ADR 0008)', () => {
     const notPage = await mcp.call('browser_close_page', { page: prompt?.id }, inApp)
     expect(notPage.isError).toBe(true)
     expect(buffers.get(prompt?.id ?? '')).toBeDefined()
+  })
+})
+
+/** A resource read's two items: the structure, parsed, and the block. */
+async function readFeed(
+  client: Awaited<ReturnType<typeof connectClient>>,
+  uri: string,
+): Promise<{
+  structure: { page: string; origin: string; records: Record<string, unknown>[] }
+  block: string
+  raw: string
+}> {
+  const { contents } = await client.readResource({ uri })
+  const texts = contents.map((item) => ('text' in item ? item.text : ''))
+  expect(contents.map((item) => item.mimeType)).toEqual(['application/json', 'text/plain'])
+  return {
+    structure: JSON.parse(texts[0] ?? '') as {
+      page: string
+      origin: string
+      records: Record<string, unknown>[]
+    },
+    block: texts[1] ?? '',
+    raw: texts[0] ?? '',
+  }
+}
+
+function mutation(seq: number, summary: string, element = 1): MutationRecordAnswer {
+  return { seq, at: 5000 + seq, kind: 'added', element, summary }
+}
+
+describe('the page feeds (#29, ADR 0008)', () => {
+  const header = `--- untrusted content from ${ORIGIN} ---`
+  const footer = `--- end of untrusted content from ${ORIGIN} ---`
+
+  it('names three templates, one per feed, and reads their URIs back', () => {
+    expect(PAGE_FEEDS).toEqual(['mutations', 'console', 'network'])
+    for (const feed of PAGE_FEEDS) {
+      expect(PAGE_RESOURCES[feed].uriTemplate).toBe(`nemesis://page/{page}/${feed}`)
+      expect(pageFeedUri('b3', feed)).toBe(`nemesis://page/b3/${feed}`)
+      expect(parsePageFeedUri(pageFeedUri('b3', feed))).toEqual({ page: 'b3', feed })
+    }
+    for (const bad of [
+      'nemesis://page/b3/cookies',
+      'nemesis://page//console',
+      'nemesis://page/b3/console/x',
+      'nemesis://session/events',
+    ]) {
+      expect(parsePageFeedUri(bad), bad).toBeNull()
+    }
+  })
+
+  it('lists three feeds per open page buffer, and drops them when the buffer is killed', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp, buffers } = fakeCockpit(undefined, build)
+    const client = await connectClient(mcp)
+    const uris = async (): Promise<string[]> =>
+      (await client.listResources()).resources.map((resource) => resource.uri)
+    expect(await uris()).toEqual([
+      EVENTS_RESOURCE.uri,
+      ...PAGE_FEEDS.map((feed) => pageFeedUri(rig.pageId, feed)),
+    ])
+    const { resourceTemplates } = await client.listResourceTemplates()
+    expect(resourceTemplates.map((template) => template.uriTemplate)).toEqual(
+      PAGE_FEEDS.map((feed) => PAGE_RESOURCES[feed].uriTemplate),
+    )
+
+    const changed = vi.fn()
+    client.setNotificationHandler(ResourceListChangedNotificationSchema, changed)
+    await client.subscribeResource({ uri: pageFeedUri(rig.pageId, 'mutations') })
+    expect(rig.polls.size).toBe(1)
+    buffers.kill(rig.pageId)
+    await vi.waitFor(() => expect(changed).toHaveBeenCalled())
+    expect(await uris()).toEqual([EVENTS_RESOURCE.uri])
+    // Its poll stopped, and its URIs are no longer read or subscribed.
+    expect(rig.polls.size).toBe(0)
+    await expect(client.readResource({ uri: pageFeedUri(rig.pageId, 'console') })).rejects.toThrow()
+    await expect(
+      client.subscribeResource({ uri: pageFeedUri(rig.pageId, 'network') }),
+    ).rejects.toThrow()
+  })
+
+  it('reads the console as {at, level, text}, the text only in the block', async () => {
+    const { build, rig } = hostilePages()
+    const client = await connectClient(fakeCockpit(undefined, build).mcp)
+    rig.console.record(rig.pageId, 'log', `${CANARY}\nsecond line`)
+    rig.console.record(rig.pageId, 'error', 'Uncaught TypeError')
+    const { structure, block, raw } = await readFeed(client, pageFeedUri(rig.pageId, 'console'))
+    expect(structure).toEqual({
+      page: rig.pageId,
+      origin: ORIGIN,
+      records: [
+        { at: 1_000_000, level: 'info', text: '[1]' },
+        { at: 1_000_000, level: 'error', text: '[2]' },
+      ],
+    })
+    expect(raw).not.toContain('NEMESIS-MCP-CANARY')
+    expect(block.startsWith(header)).toBe(true)
+    expect(block.endsWith(footer)).toBe(true)
+    expect(block).toContain(`[1] text: ${JSON.stringify(`${CANARY}\nsecond line`)}`)
+    expect(block).toContain('[2] text: "Uncaught TypeError"')
+  })
+
+  it('reads the network as {at, method, origin, path, status, bytes}, the path only in the block, no header kept', async () => {
+    const { build, rig } = hostilePages()
+    const client = await connectClient(fakeCockpit(undefined, build).mcp)
+    rig.network.record(rig.pageId, {
+      webContentsId: 3,
+      method: 'POST',
+      url: URL_PATH,
+      statusCode: 201,
+      responseHeaders: {
+        'Content-Length': ['42'],
+        'Set-Cookie': ['session=NEMESIS-COOKIE'],
+      },
+    })
+    rig.network.record(rig.pageId, {
+      method: 'GET',
+      url: 'https://cdn.example/app.js',
+      statusCode: 200,
+    })
+    const { structure, block, raw } = await readFeed(client, pageFeedUri(rig.pageId, 'network'))
+    expect(structure.records).toEqual([
+      { at: 1_000_000, method: 'POST', origin: ORIGIN, path: '[1]', status: 201, bytes: 42 },
+      {
+        at: 1_000_000,
+        method: 'GET',
+        origin: 'https://cdn.example',
+        path: '[2]',
+        status: 200,
+        bytes: null,
+      },
+    ])
+    expect(raw).not.toContain('NEMESIS-MCP-CANARY')
+    expect(raw).not.toContain('/a/')
+    expect(block).toContain(`[1] path: ${JSON.stringify(URL_PATH.slice(ORIGIN.length))}`)
+    expect(JSON.stringify([raw, block])).not.toContain('NEMESIS-COOKIE')
+    expect(JSON.stringify(rig.network.read(rig.pageId))).not.toContain('Cookie')
+  })
+
+  it('polls the mutations while subscribed, refs made under the page document, the summary in the block', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp } = fakeCockpit(undefined, build)
+    const client = await connectClient(mcp)
+    const uri = pageFeedUri(rig.pageId, 'mutations')
+    const heard = vi.fn()
+    client.setNotificationHandler(ResourceUpdatedNotificationSchema, heard)
+
+    await client.subscribeResource({ uri })
+    // The first ask starts the page's recording.
+    await vi.waitFor(() => expect(rig.asked).toEqual([0]))
+    rig.mutations.push(mutation(1, `<li> "${CANARY}"`, 4), {
+      seq: 2,
+      at: 5002,
+      kind: 'text',
+      element: 0,
+      summary: 'text "x"',
+    })
+    for (const tick of rig.polls) tick()
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1))
+    expect(heard.mock.calls[0]?.[0]).toMatchObject({ params: { uri } })
+    expect(rig.asked).toEqual([0, 0])
+
+    const { structure, block, raw } = await readFeed(client, uri)
+    expect(structure.records).toEqual([
+      { at: 5001, kind: 'added', ref: formatRef(7, 4), summary: '[1]' },
+      { at: 5002, kind: 'text', ref: null, summary: '[2]' },
+    ])
+    expect(raw).not.toContain('NEMESIS-MCP-CANARY')
+    expect(block).toContain(`[1] summary: ${JSON.stringify(`<li> "${CANARY}"`)}`)
+    // The read asked again, from the last record main holds.
+    expect(rig.asked.at(-1)).toBe(2)
+
+    // A new document starts from its first record.
+    rig.document = 8
+    rig.mutations = [mutation(1, 'after the navigation', 2)]
+    for (const tick of rig.polls) tick()
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(2))
+    expect(rig.asked.at(-1)).toBe(0)
+    const after = await readFeed(client, uri)
+    expect(after.structure.records.at(-1)).toMatchObject({ ref: formatRef(8, 2) })
+
+    // Unsubscribed, the poll stops.
+    await client.unsubscribeResource({ uri })
+    expect(rig.polls.size).toBe(0)
+  })
+
+  it('stops the poll when the last subscriber disconnects', async () => {
+    const { build, rig } = hostilePages()
+    const { mcp } = fakeCockpit(undefined, build)
+    const one = await connectClient(mcp)
+    const two = await connectClient(mcp)
+    const uri = pageFeedUri(rig.pageId, 'mutations')
+    await one.subscribeResource({ uri })
+    await two.subscribeResource({ uri })
+    expect(rig.polls.size).toBe(1)
+    await one.close()
+    await vi.waitFor(() => expect(rig.polls.size).toBe(1))
+    await two.close()
+    await vi.waitFor(() => expect(rig.polls.size).toBe(0))
+  })
+
+  it('tells a console and a network subscriber at once, and only for their own feed', async () => {
+    const { build, rig } = hostilePages()
+    const client = await connectClient(fakeCockpit(undefined, build).mcp)
+    const heard = vi.fn()
+    client.setNotificationHandler(ResourceUpdatedNotificationSchema, heard)
+    await client.subscribeResource({ uri: pageFeedUri(rig.pageId, 'console') })
+    rig.network.record(rig.pageId, { method: 'GET', url: URL_PATH, statusCode: 200 })
+    rig.console.record(rig.pageId, 'info', 'hello')
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(1))
+    expect(heard.mock.calls[0]?.[0]).toMatchObject({
+      params: { uri: pageFeedUri(rig.pageId, 'console') },
+    })
+    await client.subscribeResource({ uri: pageFeedUri(rig.pageId, 'network') })
+    rig.network.record(rig.pageId, { method: 'GET', url: URL_PATH, statusCode: 200 })
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(2))
+  })
+
+  it('keeps each feed bounded: the last MUTATION_RING mutations, NETWORK_RING requests, CONSOLE_RING lines', async () => {
+    const { build, rig } = hostilePages()
+    const client = await connectClient(fakeCockpit(undefined, build).mcp)
+    for (let seq = 1; seq <= MUTATION_RING; seq += 1) rig.mutations.push(mutation(seq, `m${seq}`))
+    await readFeed(client, pageFeedUri(rig.pageId, 'mutations'))
+    // The page keeps its own ring: the next read brings what came after.
+    rig.mutations = Array.from({ length: 50 }, (_, index) =>
+      mutation(MUTATION_RING + index + 1, `m${MUTATION_RING + index + 1}`),
+    )
+    const mutations = await readFeed(client, pageFeedUri(rig.pageId, 'mutations'))
+    expect(mutations.structure.records).toHaveLength(MUTATION_RING)
+    expect(mutations.block).toContain(`[${MUTATION_RING}] summary: "m${MUTATION_RING + 50}"`)
+    expect(mutations.block).not.toContain('"m50"')
+
+    for (let index = 0; index < NETWORK_RING + 10; index += 1) {
+      rig.network.record(rig.pageId, {
+        method: 'GET',
+        url: `${ORIGIN}/r${index}`,
+        statusCode: 200,
+      })
+    }
+    const network = await readFeed(client, pageFeedUri(rig.pageId, 'network'))
+    expect(network.structure.records).toHaveLength(NETWORK_RING)
+    expect(network.block).toContain('[1] path: "/r10"')
+
+    for (let index = 0; index < CONSOLE_RING + 10; index += 1) {
+      rig.console.record(rig.pageId, 'info', `c${index}`)
+    }
+    const logs = await readFeed(client, pageFeedUri(rig.pageId, 'console'))
+    expect(logs.structure.records).toHaveLength(CONSOLE_RING)
+    expect(logs.block).toContain('[1] text: "c10"')
   })
 })
