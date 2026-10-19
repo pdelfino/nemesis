@@ -160,6 +160,14 @@ export function createCockpit(
     mcpServers: () => ({
       nemesis: { type: 'sdk', name: 'nemesis', instance: mcp.serve('in-app') },
     }),
+    // The stop gate (#113): the verify key's check at a gated turn's end,
+    // the red evidence back through the prompt queue. Both exist below and
+    // are read when a turn ends.
+    stopGate: {
+      verify: () => verifier.verify(),
+      submit: (text) => prompts.submit(text),
+      retries: () => config.settings.stopGateRetries,
+    },
   })
   // Walking away (#90): a finished turn, a request or an error is a macOS
   // notification, and a Telegram push when its two variables are set, with

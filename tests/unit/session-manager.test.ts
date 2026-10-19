@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { nudgeText } from '../../src/main/agent/corrections'
-import type { AgentEvent } from '../../src/main/agent/events'
+import type { AgentEvent, AgentEvidenceEvent } from '../../src/main/agent/events'
+import type { SessionAttentionEvent } from '../../src/shared/notify'
 import { mockDriver } from '../../src/main/agent/mock'
 import { PromptQueue } from '../../src/main/agent/prompt-queue'
 import { denyEveryTool } from '../../src/main/agent/session'
@@ -12,6 +13,7 @@ import {
   rewindConversationQuestion,
   rewindFilesQuestion,
   SessionManager,
+  STOP_GATE_REMINDER,
   turnsDropped,
   undoPrompt,
 } from '../../src/main/agent/session-manager'
@@ -569,5 +571,151 @@ describe('the correction nudge and the side question (#80)', () => {
     expect(await agent.sideQuestion('hi')).toBe('You said: hi')
     expect(events).toEqual([])
     expect(agent.sessionId).toBeNull()
+  })
+})
+
+// The stop gate (#113): gated, a turn that ended well runs the check, a red
+// one goes back through the prompt queue as the next prompt up to the cap,
+// and the turn ends for the user, one notification, once it is green or the
+// cap is reached. The verifier is a fake here; the real one is verify.test.ts.
+describe('the stop gate', () => {
+  function evidence(exitCode: number): AgentEvidenceEvent {
+    return {
+      type: 'evidence',
+      command: 'npm test',
+      source: 'settings',
+      exitCode,
+      signal: null,
+      durationMs: 100,
+      output: exitCode === 0 ? '3 passed\n' : '1 failed\n',
+    }
+  }
+
+  /** A manager with the gate wired to a fake verifier that answers `codes` in order, then green. */
+  function gated(codes: readonly (number | null)[], retries = 3) {
+    const answers = [...codes]
+    let checks = 0
+    let queue: PromptQueue | null = null
+    const agent = new SessionManager({
+      cwd: '/tmp/nemesis-unit',
+      model: null,
+      permissionHandler: denyEveryTool,
+      driver: mockDriver(),
+      stopGate: {
+        verify: () => {
+          checks += 1
+          const code = answers.length === 0 ? 0 : answers.shift()
+          return Promise.resolve(code === null || code === undefined ? null : evidence(code))
+        },
+        submit: (text) => (queue as PromptQueue).submit(text),
+        retries: () => retries,
+      },
+    })
+    const events = collect(agent)
+    queue = new PromptQueue(agent)
+    const attention: SessionAttentionEvent[] = []
+    agent.onAttention((event) => attention.push(event))
+    return { agent, events, queue, attention, checks: () => checks }
+  }
+
+  function prompts(events: readonly AgentEvent[]): string[] {
+    return events.flatMap((event) => (event.type === 'user-text' ? [event.text] : []))
+  }
+
+  function gateStates(events: readonly AgentEvent[]): string[] {
+    return events.flatMap((event) =>
+      event.type === 'stop-gate'
+        ? [`${event.on ? 'on' : 'off'} ${event.retries}/${event.cap}`]
+        : [],
+    )
+  }
+
+  it('is off by default: a turn ends without a check', async () => {
+    const { agent, queue, attention, checks } = gated([1])
+    expect(agent.stopGate).toBe(false)
+    await queue.submit('hello')
+    await vi.waitFor(() => expect(attention).toHaveLength(1))
+    expect(checks()).toBe(0)
+    await agent.stop()
+  })
+
+  it("says the guide's words the first time it goes on, and shows its state each toggle", async () => {
+    const { agent, events } = gated([])
+    expect(agent.toggleStopGate()).toBe(true)
+    expect(agent.toggleStopGate()).toBe(false)
+    expect(agent.toggleStopGate()).toBe(true)
+    expect(gateStates(events)).toEqual(['on 0/3', 'off 0/3', 'on 0/3'])
+    expect(events.filter((event) => event.type === 'nudge')).toEqual([
+      { type: 'nudge', text: STOP_GATE_REMINDER },
+    ])
+    expect(notices(events)).toEqual([
+      'Stop gate on: every turn ends with the check, up to 3 retries.',
+      'Stop gate off: turns end without the check.',
+      'Stop gate on: every turn ends with the check, up to 3 retries.',
+    ])
+    await agent.stop()
+  })
+
+  it('red then green: the evidence goes back as the next prompt, and the turn ends after two prompts', async () => {
+    const { agent, events, queue, attention, checks } = gated([1, 0])
+    agent.toggleStopGate()
+    await queue.submit('fix the bug')
+    await vi.waitFor(() => expect(attention).toHaveLength(1))
+    expect(checks()).toBe(2)
+    const sent = prompts(events)
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toBe('fix the bug')
+    expect(sent[1]).toBe(
+      'The check failed, fix it:\n\nEvidence: npm test (exit 1, 0.1s)\n\n```\n1 failed\n```',
+    )
+    expect(attention[0]?.type).toBe('session-finished')
+    expect(gateStates(events)).toEqual(['on 0/3', 'on 1/3'])
+    expect(queue.state().busy).toBe(false)
+    await agent.stop()
+  })
+
+  it('red at every turn: retries the cap, then the turn ends with a notice; the next task starts the count over', async () => {
+    const { agent, events, queue, attention, checks } = gated([1, 1, 1, 1, 1], 3)
+    agent.toggleStopGate()
+    await queue.submit('fix the bug')
+    await vi.waitFor(() => expect(attention).toHaveLength(1))
+    expect(checks()).toBe(4)
+    expect(prompts(events)).toHaveLength(4)
+    expect(notices(events)).toContain(
+      'Stop gate: the check still fails after 3 retries; the turn ends.',
+    )
+    expect(gateStates(events)).toEqual(['on 0/3', 'on 1/3', 'on 2/3', 'on 3/3'])
+    // One notification for the whole run, after the check: the user is wanted once.
+    expect(attention.map((event) => event.type)).toEqual(['session-finished'])
+
+    await queue.submit('another task')
+    await vi.waitFor(() => expect(attention).toHaveLength(2))
+    expect(gateStates(events).slice(4)).toEqual(['on 0/3', 'on 1/3'])
+    await agent.stop()
+  })
+
+  it('a refused check ends the turn with a notice and sends nothing', async () => {
+    const { agent, events, queue, attention } = gated([null])
+    agent.toggleStopGate()
+    await queue.submit('hello')
+    await vi.waitFor(() => expect(attention).toHaveLength(1))
+    expect(prompts(events)).toEqual(['hello'])
+    expect(notices(events)).toContain('Stop gate: the check was not run; the turn ends.')
+    await agent.stop()
+  })
+
+  it('an interrupted turn, which ends in an error, is not gated', async () => {
+    const { agent, events, queue, checks } = gated([1])
+    agent.toggleStopGate()
+    await queue.submit('stream: go')
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.type === 'assistant-text')).toBe(true)
+    })
+    const turn = nextTurn(agent)
+    await agent.interrupt()
+    expect(await turn).toMatchObject({ type: 'turn-end', isError: true })
+    await vi.waitFor(() => expect(queue.state().busy).toBe(false))
+    expect(checks()).toBe(0)
+    await agent.stop()
   })
 })

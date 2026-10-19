@@ -32,6 +32,11 @@ export interface Settings {
    * the default, `npm run gate`.
    */
   readonly verify: string | null
+  /**
+   * How many times the stop gate (#113) sends a red check back to the
+   * session as the next prompt before the turn ends for the user anyway.
+   */
+  readonly stopGateRetries: number
 }
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -43,7 +48,17 @@ const KEYSCHEMES: readonly string[] = ['cockpit']
 
 const THEMES: readonly Theme[] = ['system', 'light', 'dark']
 
-const KNOWN_KEYS: readonly string[] = ['sessionsDir', 'model', 'keyscheme', 'theme', 'verify']
+const KNOWN_KEYS: readonly string[] = [
+  'sessionsDir',
+  'model',
+  'keyscheme',
+  'theme',
+  'verify',
+  'stopGateRetries',
+]
+
+/** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
+export const MAX_STOP_GATE_RETRIES = 20
 
 export class SettingsError extends Error {
   override readonly name = 'SettingsError'
@@ -57,6 +72,7 @@ export function defaultSettings(documentsDir: string): Settings {
     keyscheme: 'cockpit',
     theme: 'system',
     verify: null,
+    stopGateRetries: 3,
   }
 }
 
@@ -104,7 +120,19 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     throw new SettingsError('Setting "verify" is not a command or null')
   }
 
-  return { sessionsDir: expanded, model, keyscheme, theme, verify }
+  const stopGateRetries = value['stopGateRetries'] ?? defaults.stopGateRetries
+  if (
+    typeof stopGateRetries !== 'number' ||
+    !Number.isInteger(stopGateRetries) ||
+    stopGateRetries < 0 ||
+    stopGateRetries > MAX_STOP_GATE_RETRIES
+  ) {
+    throw new SettingsError(
+      `Setting "stopGateRetries" is not a whole number from 0 to ${MAX_STOP_GATE_RETRIES}`,
+    )
+  }
+
+  return { sessionsDir: expanded, model, keyscheme, theme, verify, stopGateRetries }
 }
 
 /**
@@ -139,6 +167,7 @@ export function serializeSettings(settings: Settings): string {
     keyscheme: settings.keyscheme,
     theme: settings.theme,
     verify: settings.verify,
+    stopGateRetries: settings.stopGateRetries,
   }
   return `${JSON.stringify(body, null, 2)}\n`
 }

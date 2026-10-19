@@ -265,7 +265,8 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
     case 'named':
       return appendBlock(state, 'note', `Session named: ${event.name}`, '')
     case 'context-usage':
-      // The mode line shows the meter; the document has nothing to add.
+    case 'stop-gate':
+      // The mode line shows the meter and the gate; the document has nothing to add.
       return null
   }
 }

@@ -120,6 +120,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'keyscheme',
   'theme',
   'verify',
+  'stopGateRetries',
 ]
 
 function settingKey(key: unknown): keyof Settings {

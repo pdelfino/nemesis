@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentEvent } from '../../src/main/agent/events'
+import type { AgentEvent, AgentEvidenceEvent } from '../../src/main/agent/events'
 import { CommandError } from '../../src/main/commands/registry'
 import {
+  checkPassed,
   DEFAULT_VERIFY_COMMAND,
+  gatePrompt,
   describeSource,
   resolveVerifyCommand,
   verifyQuestion,
@@ -295,5 +297,40 @@ describe("the question before an issue's command (#98)", () => {
     answer(false)
     await expect(pending).resolves.toBeNull()
     expect(verifier.running).toBeNull()
+  })
+})
+
+// The stop gate's prompt (#113): a red check as an ordinary user message,
+// the evidence header and the tail of the output, fenced.
+describe("the stop gate's prompt", () => {
+  const red: AgentEvidenceEvent = {
+    type: 'evidence',
+    command: 'npm test',
+    source: 'settings',
+    exitCode: 2,
+    signal: null,
+    durationMs: 1500,
+    output: 'FAIL auth.test.ts\n1 failed\n',
+  }
+
+  it('is green at exit 0 only', () => {
+    expect(checkPassed({ ...red, exitCode: 0 })).toBe(true)
+    expect(checkPassed(red)).toBe(false)
+    expect(checkPassed({ ...red, exitCode: null, signal: 'SIGTERM' })).toBe(false)
+    expect(checkPassed({ ...red, exitCode: null })).toBe(false)
+  })
+
+  it('carries the evidence header and the output in a fence', () => {
+    expect(gatePrompt(red)).toBe(
+      'The check failed, fix it:\n\nEvidence: npm test (exit 2, 1.5s)\n\n```\nFAIL auth.test.ts\n1 failed\n```',
+    )
+  })
+
+  it('fences past any backtick run in the output and keeps only the tail of a long one', () => {
+    expect(gatePrompt({ ...red, output: 'a ```` b' })).toContain('\n`````\na ```` b\n`````')
+    const long = `${'x'.repeat(30_000)}THE END`
+    const prompt = gatePrompt({ ...red, output: long })
+    expect(prompt).toContain('THE END')
+    expect(prompt.length).toBeLessThan(21_000)
   })
 })

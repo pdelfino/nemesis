@@ -20,6 +20,7 @@ describe('the settings schema', () => {
       keyscheme: 'cockpit',
       theme: 'system',
       verify: null,
+      stopGateRetries: 3,
     })
   })
 
@@ -40,6 +41,9 @@ describe('the settings schema', () => {
       verify: 'npm test',
     })
     expect(parseSettings({ verify: null }, defaults).verify).toBeNull()
+    // How many red checks the stop gate sends back before the turn ends (#113).
+    expect(parseSettings({ stopGateRetries: 0 }, defaults).stopGateRetries).toBe(0)
+    expect(parseSettings({ stopGateRetries: 5 }, defaults).stopGateRetries).toBe(5)
   })
 
   it('expands a leading ~ in the sessions folder', () => {
@@ -68,12 +72,16 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ theme: true }, defaults)).toThrow(/"theme"/)
     expect(() => parseSettings({ verify: '' }, defaults)).toThrow(/"verify" is not a command/)
     expect(() => parseSettings({ verify: ['npm', 'test'] }, defaults)).toThrow(/"verify"/)
+    expect(() => parseSettings({ stopGateRetries: -1 }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ stopGateRetries: 1.5 }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ stopGateRetries: 21 }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ stopGateRetries: '3' }, defaults)).toThrow(/"stopGateRetries"/)
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "stopGateRetries": 3\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -111,6 +119,7 @@ describe('the settings file', () => {
       keyscheme: 'cockpit',
       theme: 'system',
       verify: null,
+      stopGateRetries: 3,
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })
