@@ -628,6 +628,13 @@ void app.whenReady().then(() => {
     openWorktree: (worktree) => {
       openCockpit({ cwd: worktree.path, worktree: { worktree, opener: id } })
     },
+    // The renderer reports the page section's new rectangle on the window's
+    // resize, so the page view follows full-screen in and out (#32).
+    toggleFullScreen: () => {
+      const window = cockpits.get(id)?.window
+      if (window === undefined) throw new CommandError('That window is closed')
+      window.setFullScreen(!window.isFullScreen())
+    },
   })
   /**
    * Closing a worktree window asks first, keep highlighted (#87). The
