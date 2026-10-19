@@ -46,3 +46,12 @@ export function wrapUntrusted(origin: string, text: string): string {
     .join('\n')
   return [untrustedHeader(origin), UNTRUSTED_NOTICE, '', body, untrustedFooter(origin)].join('\n')
 }
+
+/**
+ * A prompt about a page buffer (#55): the user's instruction, then the page's
+ * text as the block above. The instruction is the cockpit's or the user's
+ * words; the page never adds a word outside the block.
+ */
+export function pagePrompt(instruction: string, origin: string, text: string): string {
+  return `${instruction.trim()}\n\n${wrapUntrusted(origin, text)}`
+}

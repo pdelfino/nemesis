@@ -504,12 +504,46 @@ class MockQuery implements AgentQueryHandle {
     yield this.result(reply)
   }
 
-  /** Routes through the session's permission handler, like the real SDK does. */
+  /**
+   * Routes through the session's `PreToolUse` hooks, then its permission
+   * handler, like the real SDK does (#55): a hook's deny is the answer and
+   * the handler is never asked, a hook's allow skips the handler, and an
+   * ask or no decision goes to the handler, as every rule says ask here.
+   */
   private async ask(
     name: string,
     input: Record<string, unknown>,
     toolUseId = `mock-tool-${this.turns}`,
   ): Promise<PermissionResult> {
+    for (const matcher of this.options.hooks?.PreToolUse ?? []) {
+      if (matcher.matcher !== undefined && !new RegExp(`^(?:${matcher.matcher})$`).test(name)) {
+        continue
+      }
+      for (const hook of matcher.hooks) {
+        const output = await hook(
+          {
+            hook_event_name: 'PreToolUse',
+            session_id: this.sessionId,
+            transcript_path: '',
+            cwd: this.options.cwd ?? process.cwd(),
+            tool_name: name,
+            tool_input: input,
+            tool_use_id: toolUseId,
+          },
+          toolUseId,
+          { signal: this.turn.signal },
+        )
+        const specific = 'hookSpecificOutput' in output ? output.hookSpecificOutput : undefined
+        if (specific?.hookEventName !== 'PreToolUse') continue
+        if (specific.permissionDecision === 'deny') {
+          return {
+            behavior: 'deny',
+            message: specific.permissionDecisionReason ?? `A PreToolUse hook denied ${name}`,
+          }
+        }
+        if (specific.permissionDecision === 'allow') return { behavior: 'allow' }
+      }
+    }
     const canUseTool = this.options.canUseTool
     if (canUseTool === undefined) return { behavior: 'allow' }
     const decision = await canUseTool(name, input, {

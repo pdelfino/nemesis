@@ -64,6 +64,8 @@ export interface SessionManagerOptions {
    * and every session connects its own.
    */
   readonly mcpServers?: (() => AgentSessionOptions['mcpServers']) | undefined
+  /** The SDK hooks each session the manager starts gets: the page boundary of #55. */
+  readonly hooks?: AgentSessionOptions['hooks'] | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
   /** The permission bridge's announcements, read for the "needs you" moment (#90). */
@@ -636,6 +638,7 @@ export class SessionManager {
       ...(this.options.model === null ? {} : { model: this.options.model }),
       permissionMode: this.mode,
       ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers() }),
+      ...(this.options.hooks === undefined ? {} : { hooks: this.options.hooks }),
       ...extra,
     })
     this.session = session

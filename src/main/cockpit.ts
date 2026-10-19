@@ -2,6 +2,8 @@ import { app, shell, WebContentsView, type BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import type { ClipboardReader } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
+import { PagePolicy } from './agent/page-policy'
+import { CommandError } from './commands/registry'
 import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { SessionManager } from './agent/session-manager'
@@ -147,7 +149,28 @@ export function createCockpit(
   // the first prompt, not at launch. A tool the rules ask about waits on a key
   // through the permission bridge (#63). Every event is written to the session
   // folder as it arrives (#64).
-  const permissions = new PermissionBridge(buffers)
+  // The agent and web boundary (#55, SECURITY.org T4): while a page buffer
+  // is open, a side-effect tool needs a yes every call, and while a page is
+  // the current buffer it is denied. The page buffers are built below; the
+  // policy reads them when a tool is called.
+  const boundary = new PagePolicy({
+    folder: cwd,
+    pages: {
+      pageOpen: () => pages.list().length > 0,
+      currentOrigin: () => {
+        const current = buffers.current
+        if (current?.kind !== 'page') return null
+        try {
+          return current.url === undefined ? 'a page not yet loaded' : new URL(current.url).origin
+        } catch {
+          return current.url ?? 'a page not yet loaded'
+        }
+      },
+    },
+  })
+  const permissions = new PermissionBridge(buffers, {
+    mustAsk: (request) => boundary.mustAsk(request),
+  })
   const recorder = new SessionRecorder({ sessionsDir: settings.sessionsDir })
   // What search-transcripts scans (#69).
   const transcripts = new TranscriptSearch({ sessionsDir: settings.sessionsDir })
@@ -167,6 +190,7 @@ export function createCockpit(
       return config.settings.model
     },
     permissionHandler: plans,
+    hooks: boundary.hooks(),
     requests: permissions,
     // The cockpit's own MCP server, in process (#28): the agent inside sees
     // the catalog an outside client does, minus the rows that would loop.
@@ -312,6 +336,7 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
+    boundary,
   )
   // The MCP server over this window's command table (#28, ADR 0007 and
   // 0008): a thin relay to the registry, the buffers, the prompter, the
@@ -385,6 +410,21 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
+    // The current page's text for the agent (#55): its committed URL read
+    // again through the page's own partition, cookies omitted, within the
+    // limits of fetch-url.ts. The page-script door (ADR 0009) will hand the
+    // rendered text instead; the prompt it lands in is the same.
+    pageText: () => {
+      const current = buffers.current
+      const view = current === null || current === undefined ? undefined : pages.viewOf(current.id)
+      if (view === undefined)
+        return Promise.reject(new CommandError('The current buffer is not a page'))
+      const { url } = pages.currentPage()
+      const reader = new UrlFetcher({
+        fetch: (target, init) => view.webContents.session.fetch(target, init),
+      })
+      return reader.fetchText(url)
+    },
     // What open-url reads over (#124): the profile's bookmarks and history
     // (#125), and the engines of the settings, read on every read so a
     // reload-config's are the next read's.
