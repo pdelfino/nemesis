@@ -1,8 +1,7 @@
 #+TITLE: ADR 0008: the MCP tool catalog, cockpit tools first, browser parity in M4
 #+OPTIONS: toc:nil
 
-- Status: proposed (flips to accepted when Pedro picks on #27; the pick is
-  recorded on that issue and in this line)
+- Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #27)
 - Date: 2026-OCTOBER-18
 - Threat or Pillar: README.org pillar 3, LLM-friendly and MCP-driven, for
   what an outside agent sees of Nemesis; SECURITY.org T4 for every tool that

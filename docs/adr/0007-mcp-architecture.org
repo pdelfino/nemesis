@@ -1,8 +1,7 @@
 #+TITLE: ADR 0007: the MCP server as state in main behind a stdio shim over a loopback socket
 #+OPTIONS: toc:nil
 
-- Status: proposed (flips to accepted when Pedro picks an option on #26; the
-  pick is recorded on that issue and in this line)
+- Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #26)
 - Date: 2026-OCTOBER-18
 - Threat or Pillar: README.org pillar 3, LLM-friendly and MCP-driven, for the
   door an outside agent uses; SECURITY.org T1 for what a page may reach and

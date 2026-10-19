@@ -1,9 +1,7 @@
 #+TITLE: ADR 0005: hooks as declared points with named handlers
 #+OPTIONS: toc:nil
 
-- Status: proposed (flips to accepted when Pedro picks an option for each of
-  the five questions on #23; the picks are recorded on that issue and in
-  this line)
+- Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #23, the Recommended option of each of the five questions)
 - Date: 2026-OCTOBER-18
 - Threat or Pillar: README.org pillar 2, text-driven, for hooks a user can
   list, name and remove from the palette; pillar 4, safe by construction, for

@@ -1,8 +1,7 @@
 #+TITLE: ADR 0004: modes as sets of bindings and hooks
 #+OPTIONS: toc:nil
 
-- Status: proposed (flips to accepted when Pedro picks an option on #22; the
-  pick is recorded on that issue and in this line)
+- Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #22)
 - Date: 2026-OCTOBER-18
 - Threat or Pillar: README.org pillar 1, keyboard-driven; pillar 4, safe by
   construction, for the rule on who may switch a mode (SECURITY.org T4)

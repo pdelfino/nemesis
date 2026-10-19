@@ -1,8 +1,7 @@
 #+TITLE: ADR 0006: configuration as a TypeScript init file with live reload
 #+OPTIONS: toc:nil
 
-- Status: proposed (flips to accepted when Pedro picks an option on #71; the
-  pick is recorded on that issue and in this line)
+- Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #71 (option A), and #24 closed with it)
 - Date: 2026-OCTOBER-18
 - Threat or Pillar: README.org pillar 2, text-driven, for a configuration
   that is a file the user edits in their editor and reloads from the
