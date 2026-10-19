@@ -9,7 +9,14 @@ import type {
 import type { SessionAttentionListener } from '../../shared/notify'
 import { AttentionTracker } from './attention'
 import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
-import type { AgentDriver, AgentSession, Checkpoint, ToolCall, UserImageBlock } from './session'
+import type {
+  AgentDriver,
+  AgentSession,
+  AgentSessionOptions,
+  Checkpoint,
+  ToolCall,
+  UserImageBlock,
+} from './session'
 import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } from './session'
 
 /**
@@ -45,6 +52,12 @@ export interface SessionManagerOptions {
   /** The model from the settings; null leaves the choice to the CLI. */
   readonly model: string | null
   readonly permissionHandler: PermissionHandler
+  /**
+   * The in-process MCP servers each session the manager starts gets (#28).
+   * A factory, since the MCP SDK binds a server instance to one transport,
+   * and every session connects its own.
+   */
+  readonly mcpServers?: (() => AgentSessionOptions['mcpServers']) | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
   /** The permission bridge's announcements, read for the "needs you" moment (#90). */
@@ -549,6 +562,7 @@ export class SessionManager {
       ...(this.driver === null ? {} : { driver: this.driver }),
       ...(this.options.model === null ? {} : { model: this.options.model }),
       permissionMode: this.mode,
+      ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers() }),
       ...extra,
     })
     this.session = session

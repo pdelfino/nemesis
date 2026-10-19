@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+// bin/nemesis-mcp (#28, ADR 0007): forwards stdio to the running cockpit's
+// MCP socket. Plain Node, no dependency, no build step. It knows no tool
+// name and makes no decision: the server is in the app's main process. It
+// never launches the app either: the user opens Nemesis, then clients find it.
+//
+//   claude mcp add --scope local nemesis -- node <checkout>/bin/nemesis-mcp
+//
+// The socket is `--socket <path>`, else mcp.sock in NEMESIS_USER_DATA, else
+// mcp.sock in the platform's default user data folder for Nemesis. The token
+// is mcp.token beside it.
+'use strict'
+
+const net = require('node:net')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+
+const HELLO = 'NEMESIS-MCP 1'
+
+function defaultUserData() {
+  const home = os.homedir()
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'Nemesis')
+  }
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Nemesis')
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Nemesis')
+}
+
+function socketPath(argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--socket' && argv[i + 1]) return path.resolve(argv[i + 1])
+    if (argv[i].startsWith('--socket=')) return path.resolve(argv[i].slice('--socket='.length))
+  }
+  const userData = process.env.NEMESIS_USER_DATA || defaultUserData()
+  return path.join(userData, 'mcp.sock')
+}
+
+function notRunning() {
+  process.stderr.write('Nemesis is not running\n')
+  process.exit(1)
+}
+
+const socketFile = socketPath(process.argv.slice(2))
+let token
+try {
+  token = fs.readFileSync(path.join(path.dirname(socketFile), 'mcp.token'), 'utf8').trim()
+} catch {
+  notRunning()
+}
+
+const socket = net.connect(socketFile)
+let connected = false
+let heard = false
+let inputEnded = false
+
+socket.once('connect', () => {
+  connected = true
+  socket.write(`${HELLO} ${token}\n`)
+  process.stdin.pipe(socket)
+  socket.pipe(process.stdout)
+})
+socket.on('data', () => {
+  heard = true
+})
+process.stdin.once('end', () => {
+  inputEnded = true
+})
+socket.once('error', () => {
+  if (!connected) notRunning()
+})
+socket.once('close', () => {
+  if (connected && !heard && !inputEnded) {
+    // Closed before a byte came back: the token of another run, most likely.
+    process.stderr.write('Nemesis closed the connection: restart the client after the app\n')
+    process.exit(1)
+  }
+  process.exit(0)
+})

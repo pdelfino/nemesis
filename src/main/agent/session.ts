@@ -107,6 +107,12 @@ export interface AgentSessionOptions {
   readonly fork?: true | undefined
   /** Who answers a tool permission request. Denies everything when omitted. */
   readonly permissionHandler?: PermissionHandler | undefined
+  /**
+   * In-process MCP servers (#28): the cockpit's own catalog, so the agent
+   * inside sees the tools an outside client does. Their calls still pass
+   * `canUseTool`, so the permission bridge asks as for any tool.
+   */
+  readonly mcpServers?: Options['mcpServers'] | undefined
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
 }
@@ -557,6 +563,7 @@ export class AgentSession {
       // Files are snapshotted before an edit, so a checkpoint can restore them (#84).
       enableFileCheckpointing: true,
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
+      ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers }),
       ...(this.options.resume === undefined ? {} : { resume: this.options.resume }),
       ...(this.options.resumeAt === undefined ? {} : { resumeSessionAt: this.options.resumeAt }),
       ...(this.options.fork === true && this.options.resume !== undefined

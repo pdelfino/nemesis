@@ -7,8 +7,8 @@ import type { PaletteSource, Prompter } from './prompter'
  * its file goes to the system (#68), and so does the verify key before a
  * command that came from an attached issue runs in a shell (#98), and so does
  * the rewind command before the files or the conversation go back to a
- * checkpoint (#99); they know nothing of the palette, only a function that
- * answers true or false. This file is that function and the five fixed
+ * checkpoint (#99), and so does a yes-per-call tool of an MCP client (#28); they know nothing of the palette, only a function that
+ * answers true or false. This file is that function and the six fixed
  * sources it reads from.
  *
  * The no comes first in both sources, so it is the highlighted candidate
@@ -27,6 +27,9 @@ export const OPEN_FILE_SOURCE = 'open-file'
 export const VERIFY_SOURCE = 'verify'
 /** `rewind` asks before the working tree or the conversation goes back to a checkpoint (#99). */
 export const REWIND_SOURCE = 'rewind'
+
+/** A yes-per-call tool of an MCP client asks before it runs (#28, ADR 0007). */
+export const MCP_SOURCE = 'mcp'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -78,6 +81,17 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
     ],
   },
   {
+    name: MCP_SOURCE,
+    candidates: () => [
+      { id: NO, label: 'Refuse', doc: 'Nothing runs; the client is told the user refused.' },
+      {
+        id: YES,
+        label: 'Allow this one call',
+        doc: 'The tool runs once, as the question says; the next call asks again.',
+      },
+    ],
+  },
+  {
     name: REWIND_SOURCE,
     candidates: () => [
       {
@@ -97,7 +111,7 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
 /** True only when the user picked the yes candidate; a cancel is false. */
 export function confirm(prompter: Prompter, source: string, prompt: string): Promise<boolean> {
   return new Promise((resolve) => {
-    prompter.read({ source, prompt, onCancel: () => resolve(false) }, (choice) => {
+    prompter.read({ source, prompt, confirm: true, onCancel: () => resolve(false) }, (choice) => {
       resolve(choice === YES)
     })
   })

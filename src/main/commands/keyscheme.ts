@@ -282,6 +282,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
   return [
     defineCommand({
       name: 'execute-command',
+      mcp: 'never',
       doc: 'Run a command by name.',
       run: () => {
         prompter.read({ source: 'commands', prompt: 'M-x' }, async (name) => {
@@ -292,6 +293,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'describe-command',
+      mcp: 'free',
       doc: 'Show what a command does and the keys that run it.',
       run: () => {
         prompter.read({ source: 'commands', prompt: 'Describe command:' }, (name) => {
@@ -301,6 +303,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'describe-key',
+      mcp: 'free',
       doc: 'Show what the next key sequence runs.',
       run: () => {
         keys
@@ -486,6 +489,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'list-diffs',
+      mcp: 'free',
       doc: 'List the Edit and Write calls of the session; one opens as a diff buffer.',
       run: () => {
         if (diffs.list().length === 0) {
@@ -513,6 +517,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'approve-plan',
+      mcp: 'never',
       doc: 'Approve the plan in the current plan buffer, as edited; the session leaves plan mode.',
       run: () => {
         // The text lives in the renderer, edited: when the dispatch answers
@@ -524,6 +529,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'reject-plan',
+      mcp: 'never',
       doc: 'Reject the plan in the current plan buffer; the edited text goes back as feedback.',
       run: () => {
         // Same path as approve-plan: the renderer answers with the text (#82).
@@ -871,6 +877,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'answer-yes',
+      mcp: 'never',
       doc: 'Allow the pending tool once.',
       run: () => {
         permissions.allowOnce()
@@ -878,6 +885,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'answer-no',
+      mcp: 'never',
       doc: 'Deny the pending tool, or decline the pending question.',
       run: () => {
         permissions.deny()
@@ -885,6 +893,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'allow-for-session',
+      mcp: 'never',
       doc: 'Allow the pending tool now and for the rest of the session.',
       run: () => {
         permissions.allowForSession()
@@ -893,6 +902,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     ...QUESTION_OPTIONS.map((number) =>
       defineCommand({
         name: `choose-option-${number}`,
+        mcp: 'never',
         doc: `Choose option ${number} of the pending question.`,
         run: () => {
           permissions.choose(number)

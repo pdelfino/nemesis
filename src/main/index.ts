@@ -42,6 +42,8 @@ import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
+import { CockpitMcp } from './mcp/server'
+import { McpDoor } from './mcp/socket'
 import { installMenu } from './menu'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
@@ -369,6 +371,11 @@ void app.whenReady().then(() => {
     },
     permissionHandler: plans,
     requests: permissions,
+    // The cockpit's own MCP server, in process (#28): the agent inside sees
+    // the catalog an outside client does, minus the rows that would loop.
+    mcpServers: () => ({
+      nemesis: { type: 'sdk', name: 'nemesis', instance: mcp.serve('in-app') },
+    }),
   })
   // Walking away (#90): a finished turn, a request or an error is a macOS
   // notification, and a Telegram push when its two variables are set, with
@@ -476,26 +483,51 @@ void app.whenReady().then(() => {
           })
         : evaluator.evaluate(form),
   })
+  const notices = mergeNotices(
+    permissionPolicy,
+    downloads,
+    external,
+    diffs,
+    plans,
+    specs,
+    issues,
+    verifier,
+    screenshots,
+    fetcher,
+    environment,
+    transport,
+    config,
+    repl,
+  )
+  // The MCP server over the command table (#28, ADR 0007 and 0008): a thin
+  // relay to the registry, the buffers, the prompter, the session manager
+  // and the transcript search. The registry and the queue exist below; the
+  // server reads them at call time.
+  const mcp: CockpitMcp = new CockpitMcp({
+    get registry() {
+      return cockpit.registry
+    },
+    buffers,
+    prompter,
+    agent,
+    get prompts() {
+      return prompts
+    },
+    sessionsDir: settings.sessionsDir,
+    sessionFolder: () => recorder.folder,
+    notices,
+    cwd: process.cwd(),
+    version: app.getVersion(),
+    // A yes-per-call question with the window closed opens one, as the Dock does.
+    showWindow: () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    },
+  })
   const prompts = installSessionBridge({
     agent,
     permissions,
     recorder,
-    notices: mergeNotices(
-      permissionPolicy,
-      downloads,
-      external,
-      diffs,
-      plans,
-      specs,
-      issues,
-      verifier,
-      screenshots,
-      fetcher,
-      environment,
-      transport,
-      config,
-      repl,
-    ),
+    notices: mergeNotices(notices, mcp),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
@@ -556,6 +588,7 @@ void app.whenReady().then(() => {
         const result = config.reload(target)
         if (result.ok) {
           config.notify(result.line)
+          mcp.toolsChanged()
           return
         }
         deps.help.show(renderProblem(result.problem))
@@ -572,6 +605,22 @@ void app.whenReady().then(() => {
     buffers: () => buffers.list(),
     run: (name) => cockpit.registry.run(name, { source: 'config' }),
   })
+  // The door of ADR 0007: mcp.sock and mcp.token in the profile, both 0600,
+  // for bin/nemesis-mcp. It lives as long as main does, window or not.
+  const door = new McpDoor({
+    dir: app.getPath('userData'),
+    accept: (transport) => {
+      mcp.connect(transport).catch((error: unknown) => {
+        console.error(
+          `MCP connection failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+    },
+  })
+  door.open().catch((error: unknown) => {
+    console.error(`No MCP door: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  app.on('will-quit', () => door.close())
   const win = createWindow()
   // The mode line's journal count is pushed on every change; a page that
   // loads, or loads again, gets the count as it stands.
