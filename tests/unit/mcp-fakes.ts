@@ -6,6 +6,7 @@ import { createCockpitBuffers } from '../../src/main/buffers'
 import { CONFIRM_SOURCES } from '../../src/main/commands/confirm'
 import { Prompter } from '../../src/main/commands/prompter'
 import { CommandRegistry } from '../../src/main/commands/registry'
+import { BufferTexts } from '../../src/main/mcp/buffer-texts'
 import { CockpitMcp, type CockpitMcpDeps, type McpDoorKind } from '../../src/main/mcp/server'
 
 export interface FakeCockpit {
@@ -15,6 +16,12 @@ export interface FakeCockpit {
   readonly prompter: Prompter
   readonly submit: Mock<CockpitMcpDeps['prompts']['submit']>
   readonly nameSession: Mock<(name: string) => void>
+  /** What the window was pushed of the other buffer kinds (#117). */
+  readonly texts: BufferTexts
+  /** Sends an event down the fake session's stream. */
+  emit(event: AgentEvent): void
+  /** Points the server at a session folder, as the recorder would once it had one. */
+  setFolder(folder: string | null): void
 }
 
 /** The MCP specs' cockpit (#28): the real registry, buffers and prompter, a fake session and queue. */
@@ -35,9 +42,12 @@ export function fakeCockpit(registry = new CommandRegistry()): FakeCockpit {
     position: 0,
   }))
   const nameSession = vi.fn<(name: string) => void>()
+  const buffers = createCockpitBuffers()
+  const texts = new BufferTexts(buffers)
+  let folder: string | null = null
   const deps: CockpitMcpDeps = {
     registry,
-    buffers: createCockpitBuffers(),
+    buffers,
     prompter,
     agent: {
       sessionId: null,
@@ -51,12 +61,27 @@ export function fakeCockpit(registry = new CommandRegistry()): FakeCockpit {
     },
     prompts: { draft: 'the draft', submit, state: () => ({ queued: [] }) },
     sessionsDir: null,
-    sessionFolder: () => null,
+    sessionFolder: () => folder,
     notices: { on: () => () => undefined },
     cwd: '/work',
     version: '0.0.1',
+    texts,
   }
-  return { mcp: new CockpitMcp(deps), deps, registry, prompter, submit, nameSession }
+  return {
+    mcp: new CockpitMcp(deps),
+    deps,
+    registry,
+    prompter,
+    submit,
+    nameSession,
+    texts,
+    emit: (event) => {
+      for (const listener of [...listeners]) listener(event)
+    },
+    setFolder: (next) => {
+      folder = next
+    },
+  }
 }
 
 /** A client connected to one fresh server of `mcp` over the SDK's in-memory pair. */

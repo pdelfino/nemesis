@@ -32,9 +32,10 @@ function text(result: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 // ADR 0007's positive half: a client outside the app spawns the shim against
-// the launched profile's socket, lists the eight cockpit tools, reads the
-// buffers without a question, and sends a prompt that waits for the user's
-// yes in the palette before the mock session gets it.
+// the launched profile's socket, lists the eight cockpit tools and the
+// events resource, reads the buffers without a question, and sends a prompt
+// that waits for the user's yes in the palette before the mock session gets
+// it.
 test('a client through bin/nemesis-mcp lists, reads, and sends a prompt after the yes', async () => {
   const { app, userData } = await launchApp()
   const client = new Client({ name: 'e2e-client', version: '1.0.0' })
@@ -51,6 +52,9 @@ test('a client through bin/nemesis-mcp lists, reads, and sends a prompt after th
     const { tools } = await client.listTools()
     expect(tools).toHaveLength(8)
     expect(tools.every((tool) => tool.name.startsWith('cockpit_'))).toBe(true)
+    // The one resource of the tier, the session's event log (#117).
+    const { resources } = await client.listResources()
+    expect(resources.map((resource) => resource.uri)).toEqual(['nemesis://session/events'])
 
     const listed = await client.callTool({ name: 'cockpit_list_buffers', arguments: {} })
     const { buffers } = listed.structuredContent as unknown as Listed
