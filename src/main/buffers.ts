@@ -20,6 +20,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'diff',
   'plan',
   'spec',
+  'review',
   'environment',
   'repl',
 ]

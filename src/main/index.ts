@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
 import type { EventSource } from './agent/session-bridge'
 import { createCockpit, mergeNotices, type Cockpit } from './cockpit'
-import { confirm, DOWNLOAD_SOURCE, EXTERNAL_SOURCE } from './commands/confirm'
+import { confirm, DOWNLOAD_SOURCE, EXTERNAL_SOURCE, WORKTREE_SOURCE } from './commands/confirm'
 import {
   cockpitKeymapLayers,
   createCockpitRegistry,
@@ -55,6 +55,7 @@ import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
 import { defaultSettings, loadSettings, SETTINGS_FILE, type Settings } from './settings'
+import { Worktrees, type Worktree } from './worktrees'
 
 // Tests point the app at a throwaway profile (formalized by the harness, #46).
 const userData = process.env['NEMESIS_USER_DATA']
@@ -261,6 +262,17 @@ const cockpits = new Map<number, Cockpit>()
 let lastFocused: number | null = null
 /** How many windows were opened, for the next window's name. */
 let opened = 0
+/** Set on quit: a worktree window then closes without its question, and its worktree stays (#87). */
+let quitting = false
+app.on('before-quit', () => {
+  quitting = true
+})
+
+/** Where a window's session runs, and the worktree it was opened in, if any (#87). */
+interface CockpitPlace {
+  readonly cwd: string
+  readonly worktree?: { readonly worktree: Worktree; readonly opener: number } | undefined
+}
 
 /**
  * The cockpit the user is at: the focused window's, else the one focused
@@ -482,24 +494,91 @@ void app.whenReady().then(() => {
       cockpit.window.show()
       cockpit.window.focus()
     },
+    // The reviewer (#87) is a window of its own in the writer's folder, a
+    // fresh session whose first message is the reviewer's prompt; its first
+    // turn's final text is the review.
+    review: (prompt) => {
+      const reviewer = openCockpit({ cwd: cockpits.get(id)?.cwd ?? process.cwd() })
+      const done = new Promise<string>((resolve, reject) => {
+        const off = reviewer.agent.on((event) => {
+          if (event.type === 'turn-end') {
+            off()
+            if (event.isError) reject(new Error(event.result || 'the turn ended in an error'))
+            else resolve(event.result)
+          } else if (event.type === 'error') {
+            off()
+            reject(new Error(event.message))
+          }
+        })
+        reviewer.window.once('closed', () => {
+          off()
+          reject(new Error('the reviewer window was closed before its turn ended'))
+        })
+      })
+      // Sent once the page listens, so the reviewer's transcript shows the prompt.
+      reviewer.window.webContents.once('did-finish-load', () => {
+        reviewer.prompts.submit(prompt).catch((error: unknown) => {
+          console.error('review: the reviewer prompt was not sent:', error)
+        })
+      })
+      return { reviewer: reviewer.name, done }
+    },
+    openWorktree: (worktree) => {
+      openCockpit({ cwd: worktree.path, worktree: { worktree, opener: id } })
+    },
   })
-  /** A window and its cockpit: its own session, buffers and keys (#70). */
-  const openCockpit = (): Cockpit => {
+  /**
+   * Closing a worktree window asks first, keep highlighted (#87). The
+   * removal runs after the window is gone, through the opener's worktrees
+   * so the notice lands where the worktree was made, and only when the
+   * worktree is clean. A quit asks nothing and keeps it.
+   */
+  const askBeforeClosing = (cockpit: Cockpit, worktree: Worktree, opener: number): void => {
+    const win = cockpit.window
+    let state: 'open' | 'asking' | 'closing' = 'open'
+    win.on('close', (event) => {
+      if (quitting || state === 'closing') return
+      event.preventDefault()
+      if (state === 'asking') return
+      state = 'asking'
+      void confirm(
+        cockpit.prompter,
+        WORKTREE_SOURCE,
+        `Remove the worktree ${worktree.path}? Only a clean worktree is removed.`,
+      ).then(async (remove) => {
+        state = 'closing'
+        if (!win.isDestroyed()) win.close()
+        const notices = (cockpits.get(opener) ?? focusedCockpit())?.worktrees ?? new Worktrees()
+        if (remove) await notices.remove(worktree)
+        else notices.kept(worktree)
+      })
+    })
+  }
+  /** A window and its cockpit: its own session, buffers and keys (#70), in its own folder (#87). */
+  const openCockpit = (place: CockpitPlace = { cwd: process.cwd() }): Cockpit => {
     const win = createWindow()
     const id = win.webContents.id
     opened += 1
-    const cockpit = createCockpit(win, `Window ${opened}`, {
-      config,
-      sessions,
-      journal,
-      evaluate,
-      home,
-      clipboard: { readImage: readClipboardImage },
-      capturer,
-      notices: noticesFor(id),
-      windows: windowsFor(id),
-      commands: (help) => [reloadConfig(help)],
-    })
+    const cockpit = createCockpit(
+      win,
+      `Window ${opened}`,
+      {
+        config,
+        sessions,
+        journal,
+        evaluate,
+        home,
+        clipboard: { readImage: readClipboardImage },
+        capturer,
+        notices: noticesFor(id),
+        windows: windowsFor(id),
+        commands: (help) => [reloadConfig(help)],
+      },
+      place.cwd,
+    )
+    if (place.worktree !== undefined) {
+      askBeforeClosing(cockpit, place.worktree.worktree, place.worktree.opener)
+    }
     syncConfigCommands(cockpit.registry)
     cockpits.set(id, cockpit)
     lastFocused = id

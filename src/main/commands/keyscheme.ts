@@ -26,12 +26,15 @@ import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
 import { Repl } from '../repl'
+import { reviewApplyPrompt } from '../review-prompt'
+import { ReviewBuffers } from '../reviews'
 import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
 import { describeMatch, TranscriptSearch } from '../transcript-search'
 import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
+import { Worktrees, type Worktree } from '../worktrees'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
@@ -118,6 +121,12 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * `new-window` on `C-x 5 2` opens another window with its own session and
  * buffers, and `choose-buffer` lists every window's buffers, the others
  * named by window; choosing one of those brings its window forward.
+ * Writer and reviewer (#87): `review-diff` on `C-c C-r` opens a reviewer
+ * window in the same folder whose fresh session reviews this session's diff
+ * against the attached issue or plan, and its findings open here in a
+ * review buffer, where `C-c C-c` is `review-apply`; `new-window-in-worktree`
+ * on `C-x 5 w` reads a task name, makes a git worktree beside the folder
+ * and opens a window whose session runs there.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -167,6 +176,12 @@ export interface CockpitDeps {
   readonly repl: Repl
   /** The other windows, as `new-window` opens one and the palette lists their buffers (#70). */
   readonly windows: CockpitWindows
+  /** The folder the window's session runs in: a worktree's for a worktree window (#87). */
+  readonly cwd: string
+  /** The reviews of the session's diff, as review buffers (#87). */
+  readonly reviews: ReviewBuffers
+  /** The git worktrees new-window-in-worktree makes (#87). */
+  readonly worktrees: Worktrees
 }
 
 /** A buffer of another window, as the palette's `buffers` source lists it (#70). */
@@ -187,6 +202,14 @@ export interface CockpitWindows {
   others(): readonly WindowBuffer[]
   /** Brings another window forward with one of its buffers current. */
   switchTo(windowId: number, bufferId: string): void
+  /**
+   * Opens a reviewer window in this window's folder whose fresh session
+   * starts with `prompt` (#87). `done` resolves with the final text of its
+   * first turn.
+   */
+  review(prompt: string): { readonly reviewer: string; readonly done: Promise<string> }
+  /** Opens a window whose session runs in the worktree; closing it asks whether to remove it (#87). */
+  openWorktree(worktree: Worktree): void
 }
 
 /** Without the app there is one window and no way to open another. */
@@ -197,6 +220,12 @@ const ONE_WINDOW: CockpitWindows = {
   others: () => [],
   switchTo: () => {
     throw new CommandError('There is no other window')
+  },
+  review: () => {
+    throw new CommandError('No window opener is installed')
+  },
+  openWorktree: () => {
+    throw new CommandError('No window opener is installed')
   },
 }
 
@@ -294,6 +323,9 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     // Without the app there is no config scope: every form is refused.
     repl: partial.repl ?? new Repl(buffers),
     windows: partial.windows ?? ONE_WINDOW,
+    cwd: partial.cwd ?? process.cwd(),
+    reviews: partial.reviews ?? new ReviewBuffers(buffers),
+    worktrees: partial.worktrees ?? new Worktrees(),
   }
 }
 
@@ -329,6 +361,9 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     environment,
     repl,
     windows,
+    cwd,
+    reviews,
+    worktrees,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -920,6 +955,56 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'new-window-in-worktree',
+      doc: 'Read a task name, make a git worktree for it beside this folder on a new branch, and open a window whose session runs there.',
+      run: () => {
+        // The name is only a slug's source: the path is derived from the
+        // folder and the slug, and git runs through execFile (#87).
+        prompter.read(
+          { source: 'worktree-name', prompt: 'Worktree for task:', freeText: true },
+          async (name) => {
+            const worktree = await worktrees.create(cwd, name)
+            if (worktree !== null) windows.openWorktree(worktree)
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'review-diff',
+      doc: "Open a reviewer window: a fresh session reviews this session's diff against the attached issue or plan, and its findings open here in a review buffer.",
+      run: () => {
+        if (diffs.list().length === 0) {
+          help.show('Nothing to review: the agent has made no Edit or Write call in this session.')
+          return
+        }
+        const prompt = reviews.prompt(diffs.list(), issues.current)
+        const review = windows.review(prompt)
+        reviews.notify(
+          `Review started in ${review.reviewer}: a fresh session reads the diff; its findings open here.`,
+        )
+        review.done.then(
+          (text) => {
+            reviews.show(review.reviewer, text)
+          },
+          (error: unknown) => {
+            reviews.notify(
+              `The review in ${review.reviewer} did not finish: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'review-apply',
+      doc: 'Send the findings in the current review buffer to this session, to be addressed one by one.',
+      run: () => {
+        const review = reviews.current
+        if (review === null) throw new CommandError('No review buffer is open')
+        prompts.submit(reviewApplyPrompt(review.text)).catch(report('review-apply'))
+        switchToPrompt()
+      },
+    }),
+    defineCommand({
       name: 'kill-buffer',
       doc: 'Kill the current buffer.',
       run: () => {
@@ -985,7 +1070,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * for a free-text read that takes any other; and the files the environment
  * panel lists (#86), in the panel's order, for `RET` there; and the two
  * reads of eval (#72): a form, over nothing, and the journal's entries in
- * file order.
+ * file order; and the task name of a worktree window (#87), over nothing.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -1145,6 +1230,10 @@ export function cockpitSources(
       candidates: () => [],
     },
     {
+      name: 'worktree-name',
+      candidates: () => [],
+    },
+    {
       name: 'journal',
       candidates: () =>
         repl.entries().map((entry) => ({
@@ -1196,6 +1285,8 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-x n': 'new-task',
   'C-x s': 'search-transcripts',
   'C-x 5 2': 'new-window',
+  'C-x 5 w': 'new-window-in-worktree',
+  'C-c C-r': 'review-diff',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
@@ -1229,6 +1320,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   // In a spec buffer the send key starts the fresh session the guide says to (#85).
   spec: defineKeymap('spec', {
     'C-c C-c': 'start-fresh-session-from-spec',
+  }),
+  // In a review buffer the send key sends the findings to the writer (#87).
+  review: defineKeymap('review', {
+    'C-c C-c': 'review-apply',
   }),
   // In the environment buffer RET opens a listed file through the open door (#86).
   environment: defineKeymap('environment', {

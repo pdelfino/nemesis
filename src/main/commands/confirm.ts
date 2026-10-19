@@ -7,11 +7,12 @@ import type { PaletteSource, Prompter } from './prompter'
  * its file goes to the system (#68), and so does the verify key before a
  * command that came from an attached issue runs in a shell (#98), and so does
  * the rewind command before the files or the conversation go back to a
- * checkpoint (#99); they know nothing of the palette, only a function that
- * answers true or false. This file is that function and the five fixed
+ * checkpoint (#99), and so does closing a worktree window before its folder
+ * goes (#87); they know nothing of the palette, only a function that
+ * answers true or false. This file is that function and the six fixed
  * sources it reads from.
  *
- * The no comes first in both sources, so it is the highlighted candidate
+ * The no comes first in every source, so it is the highlighted candidate
  * when the read opens: a stray `RET` refuses, and a yes takes a deliberate
  * step (type a letter of it, or `C-n`). `C-g`, and any newer read taking the
  * palette, are a no as well. The details of what is asked (filename, size,
@@ -27,6 +28,9 @@ export const OPEN_FILE_SOURCE = 'open-file'
 export const VERIFY_SOURCE = 'verify'
 /** `rewind` asks before the working tree or the conversation goes back to a checkpoint (#99). */
 export const REWIND_SOURCE = 'rewind'
+
+/** Closing a worktree window asks whether to remove the worktree; keeping it is the highlighted answer (#87). */
+export const WORKTREE_SOURCE = 'worktree'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -89,6 +93,21 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'Restore',
         doc: 'The files listed go back to their state at the checkpoint, or the conversation to before it, as the question says.',
+      },
+    ],
+  },
+  {
+    name: WORKTREE_SOURCE,
+    candidates: () => [
+      {
+        id: NO,
+        label: 'Keep the worktree',
+        doc: 'The folder and its branch stay as they are.',
+      },
+      {
+        id: YES,
+        label: 'Remove the worktree',
+        doc: 'git worktree remove, only when git status shows nothing uncommitted; the branch stays.',
       },
     ],
   },

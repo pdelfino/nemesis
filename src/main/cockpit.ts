@@ -2,6 +2,7 @@ import { shell, type BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import type { ClipboardReader } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
+import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { SessionManager } from './agent/session-manager'
 import { installBufferBridge } from './buffer-bridge'
@@ -29,12 +30,14 @@ import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
 import { Repl } from './repl'
+import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
 import type { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
 import { TranscriptSearch } from './transcript-search'
 import { SessionRecorder } from './transcripts'
 import { Verifier, verifyQuestion } from './verify'
+import { Worktrees } from './worktrees'
 
 /**
  * One window's cockpit (#70): its buffers, its agent session and everything
@@ -61,6 +64,12 @@ export interface Cockpit {
   readonly help: HelpBuffers
   readonly registry: CommandRegistry
   readonly agent: SessionManager
+  /** Where a prompt goes like one typed: the reviewer's first message comes in here (#87). */
+  readonly prompts: PromptQueue
+  /** The folder the window's session runs in (#87). */
+  readonly cwd: string
+  /** The worktrees this window made, and the notices of their removal (#87). */
+  readonly worktrees: Worktrees
 }
 
 export interface CockpitShared {
@@ -97,7 +106,16 @@ export function mergeNotices(...sources: readonly EventSource[]): EventSource {
   }
 }
 
-export function createCockpit(window: BrowserWindow, name: string, shared: CockpitShared): Cockpit {
+/**
+ * The folder a window's session runs in: the one the app was started in, or
+ * a worktree's for a window new-window-in-worktree opened (#87).
+ */
+export function createCockpit(
+  window: BrowserWindow,
+  name: string,
+  shared: CockpitShared,
+  cwd: string = process.cwd(),
+): Cockpit {
   const { config, journal } = shared
   const contents = window.webContents
   const settings = config.settings
@@ -106,7 +124,7 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
   const buffers = createCockpitBuffers()
   installBufferBridge(buffers, contents)
   const prompter = new Prompter()
-  // One agent session per window, in the folder the app was started in; the
+  // One agent session per window, in the window's folder (#87); the
   // SDK loads the CLI's own settings, so the permission rules are the CLI's
   // and so is the model unless the settings name one (#61, #64). It starts on
   // the first prompt, not at launch. A tool the rules ask about waits on a key
@@ -127,7 +145,7 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
   // The model is read when a session starts, so a reload's model is the
   // next session's (#71).
   const agent: SessionManager = new SessionManager({
-    cwd: process.cwd(),
+    cwd,
     get model() {
       return config.settings.model
     },
@@ -157,12 +175,23 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
   // Live events only: a resumed history reopens no spec.
   const specs = new SpecBuffers(buffers)
   agent.on((event) => specs.observe(event))
+  // Writer and reviewer (#87): review-diff builds the reviewer's prompt from
+  // the diffs above, the attached issue and the last plan the session
+  // proposed, read here off the live events and a resumed history alike;
+  // the reviewer's findings come back as a review buffer. The worktrees
+  // new-window-in-worktree makes say what they did in this window.
+  const reviews = new ReviewBuffers(buffers)
+  agent.on((event) => reviews.observe(event))
+  agent.onHistory((history) => {
+    for (const event of history) reviews.observe(event)
+  })
+  const worktrees = new Worktrees()
   // The environment of the working directory as one buffer (#86): the
   // CLAUDE.md files, rules, hooks, skills, servers and subagents off disk
   // and off the session's init frame. A listed file opens through the same
   // door as a diff's: the question in the prompt buffer, then shell.openPath.
   const environment = new EnvironmentBuffers(buffers, {
-    cwd: process.cwd(),
+    cwd,
     home: shared.home,
     started: () => agent.started,
     confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
@@ -175,9 +204,9 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
   // agent's tool path. The issue comes through the user's own gh login, and
   // its command, remote text, is confirmed in the prompt buffer before its
   // first run (#98).
-  const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
+  const issues = new IssueAttachment({ cwd, fetch: fetchIssueWithGh })
   const verifier = new Verifier({
-    cwd: process.cwd(),
+    cwd,
     // Read on every check, so a reload's verify is the next check's (#71).
     get settingsCommand() {
       return config.settings.verify
@@ -194,7 +223,7 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
   // The guide's rich prompts (#83): the files `@` lists come from git in the
   // folder the app was started in; a URL the user asks for is fetched once,
   // within the limits of fetch-url.ts, and wrapped as untrusted content.
-  const files = new WorkingFiles({ cwd: process.cwd() })
+  const files = new WorkingFiles({ cwd })
   const fetcher = new UrlFetcher()
   // Eval in the config scope (#72): the app's evaluator and journal, this
   // window's `*repl*` buffer.
@@ -215,6 +244,8 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
       fetcher,
       environment,
       repl,
+      reviews,
+      worktrees,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -239,6 +270,9 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
     environment,
     repl,
     windows: shared.windows,
+    cwd,
+    reviews,
+    worktrees,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
@@ -249,6 +283,7 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
     diffs,
     plans,
     specs,
+    reviews,
     environment,
     repl,
     journal,
@@ -266,5 +301,8 @@ export function createCockpit(window: BrowserWindow, name: string, shared: Cockp
     help: deps.help,
     registry: dispatcher.registry,
     agent,
+    prompts,
+    cwd,
+    worktrees,
   }
 }
