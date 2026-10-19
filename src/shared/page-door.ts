@@ -9,7 +9,8 @@
  * whole. A consumer adds a name and its schema to `PAGE_ANSWERS`, never a
  * channel. Version 1 shipped one name, `ping`, so the door was testable
  * before a consumer existed; the semantic view (#122) adds `snapshot`, and
- * hint mode (#123) adds `hints` and `hints-show`.
+ * hint mode (#123) adds `hints` and `hints-show`, and reader mode (#128)
+ * adds `reader`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
@@ -192,12 +193,54 @@ export interface HintsShowAnswer {
   readonly labels: readonly DrawnLabel[]
 }
 
+/** What a block of a reader view is (#128): a heading, a paragraph, a list item, a quote, a code block. */
+export const READER_KINDS = ['heading', 'paragraph', 'item', 'quote', 'code'] as const
+
+export type ReaderKind = (typeof READER_KINDS)[number]
+
+/** The most blocks one reader answer carries; a page past it is cut, in document order. */
+export const MAX_READER_BLOCKS = 2000
+
+/** The longest text one block carries. */
+export const MAX_READER_TEXT = 4000
+
+/** The most links one reader answer numbers as footnotes. */
+export const MAX_READER_LINKS = 500
+
+/** The deepest a list item nests. */
+export const MAX_READER_DEPTH = 8
+
+/**
+ * One block of a page's main text (#128): plain text, never HTML. A link in
+ * the text is followed by its footnote mark, `[n]`, the n-th of the answer's
+ * links. `level` is a heading's level, 1 to 6, or a list item's depth, 1 to
+ * MAX_READER_DEPTH; 0 on every other kind.
+ */
+export interface ReaderBlock {
+  readonly kind: ReaderKind
+  readonly level: number
+  readonly text: string
+}
+
+/** A link of the reader view, the target of a footnote mark: its absolute URL. */
+export interface ReaderLink {
+  readonly href: string
+}
+
+/** `reader`: the page's title and main text, stripped of chrome (#128). */
+export interface ReaderAnswer {
+  readonly title: string
+  readonly blocks: readonly ReaderBlock[]
+  readonly links: readonly ReaderLink[]
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
   readonly snapshot: SnapshotAnswer
   readonly hints: HintsAnswer
   readonly 'hints-show': HintsShowAnswer
+  readonly reader: ReaderAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -258,6 +301,25 @@ export const PAGE_ANSWERS: {
         y: { kind: 'number', min: -MAX_PAGE_EXTENT, max: MAX_PAGE_EXTENT } as const,
         width: { kind: 'number', min: 0, max: MAX_PAGE_EXTENT } as const,
         height: { kind: 'number', min: 0, max: MAX_PAGE_EXTENT } as const,
+      }),
+    } as const,
+  }),
+  reader: Object.freeze({
+    title: { kind: 'string', max: MAX_PAGE_TITLE } as const,
+    blocks: {
+      kind: 'list',
+      max: MAX_READER_BLOCKS,
+      item: Object.freeze({
+        kind: { kind: 'enum', values: READER_KINDS } as const,
+        level: { kind: 'number', min: 0, max: MAX_READER_DEPTH, integer: true } as const,
+        text: { kind: 'string', max: MAX_READER_TEXT } as const,
+      }),
+    } as const,
+    links: {
+      kind: 'list',
+      max: MAX_READER_LINKS,
+      item: Object.freeze({
+        href: { kind: 'string', max: MAX_PAGE_URL } as const,
       }),
     } as const,
   }),

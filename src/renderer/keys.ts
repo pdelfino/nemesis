@@ -34,6 +34,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'environment',
   'repl',
   'page',
+  'reader',
 ]
 
 /** Told what a key ran, so a buffer can act on it (the prompt sends on `send-prompt`). */

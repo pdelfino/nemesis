@@ -19,6 +19,7 @@ import { parsePlanAnswer, type PlanBuffers } from '../plans'
 import type { Repl } from '../repl'
 import type { ReviewBuffers } from '../reviews'
 import type { Journal } from '../config/journal'
+import type { ReaderBuffers } from '../pages/reader'
 import type { SpecBuffers } from '../specs'
 import type { TranscriptSearch } from '../transcript-search'
 import { parsePaletteAnswer, type Prompter } from './prompter'
@@ -51,6 +52,11 @@ export interface PaletteBridgeOptions {
   readonly repl: Repl
   /** Null under `--no-config`: the count stays blank. */
   readonly journal: Journal | null
+  /**
+   * Reader mode's buffers (#128): their text goes out on the help push, keyed
+   * by the reader buffer's id, so reader mode needs no channel of its own.
+   */
+  readonly readers?: ReaderBuffers
 }
 
 export function installPaletteBridge(options: PaletteBridgeOptions): void {
@@ -66,6 +72,7 @@ export function installPaletteBridge(options: PaletteBridgeOptions): void {
     environment,
     repl,
     journal,
+    readers,
   } = options
   const send = (channel: string, payload: unknown): void => {
     if (!contents.isDestroyed()) contents.send(channel, payload)
@@ -79,6 +86,7 @@ export function installPaletteBridge(options: PaletteBridgeOptions): void {
   reviews.onShown((content) => send(REVIEW_SHOWN_CHANNEL, content))
   environment.onShown((content) => send(ENVIRONMENT_SHOWN_CHANNEL, content))
   repl.onShown((content) => send(REPL_SHOWN_CHANNEL, content))
+  readers?.onShown(({ bufferId, text }) => send(HELP_SHOWN_CHANNEL, { bufferId, text }))
   // The journal is the app's, not the window's: its subscription goes with the window.
   const offJournal = journal?.on((unpromoted) => send(JOURNAL_CHANGED_CHANNEL, { unpromoted }))
   if (offJournal !== undefined) contents.once('destroyed', offJournal)

@@ -20,11 +20,13 @@ import {
   type HintsShowAnswer,
   type PageAnswers,
   type PageRequestName,
+  type ReaderAnswer,
   type SemanticRole,
   type SemanticState,
   type SnapshotAnswer,
   type SnapshotNode,
 } from '../shared/page-door'
+import { extractReader, type ReaderNode } from '../shared/reader'
 
 // The page-script door (ADR 0009, #130, SECURITY.org T1 and T4): the preload
 // of page buffers, and of nothing else. It runs sandboxed in Chromium's
@@ -607,6 +609,18 @@ function hintsShow(args: readonly number[]): HintsShowAnswer {
   return { labels: answer }
 }
 
+// Reader mode (#128): the page's main text as plain blocks, extracted by
+// src/shared/reader.ts over the live DOM. It reads; it writes nothing to the
+// page, and what crosses is text, never the page's HTML.
+
+function reader(): ReaderAnswer {
+  return extractReader(
+    world.document.title,
+    world.document.body as unknown as ReaderNode | null,
+    (element) => isHidden(element as unknown as PageElement),
+  )
+}
+
 /** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
@@ -618,6 +632,7 @@ const HANDLERS: {
   snapshot,
   hints,
   'hints-show': hintsShow,
+  reader,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

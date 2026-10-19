@@ -23,6 +23,7 @@ export type BufferType =
   | 'environment'
   | 'repl'
   | 'page'
+  | 'reader'
 
 /**
  * Buffer types where an unmodified key is a command, not text (`y`/`n` on a

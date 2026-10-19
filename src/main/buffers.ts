@@ -24,6 +24,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'environment',
   'repl',
   'page',
+  'reader',
 ]
 
 const MAX_TITLE = 200

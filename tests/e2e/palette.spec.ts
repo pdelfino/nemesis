@@ -40,9 +40,9 @@ test('M-x reads a command, describe-command and describe-key answer in a help bu
     // The palette shows the first forty; the tail of a longer list is
     // reached by typing, so the chord is checked on a command inside them.
     expect(await candidates(page)).toContain('describe-command')
-    expect(await candidates(page)).toContain('kill-buffer')
-    await expect(page.locator('#palette-candidates li', { hasText: 'kill-buffer' })).toContainText(
-      'C-x k',
+    expect(await candidates(page)).toContain('compact')
+    await expect(page.locator('#palette-candidates li', { hasText: 'compact' })).toContainText(
+      'C-c C-k',
     )
     await expect(doc).toHaveText('Allow the pending tool now and for the rest of the session.')
 

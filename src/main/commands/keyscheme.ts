@@ -170,6 +170,26 @@ const NO_HINTS: HintCommands = {
   quit: () => Promise.reject(new CommandError('No page buffers in this window')),
 }
 
+/**
+ * Reader mode (#128). Each reads the current buffer: a page buffer's text
+ * through the door, or the text a reader buffer shows; each rejects on any
+ * other buffer.
+ */
+export interface ReaderCommands {
+  /** Shows the current page's main text in its reader buffer. */
+  show(): Promise<void>
+  /** Writes the text as an Org file under the sessions folder; the path written. */
+  export(): Promise<string>
+  /** The text inside wrapUntrusted's block, headed by the page's committed origin. */
+  attachment(): Promise<string>
+}
+
+const NO_READER: ReaderCommands = {
+  show: () => Promise.reject(new CommandError('No page buffers in this window')),
+  export: () => Promise.reject(new CommandError('No page buffers in this window')),
+  attachment: () => Promise.reject(new CommandError('No page buffers in this window')),
+}
+
 export interface CockpitDeps {
   readonly buffers: BufferRegistry
   readonly permissions: PermissionBridge
@@ -233,6 +253,8 @@ export interface CockpitDeps {
   readonly semanticText: () => Promise<string>
   /** Hint mode on the current page buffer (#123); each rejects when the current buffer is not a page. */
   readonly hints: HintCommands
+  /** Reader mode on the current page or reader buffer (#128). */
+  readonly reader: ReaderCommands
   /** What open-url reads over: bookmarks, history and the search engines (#124). */
   readonly urls: UrlSources
   /** The profile's history and bookmarks (#125); null when the database did not open. */
@@ -397,6 +419,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.semanticText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
     hints: partial.hints ?? NO_HINTS,
+    reader: partial.reader ?? NO_READER,
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
     stores: partial.stores ?? null,
   }
@@ -434,6 +457,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     pageText,
     semanticText,
     hints,
+    reader,
     environment,
     repl,
     windows,
@@ -1371,6 +1395,52 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'reader-mode',
+      mcp: 'never',
+      doc: "Show the current page buffer's main text in a read-only reader buffer: title, headings, paragraphs, lists, links as numbered footnotes.",
+      run: () => {
+        // Text the page preload extracted, never the page's HTML (#128).
+        reader.show().catch((error: unknown) => {
+          help.show(`No reader view: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      },
+    }),
+    defineCommand({
+      name: 'export-page-text',
+      mcp: 'never',
+      doc: "Write the current page's main text as an Org file under the sessions folder, headed by its origin and the time.",
+      run: () => {
+        reader
+          .export()
+          .then((path) => help.show(`Exported the page's text to ${path}`))
+          .catch((error: unknown) => {
+            help.show(
+              `Could not export the page's text: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
+      },
+    }),
+    defineCommand({
+      name: 'attach-page-text',
+      mcp: 'never',
+      doc: "Put the current page's main text into the prompt, wrapped as untrusted content from its origin.",
+      run: () => {
+        // The page is data from a named origin: its text enters the prompt
+        // through the one wrapper and nowhere else (SECURITY.org, T4).
+        reader
+          .attachment()
+          .then((block) => {
+            prompts.insert(block)
+            switchToPrompt()
+          })
+          .catch((error: unknown) => {
+            help.show(
+              `Could not attach the page's text: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
+      },
+    }),
+    defineCommand({
       name: 'toggle-blocker',
       mcp: 'never',
       doc: 'Turn blocker mode off for the current page buffer, so requests to listed hosts go through, or back on; reload to fetch what was blocked.',
@@ -1729,6 +1799,8 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-x r m': 'bookmark-page',
     // The semantic view of the page, refs shown (#122).
     'C-c C-s': 'show-semantic-view',
+    // The page's main text as a reader buffer (#128).
+    'C-c C-r': 'reader-mode',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {

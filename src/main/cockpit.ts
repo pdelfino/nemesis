@@ -40,6 +40,7 @@ import type { PageAnswers } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
 import { SemanticView, semanticText } from './pages/semantic'
+import { PAGES_FOLDER, ReaderBuffers, readerAttachment, type ReaderDocument } from './pages/reader'
 import { Repl } from './repl'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -92,6 +93,8 @@ export interface Cockpit {
   readonly semantic: SemanticView
   /** Hint mode on those pages (#123). */
   readonly hints: PageHints
+  /** Reader mode's buffers over those pages, through the page-script door (#128). */
+  readonly readers: ReaderBuffers
 }
 
 export interface CockpitShared {
@@ -379,6 +382,26 @@ export function createCockpit(
       throw new CommandError('The current buffer is not a page')
     return current.id
   }
+  // Reader mode (#128): a page's main text through the door, shown in a
+  // reader buffer, exported under the sessions folder, the one place session
+  // data goes, and attached to the prompt only inside wrapUntrusted's block.
+  const readers = new ReaderBuffers({
+    buffers,
+    ask: (pageId) => {
+      const view = pages.viewOf(pageId)
+      if (view === undefined) return Promise.reject(new Error('The page is gone'))
+      return shared.pageDoor.request(view.webContents, 'reader')
+    },
+    committedUrl: (pageId) =>
+      pages.viewOf(pageId) === undefined ? undefined : buffers.get(pageId)?.url,
+    dir: join(settings.sessionsDir, PAGES_FOLDER),
+  })
+  // The document export and attach work from: the reader buffer's own, or the current page's read now.
+  const readerDocument = async (): Promise<ReaderDocument> => {
+    const current = buffers.current
+    const shown = current === null ? undefined : readers.documentOf(current.id)
+    return shown ?? readers.read(currentPageId())
+  }
   // Every committed top-frame navigation of a persistent page is a visit in
   // the profile's history (#125); an ephemeral page is never recorded.
   const stopHistory =
@@ -418,6 +441,8 @@ export function createCockpit(
   texts.follow(reviews, shown)
   texts.follow(environment, shown)
   texts.follow(repl, shown)
+  // A reader buffer is page text: an MCP read of it gets the labeled block (T4).
+  texts.follow(readers, (content) => readerAttachment(content.document))
   texts.followRequests(permissions)
   const mcp: CockpitMcp = new CockpitMcp({
     get registry() {
@@ -503,6 +528,13 @@ export function createCockpit(
       type: async (key) => hints.type(currentPageId(), key),
       quit: async () => hints.quit(currentPageId()),
     },
+    reader: {
+      show: async () => {
+        await readers.show(currentPageId())
+      },
+      export: async () => readers.export(await readerDocument()),
+      attachment: async () => readerAttachment(await readerDocument()),
+    },
     // What open-url reads over (#124): the profile's bookmarks and history
     // (#125), and the engines of the settings, read on every read so a
     // reload-config's are the next read's.
@@ -529,6 +561,7 @@ export function createCockpit(
     environment,
     repl,
     journal,
+    readers,
   })
   texts.follow({ onShown: (listener: HelpListener) => deps.help.on(listener) }, shown)
   // Keys mean nothing until the registry and the keymaps are up (#59).
@@ -551,5 +584,6 @@ export function createCockpit(
     pages,
     semantic,
     hints,
+    readers,
   }
 }
