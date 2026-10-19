@@ -6,6 +6,8 @@ node_modules/
 dist/
 out/
 release/
+# The release checks (#74) live in tests/release, which is source, not output
+!tests/release/
 *.tsbuildinfo
 npm-debug.log*
 

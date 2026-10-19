@@ -1,0 +1,28 @@
+#+title: Release checklist
+#+startup: showall
+
+How a version of Nemesis leaves this machine (#74). The security promise in =SECURITY.org= rests on two things this checklist exists for: Chromium updates shipped fast, and a packaged binary that really carries the fuses and the signature the code intends. There is no auto-update in version 1: every bump is manual and deliberate, and users install the new build by hand.
+
+* When to cut a release
+
+- An Electron or Chromium security release: the Electron bump is the next thing merged, within a week of the upstream release (=SECURITY.org=, supply chain). Watch the Electron releases page and the Dependabot pull request that groups Electron.
+- Otherwise, whenever =main= has something worth shipping. A release with no security reason may wait; a security bump may not.
+
+* Steps
+
+Run from a clean checkout of =main=, in a shell where =source ~/.nvm/nvm.sh && nvm use= has run.
+
+1. [ ] *Bump Electron* if this is a security release: set the exact new version of =electron= in =package.json= (pinned, no range), run =npm install --ignore-scripts= to update =package-lock.json=, then =npm run electron:install=. Read the Electron release notes for breaking changes to the options in =src/main/security/=.
+2. [ ] *Bump the app version* in =package.json= (=version=), following semver.
+3. [ ] *Gate*: =npm run gate= is green. Nothing is tagged with a red gate.
+4. [ ] *Build*: =npm run package= for a local check, or the signed build of #36 for a release; both write =release/mac-arm64/Nemesis.app=.
+5. [ ] *Packaged smoke*: =npm run test:package= launches the bundle and finds one window titled Nemesis.
+6. [ ] *Fuses read-back and local signature*: =npm run release:check=. It runs =tests/release/fuses.spec.ts=, which reads the fuse wire off the packaged binary with =@electron/fuses= and asserts the six fuses of #47, then =scripts/release-check.mjs=, which runs =codesign --verify --deep --strict= and =codesign -dv=. An unsigned local build passes here: it is signed ad hoc, which is enough to launch on this Mac and nowhere else.
+7. [ ] *Signature and notarization*: =node scripts/release-check.mjs --distribution=. On top of step 6 it requires a =Developer ID Application= authority and a team identifier in =codesign -dv=, =spctl --assess --type execute= reporting =accepted= with =source=Notarized Developer ID=, and =xcrun stapler validate= finding the ticket. An ad hoc build fails this step by design: it must not be tagged.
+8. [ ] *Tag*: =git tag -s vX.Y.Z -m "Nemesis vX.Y.Z (Electron A.B.C)"= on the commit that was built, then =git push origin vX.Y.Z=. The tag message names the Electron version, so the engine age of any release can be read from =git tag -n=.
+9. [ ] *Record*: note the Electron version and the date in the release notes, so the three months of on-time engine updates in =SECURITY.org= (high-value accounts) can be counted.
+
+* What the checks do not cover
+
+- Signing and notarization themselves are #36; this checklist only verifies their result.
+- No auto-update: =electron-updater= and Squirrel feeds stay out of version 1.

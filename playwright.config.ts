@@ -5,7 +5,8 @@ import { defineConfig } from '@playwright/test'
 // Playwright's Electron support, so `npm run build` runs first. A third,
 // `package`, drives the packaged release/mac-arm64/Nemesis.app, so
 // `npm run package` runs first; it is outside the gate because packaging is
-// slow (#35).
+// slow (#35). A fourth, `release`, reads the fuses back off whatever bundle
+// is in release/, signed or not, for `npm run release:check` (#74).
 export default defineConfig({
   timeout: 30_000,
   fullyParallel: false,
@@ -16,5 +17,6 @@ export default defineConfig({
     { name: 'app', testDir: 'tests/e2e', testIgnore: /security\// },
     { name: 'security', testDir: 'tests/e2e/security' },
     { name: 'package', testDir: 'tests/package' },
+    { name: 'release', testDir: 'tests/release' },
   ],
 })
