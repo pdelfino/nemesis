@@ -32,10 +32,15 @@ interface FixtureWindow {
 /** Every file under `dir`, as paths relative to it, sorted. Folders alone do not count. */
 function filesUnder(dir: string): string[] {
   if (!existsSync(dir)) return []
-  return readdirSync(dir, { recursive: true, encoding: 'utf8' })
-    .map((name) => join(dir, name))
-    .filter((path) => statSync(path).isFile())
-    .map((path) => relative(dir, path))
+  // The listing carries each entry's type, so nothing races a file that goes
+  // away between two calls: for every offered download Chromium writes a
+  // hidden temporary file in the folder's root and removes it within
+  // milliseconds (#137). A stat after it was gone threw ENOENT on the GitHub
+  // runner (2026-OCTOBER-19) and failed the poll instead of letting it read
+  // the folder again.
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(dir, join(entry.parentPath, entry.name)))
     .sort()
 }
 
