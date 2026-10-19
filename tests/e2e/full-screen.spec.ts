@@ -99,6 +99,8 @@ async function fullScreenRoundTrip(fillDisplay: boolean): Promise<void> {
     await window.keyboard.press('Control+x')
     await window.keyboard.press('Control+f')
     await expect(window.locator('#palette-prompt')).toHaveText('Open URL:')
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await window.keyboard.type(fixtures.url('node-probe.html'))
     await window.keyboard.press('Enter')
     await expect(window.locator('#page')).toBeVisible()
@@ -135,6 +137,8 @@ async function fullScreenRoundTrip(fillDisplay: boolean): Promise<void> {
     // By name too, and the window comes back to the frame it had.
     await window.keyboard.press('Alt+x')
     await expect(window.locator('#palette')).toBeVisible()
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await window.keyboard.type('toggle-full-screen')
     await window.keyboard.press('Enter')
     await expect(window.locator('#palette')).toBeHidden()

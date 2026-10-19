@@ -80,6 +80,8 @@ test('open-url opens a typed URL, searches on a keyword, opens a new buffer, ref
     // The engines are candidates, the first doc naming it as the bare word's.
     await run(window, 'open-url')
     await expect(window.locator('#palette-prompt')).toHaveText('Open URL:')
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await expect(window.locator('#palette-candidates li')).toHaveCount(2)
     await expect(window.locator('#palette-candidates li').first()).toContainText('fx')
 

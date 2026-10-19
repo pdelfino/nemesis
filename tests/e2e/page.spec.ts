@@ -76,6 +76,8 @@ function shares(app: ElectronApplication): Promise<unknown> {
 async function run(page: Page, command: string): Promise<void> {
   await page.keyboard.press('Alt+x')
   await expect(page.locator('#palette')).toBeVisible()
+  // The palette input has the keyboard before anything is typed into it.
+  await expect(page.locator('#palette-input .cm-content')).toBeFocused()
   await page.keyboard.type(command)
   await page.keyboard.press('Enter')
   await expect(page.locator('#palette')).toBeHidden()
@@ -97,6 +99,8 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
     await window.keyboard.press('Control+x')
     await window.keyboard.press('Control+f')
     await expect(window.locator('#palette-prompt')).toHaveText('Open URL:')
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await window.keyboard.type(first)
     await window.keyboard.press('Enter')
 
@@ -130,6 +134,8 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
     // The palette hides the view while it is open, and gives it back after.
     await window.keyboard.press('Alt+x')
     await expect(window.locator('#palette')).toBeVisible()
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await expect.poll(() => attachedViews(app)).toEqual([])
     await window.keyboard.press('Escape')
     await expect(window.locator('#palette')).toBeHidden()
