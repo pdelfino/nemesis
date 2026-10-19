@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, type WebContents } from 'electron'
 import {
   AGENT_EVENT_CHANNEL,
   type AgentEvent,
@@ -8,7 +8,7 @@ import {
   PROMPT_SEND_CHANNEL,
   PROMPT_STATE_CHANNEL,
 } from '../../shared/agent'
-import { handle, parseNothing } from '../ipc'
+import { handleIn, parseNothing } from '../ipc'
 import type { SessionRecorder } from '../transcripts'
 import type { PermissionBridge } from './permission-bridge'
 import { parseDraft, parsePromptText, PromptQueue } from './prompt-queue'
@@ -38,6 +38,9 @@ import type { SessionManager } from './session-manager'
  * it, in the file it was read from. Its prompts seed the queue's history
  * (#104), so `M-p` in the window walks back into the resumed session; the
  * prompt buffer reads the state again when the resumed session starts.
+ *
+ * One bridge per window (#70): each window has its own session and queue,
+ * its calls reach them through the sender, and its events go to it alone.
  */
 
 /** Anything that emits agent events the window and the recorder should see. */
@@ -45,6 +48,8 @@ export interface EventSource {
   on(listener: (event: AgentEvent) => void): () => void
 }
 export interface SessionBridgeOptions {
+  /** The window the session belongs to. */
+  readonly contents: WebContents
   /** Holds the current session and replaces it on new-task or rewind (#84). */
   readonly agent: SessionManager
   readonly permissions: PermissionBridge
@@ -55,8 +60,11 @@ export interface SessionBridgeOptions {
 }
 
 export function installSessionBridge(options: SessionBridgeOptions): PromptQueue {
-  const { agent, permissions, recorder } = options
+  const { contents, agent, permissions, recorder } = options
   const queue = new PromptQueue(agent)
+  const broadcast = (channel: string, payload: unknown): void => {
+    if (!contents.isDestroyed()) contents.send(channel, payload)
+  }
 
   agent.on((event) => {
     recorder.record(event)
@@ -70,34 +78,34 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
     recorder.record(event)
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
-  options.notices?.on((event) => {
+  // The notices may outlive the window; the subscription does not.
+  const offNotices = options.notices?.on((event) => {
     recorder.record(event)
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
+  if (offNotices !== undefined) contents.once('destroyed', offNotices)
   queue.subscribe((state) => broadcast(PROMPT_QUEUE_CHANNEL, state))
   queue.onInsert((insert) => broadcast(PROMPT_INSERT_CHANNEL, insert))
 
-  handle(PROMPT_SEND_CHANNEL, parsePromptText, (text) => {
+  handleIn(contents, PROMPT_SEND_CHANNEL, parsePromptText, (text) => {
     const question = permissions.pending[0]
     if (question !== undefined && permissions.reply(text)) {
       return { id: question.id, status: 'answered', position: 0 }
     }
     return queue.submit(text)
   })
-  handle(PROMPT_DRAFT_CHANNEL, parseDraft, (draft) => queue.saveDraft(draft))
-  handle(PROMPT_STATE_CHANNEL, parseNothing, () => queue.promptState())
+  handleIn(contents, PROMPT_DRAFT_CHANNEL, parseDraft, (draft) => queue.saveDraft(draft))
+  handleIn(contents, PROMPT_STATE_CHANNEL, parseNothing, () => queue.promptState())
 
   // The CLI under the SDK is a child process; it must not outlive the app.
   // Stopping emits the final event, which the recorder writes and closes on.
+  // Nor the window it belongs to.
   app.once('before-quit', () => {
+    void agent.stop()
+  })
+  contents.once('destroyed', () => {
     void agent.stop()
   })
 
   return queue
-}
-
-function broadcast(channel: string, payload: unknown): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(channel, payload)
-  }
 }

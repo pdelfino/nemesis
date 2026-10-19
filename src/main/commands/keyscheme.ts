@@ -16,6 +16,7 @@ import {
 import { wrapUntrusted } from '../agent/boundary'
 import type { ClipboardReader } from '../agent/images'
 import type { BufferRegistry } from '../buffers'
+import type { BufferInfo } from '../../shared/buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
 import { EnvironmentBuffers } from '../environment'
@@ -113,7 +114,10 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * (#72): `eval-expression` reads a form as free text and answers with a
  * notice, `repl` opens the `*repl*` buffer, where `RET` is `repl-read`, and
  * `journal-promote` and `journal-discard` read an entry of the eval journal
- * off the palette and move it to init.ts or delete it.
+ * off the palette and move it to init.ts or delete it. Windows (#70):
+ * `new-window` on `C-x 5 2` opens another window with its own session and
+ * buffers, and `choose-buffer` lists every window's buffers, the others
+ * named by window; choosing one of those brings its window forward.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -161,6 +165,56 @@ export interface CockpitDeps {
   readonly environment: EnvironmentBuffers
   /** Eval in the config scope, the `*repl*` buffer and the journal (#72). */
   readonly repl: Repl
+  /** The other windows, as `new-window` opens one and the palette lists their buffers (#70). */
+  readonly windows: CockpitWindows
+}
+
+/** A buffer of another window, as the palette's `buffers` source lists it (#70). */
+export interface WindowBuffer {
+  readonly windowId: number
+  /** How the palette names the window, `Window 2`. */
+  readonly windowName: string
+  readonly buffer: BufferInfo
+  /** Whether it is that window's current buffer. */
+  readonly current: boolean
+}
+
+/** The windows of the app as one window's commands see them (#70). */
+export interface CockpitWindows {
+  /** Opens a new window with its own session and buffer set. */
+  open(): void
+  /** The buffers of every other window, window by window. */
+  others(): readonly WindowBuffer[]
+  /** Brings another window forward with one of its buffers current. */
+  switchTo(windowId: number, bufferId: string): void
+}
+
+/** Without the app there is one window and no way to open another. */
+const ONE_WINDOW: CockpitWindows = {
+  open: () => {
+    throw new CommandError('No window opener is installed')
+  },
+  others: () => [],
+  switchTo: () => {
+    throw new CommandError('There is no other window')
+  },
+}
+
+/**
+ * The palette id of another window's buffer. A buffer id of the registry is
+ * `b` and a number, so the colon keeps the two apart.
+ */
+export function foreignBufferId(windowId: number, bufferId: string): string {
+  return `${windowId}:${bufferId}`
+}
+
+/** The window and the buffer a palette id names, or null for a buffer of this window. */
+export function parseForeignBufferId(
+  id: string,
+): { readonly windowId: number; readonly bufferId: string } | null {
+  const match = /^(\d+):(.+)$/.exec(id)
+  if (match === null) return null
+  return { windowId: Number(match[1]), bufferId: match[2] ?? '' }
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -239,6 +293,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       }),
     // Without the app there is no config scope: every form is refused.
     repl: partial.repl ?? new Repl(buffers),
+    windows: partial.windows ?? ONE_WINDOW,
   }
 }
 
@@ -273,6 +328,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     fetcher,
     environment,
     repl,
+    windows,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -314,7 +370,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       doc: 'Switch to a buffer chosen by name.',
       run: () => {
         prompter.read({ source: 'buffers', prompt: 'Switch to buffer:' }, (id) => {
-          buffers.switchTo(id)
+          // A buffer of another window brings that window forward (#70).
+          const foreign = parseForeignBufferId(id)
+          if (foreign === null) buffers.switchTo(id)
+          else windows.switchTo(foreign.windowId, foreign.bufferId)
         })
       },
     }),
@@ -854,6 +913,13 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'new-window',
+      doc: 'Open a new window with its own session and buffers.',
+      run: () => {
+        windows.open()
+      },
+    }),
+    defineCommand({
       name: 'kill-buffer',
       doc: 'Kill the current buffer.',
       run: () => {
@@ -934,6 +1000,7 @@ export function cockpitSources(
   prompts: Pick<PromptQueue, 'draft'>,
   environment: EnvironmentBuffers,
   repl: Repl,
+  windows: CockpitWindows,
 ): readonly PaletteSource[] {
   return [
     {
@@ -948,12 +1015,19 @@ export function cockpitSources(
     },
     {
       name: 'buffers',
-      candidates: () =>
-        buffers.list().map((buffer) => ({
+      candidates: () => [
+        ...buffers.list().map((buffer) => ({
           id: buffer.id,
           label: buffer.title,
           doc: `${buffer.kind} buffer${buffer.id === buffers.current?.id ? ', current' : ''}`,
         })),
+        // Every other window's, with the window named (#70).
+        ...windows.others().map((other) => ({
+          id: foreignBufferId(other.windowId, other.buffer.id),
+          label: `${other.buffer.title} <${other.windowName}>`,
+          doc: `${other.buffer.kind} buffer in ${other.windowName}${other.current ? ', current there' : ''}`,
+        })),
+      ],
     },
     {
       name: 'checkpoints',
@@ -1121,6 +1195,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
   'C-x s': 'search-transcripts',
+  'C-x 5 2': 'new-window',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
@@ -1225,6 +1300,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.prompts,
     deps.environment,
     deps.repl,
+    deps.windows,
   )) {
     deps.prompter.addSource(source)
   }

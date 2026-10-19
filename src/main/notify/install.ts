@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import type { SessionAttentionEvent } from '../../shared/notify'
 import type { PermissionBridge } from '../agent/permission-bridge'
 import type { SessionManager } from '../agent/session-manager'
@@ -25,6 +25,8 @@ import { TelegramSink } from './telegram'
  */
 
 export interface NotificationsOptions {
+  /** The window the session belongs to (#70): its focus, and where a click lands. */
+  readonly window: BrowserWindow
   readonly agent: SessionManager
   readonly permissions: PermissionBridge
   readonly buffers: BufferRegistry
@@ -42,7 +44,11 @@ export interface NotificationRecord {
 
 class SpySink implements NotificationSink {
   readonly name = 'spy'
-  readonly shown: NotificationRecord[] = []
+  readonly shown: NotificationRecord[]
+
+  constructor(shown: NotificationRecord[] = []) {
+    this.shown = shown
+  }
 
   send(message: NotificationMessage): Promise<void> {
     this.shown.push({ type: message.event.type, title: message.title, body: message.body })
@@ -51,23 +57,24 @@ class SpySink implements NotificationSink {
 }
 
 export function installNotifications(options: NotificationsOptions): Notifier {
-  const { agent, permissions, buffers, env } = options
+  const { window, agent, permissions, buffers, env } = options
   const report = (problem: string): void => console.error(problem)
   const sinks: NotificationSink[] = []
   if (env['NODE_ENV'] === 'test') {
-    const spy = new SpySink()
-    ;(globalThis as { [NOTIFICATION_LOG]?: readonly NotificationRecord[] })[NOTIFICATION_LOG] =
-      spy.shown
+    // One log for every window, so a second window's notifications join the first's.
+    const log = globalThis as { [NOTIFICATION_LOG]?: NotificationRecord[] }
+    const spy = new SpySink(log[NOTIFICATION_LOG])
+    log[NOTIFICATION_LOG] = spy.shown
     sinks.push(spy)
   } else {
-    sinks.push(new NativeSink((event) => focusOn(event, permissions, buffers)))
+    sinks.push(new NativeSink((event) => focusOn(event, window, permissions, buffers)))
     const telegram = telegramFromEnv(env)
     if (telegram !== null) sinks.push(new TelegramSink(telegram))
   }
   const notifier = new Notifier({
     sinks,
     settings: notifySettingsFromEnv(env, report),
-    isFocused: () => BrowserWindow.getAllWindows().some((window) => window.isFocused()),
+    isFocused: () => !window.isDestroyed() && window.isFocused(),
     onError: report,
   })
   agent.onAttention((event) => {
@@ -82,11 +89,11 @@ export function installNotifications(options: NotificationsOptions): Notifier {
  */
 function focusOn(
   event: SessionAttentionEvent,
+  window: BrowserWindow,
   permissions: PermissionBridge,
   buffers: BufferRegistry,
 ): void {
-  const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
-  if (window === undefined) return
+  if (window.isDestroyed()) return
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
