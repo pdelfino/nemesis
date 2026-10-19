@@ -9,6 +9,8 @@ import { fixtureServer } from './security/_harness'
  * over the page section; the buffer list carries its title and committed
  * URL, the mode line shows the URL with a loopback `http` in red, the palette
  * hides the view while it is open, back and forward walk the page's history,
+ * by command and by trackpad swipe (#31), `C-c S` hands the committed URL
+ * and title to the share menu, a test seam in place of the native one (#34),
  * and `C-x k` destroys it. The fixture is the security harness's, on its
  * plain loopback origin, which the product rule allows (#52).
  */
@@ -56,6 +58,18 @@ function liveContents(app: ElectronApplication): Promise<string[]> {
       .filter((contents) => !contents.isDestroyed())
       .map((contents) => contents.getURL()),
   )
+}
+
+/** Emits a trackpad `swipe` on every cockpit window, as macOS would (#31). */
+function swipe(app: ElectronApplication, direction: 'left' | 'right'): Promise<void> {
+  return app.evaluate(({ BrowserWindow }, to) => {
+    for (const window of BrowserWindow.getAllWindows()) window.emit('swipe', {}, to)
+  }, direction)
+}
+
+/** What share-page handed the share menu so far (#34). Main process, under test only. */
+function shares(app: ElectronApplication): Promise<unknown> {
+  return app.evaluate(() => (globalThis as { __nemesisShares?: unknown }).__nemesisShares)
 }
 
 /** Runs a command by name at M-x. */
@@ -131,6 +145,21 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
       .poll(() => current(window))
       .toMatchObject({ kind: 'page', title: 'window open', url: second })
 
+    // A swipe left goes back and a swipe right forward, as the keys do (#31).
+    await swipe(app, 'left')
+    await expect
+      .poll(() => current(window))
+      .toMatchObject({ kind: 'page', title: 'node probe', url: first })
+    await swipe(app, 'right')
+    await expect
+      .poll(() => current(window))
+      .toMatchObject({ kind: 'page', title: 'window open', url: second })
+
+    // C-c S shares the page: the seam gets its committed URL and its title (#34).
+    await window.keyboard.press('Control+c')
+    await window.keyboard.press('Shift+S')
+    await expect.poll(() => shares(app)).toEqual([{ urls: [second], title: 'window open' }])
+
     // Switching away hides the page; switching back shows the same one.
     await window.keyboard.press('Control+x')
     await window.keyboard.press('b')
@@ -138,6 +167,16 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
     await expect.poll(() => attachedViews(app)).toEqual([])
     await expect(window.locator('#modeline #page-url')).toHaveText('')
     await expect(window.locator('#transcript')).toBeVisible()
+    // On a buffer that holds no page, a swipe does nothing.
+    await swipe(app, 'left')
+    await expect.poll(async () => (await current(window))?.kind).toBe('transcript')
+    // ...and share-page is a notice: nothing reaches the share menu.
+    await run(window, 'share-page')
+    await expect.poll(async () => (await current(window))?.kind).toBe('help')
+    expect(await shares(app)).toHaveLength(1)
+    await window.keyboard.press('Control+x')
+    await window.keyboard.press('b')
+    await expect.poll(async () => (await current(window))?.kind).toBe('transcript')
     await window.keyboard.press('Control+x')
     await window.keyboard.press('b')
     await window.keyboard.press('Control+x')

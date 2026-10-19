@@ -138,7 +138,11 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * against the attached issue or plan, and its findings open here in a
  * review buffer, where `C-c C-c` is `review-apply`; `new-window-in-worktree`
  * on `C-x 5 w` reads a task name, makes a git worktree beside the folder
- * and opens a window whose session runs there.
+ * and opens a window whose session runs there. Full-screen (#32):
+ * `toggle-full-screen` on `C-x 5 F`, as the View menu's Ctrl+Cmd+F does.
+ * Sharing (#34): `share-page` on `C-c S` in a page pops the system's share
+ * menu with the page's committed URL and title; the command sends nothing,
+ * the URL leaves only by the user's pick in that menu.
  */
 
 /** What summarize-page asks of the agent, above the page's block (#55). */
@@ -245,6 +249,10 @@ export interface CockpitWindows {
   review(prompt: string): { readonly reviewer: string; readonly done: Promise<string> }
   /** Opens a window whose session runs in the worktree; closing it asks whether to remove it (#87). */
   openWorktree(worktree: Worktree): void
+  /** Puts this window in full-screen, in a Space of its own, or takes it out (#32). */
+  toggleFullScreen(): void
+  /** Pops the system's share menu (macOS) over this window for `urls`, with `title` as the text (#34). */
+  openShareMenu(urls: readonly string[], title: string): void
 }
 
 /** Without the app there is one window and no way to open another. */
@@ -261,6 +269,12 @@ const ONE_WINDOW: CockpitWindows = {
   },
   openWorktree: () => {
     throw new CommandError('No window opener is installed')
+  },
+  toggleFullScreen: () => {
+    throw new CommandError('No window is installed')
+  },
+  openShareMenu: () => {
+    throw new CommandError('No window is installed')
   },
 }
 
@@ -1038,6 +1052,13 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'toggle-full-screen',
+      doc: 'Put this window in full-screen, or take it out; the page view follows the new size.',
+      run: () => {
+        windows.toggleFullScreen()
+      },
+    }),
+    defineCommand({
       name: 'new-window-in-worktree',
       doc: 'Read a task name, make a git worktree for it beside this folder on a new branch, and open a window whose session runs there.',
       run: () => {
@@ -1208,6 +1229,19 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             store.add(page.url, page.title, tags)
           },
         )
+      },
+    }),
+    defineCommand({
+      name: 'share-page',
+      mcp: 'never',
+      doc: "Pop the system's share menu with the current page's URL and title; the URL leaves only by the pick made there.",
+      run: () => {
+        if (buffers.current?.kind !== 'page') {
+          help.show('Nothing to share: only a page buffer can be shared.')
+          return
+        }
+        const page = pages.currentPage()
+        windows.openShareMenu([page.url], page.title)
       },
     }),
     defineCommand({
@@ -1618,6 +1652,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-x s': 'search-transcripts',
   'C-x 5 2': 'new-window',
   'C-x 5 w': 'new-window-in-worktree',
+  'C-x 5 F': 'toggle-full-screen',
   'C-c C-r': 'review-diff',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
@@ -1652,6 +1687,8 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-x 4 C-f': 'open-url-in-new-buffer',
     // Emacs's bookmark-set (#125).
     'C-x r m': 'bookmark-page',
+    // Shares the page (#34); C-c C-s is the semantic view's (#122).
+    'C-c S': 'share-page',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {

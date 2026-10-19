@@ -1,0 +1,148 @@
+#+TITLE: Getting started: the first fifteen minutes with Nemesis
+#+OPTIONS: toc:nil
+
+This page takes you from a fresh clone to a session, a page buffer and a first line of your own config. It is modeled on Nyxt's getting-started guide: every step is a key, and every key named here is bound in =src/main/commands/keyscheme.ts= on main. Written on 2026-OCTOBER-19. Chords are in Emacs notation (ADR 0002): =C-x= is Control and x together, =M-x= is Meta and x, and a space separates the keys of a chord.
+
+* 1. Install and open (minutes 0 to 3)
+
+You need macOS, Node 24 LTS through nvm, and the =claude= CLI logged in: Nemesis drives Claude Code through the Agent SDK and uses that login, so there is no API key to paste anywhere.
+
+- =make setup= checks Node against =.nvmrc=, installs the dependencies without lifecycle scripts and fetches the Electron binary. Safe to rerun.
+- =make dev= opens the window in development mode and runs setup first on a fresh clone. It keeps running until you quit the app.
+- =make app= builds a local, unsigned =release/mac-arm64/Nemesis.app=, about 550 MB. macOS refuses to open an unsigned app on a double click: right-click it in Finder and choose Open, then confirm. This workaround stays until signing and notarization land (#36).
+- Bare =make= lists every target; =make gate= runs the full gate (CONTRIBUTING.org).
+
+* 2. The first prompt and the transcript (minutes 3 to 5)
+
+The window opens on the prompt buffer, a text area with Emacs keys. Type a request and press =C-c C-c= to send it. The reply streams into the transcript, which is a real text document, not a terminal: you can search it, select from it and copy from it.
+
+- =C-s= searches the buffer you are in; pressed again it steps to the next match.
+- =C-x s= searches every session on disk and opens the match at its line.
+- =C-x b= switches buffers, =C-x k= kills the current one.
+- =C-c C-l= clears the context and =C-c C-k= compacts it; the context meter on the mode line shows how full it is.
+- =C-c C-p= toggles plan mode: the plan opens as a buffer, and there =C-c C-c= approves it and =C-c C-k= rejects it.
+- =C-c C-v= runs the verify command of the project and =C-c C-r= reviews a diff.
+- =C-g= abandons a half-typed chord and closes the palette; with nothing open it stops the running turn and keeps the context.
+
+In the prompt, =@= at the start of a word mentions a file with completion, =C-c C-i= attaches an image and =C-c C-u= fetches a URL as untrusted content.
+
+* 3. Permission answers from the keyboard (minute 5)
+
+When the agent wants a tool that is not free, a permission prompt opens and it is modal: an unmodified key is an answer, not text.
+
+| Key        | Answer                                                |
+|------------+-------------------------------------------------------|
+| =y=        | Allow this call once                                  |
+| =n=        | Deny it, or decline the question                      |
+| =a=        | Allow it now and for the rest of the session          |
+| =1= to =4= | Choose that option when the agent asks you a question |
+
+* 4. M-x and describe-key (minutes 5 to 7)
+
+Every action is a named command, and =M-x= opens the palette over all of them with their keys beside the names. Type a few letters, move, press RET. The commands with no key yet, such as =show-history= below, are reached this way.
+
+- =C-h x= asks for a command and shows what it does and the keys that run it.
+- =C-h k= waits for a key sequence and shows what it would run. When a key does something you did not expect, ask it.
+
+* 5. Sessions and names (minutes 7 to 9)
+
+Every conversation is a session, written to disk as an Org transcript.
+
+- =C-c C-n= names the session. The name shows on the mode line, in the window title and in the sessions list.
+- =M-x resume-session= lists past sessions, newest first, by name or else first prompt; picking one shows its transcript and the next prompt continues it.
+- =C-x n= starts a new task and =C-x 5 2= opens a new window.
+- =C-x 5 w= opens a window in a git worktree; =C-x 5 F= toggles full screen.
+
+* 6. The first page buffer (minutes 9 to 11)
+
+Nemesis is a cockpit that grows into a browser, and a page is one more buffer type. From the transcript or from a page, press =C-x C-f= and type:
+
+- a URL: =https= only, and plain =http= is upgraded unless it is on loopback;
+- a word of a bookmark or a page you visited: the palette lists bookmarks first, then history;
+- =kw query=, a search-engine keyword and a query: =ddg= is the default engine, and the =searchEngines= setting changes the list.
+
+=C-x 4 C-f= opens the URL in a new page buffer instead of the current one. From the prompt buffer, run =M-x open-url=.
+
+** Page keys
+
+A page buffer keeps its keys small, as Nyxt's document mode does. What it does not bind falls through to the cockpit's keys, and what nothing binds goes to the page.
+
+| Key       | Does                                                     |
+|-----------+----------------------------------------------------------|
+| =C-v=     | Scroll a page down                                       |
+| =M-v=     | Scroll a page up                                         |
+| =C-n=     | Scroll a line down                                       |
+| =C-p=     | Scroll a line up                                         |
+| =<=       | Top of the page                                          |
+| =>=       | Bottom of the page                                       |
+| =C-s=     | Find in the page; the same text again finds the next     |
+| =C-+=     | Zoom in                                                  |
+| =C--=     | Zoom out                                                 |
+| =M-w=     | Copy the page's selection                                |
+| =g=       | Reload                                                   |
+| =C-z=     | Passthrough: every key but =C-z= goes to the page        |
+| =C-c S=   | Share the page through the system share menu             |
+
+A site with keys of its own, a web mail or an editor, needs passthrough: press =C-z=, use the site, press =C-z= to get the cockpit back. Going back and forward is a trackpad swipe, or =M-x go-back= and =M-x go-forward=.
+
+* 7. History and bookmarks (minutes 11 to 12)
+
+Every committed page you visit is a row in the profile's database: URL, title and time, nothing of the page itself. A page in the ephemeral partition is never recorded.
+
+- =C-x r m= bookmarks the current page; the palette asks for tags, words separated by spaces.
+- =M-x show-history= shows every visit, the latest first; =M-x open-from-history= reads over it.
+- =M-x show-bookmarks= and =M-x open-bookmark= do the same for bookmarks, and =M-x export-bookmarks= writes them to =bookmarks.org= as one Org heading each.
+
+* 8. The blocker (minute 12)
+
+Blocker mode is on in every page buffer. The main process cancels a request to a host on the system hosts file (every name it sends to =0.0.0.0= or loopback) or on EasyList and EasyPrivacy, before it leaves; the page is never asked and never told. The lists download again weekly by default, and never before the first page buffer opens; the =blockerUpdates= setting changes that, with =off= to never. If a site breaks, =M-x toggle-blocker= turns it off for that buffer, the mode line says so, and a reload fetches what was blocked. Run it again to turn it on. The design is in =SECURITY.org= (T7).
+
+* 9. The environment panel (minute 13)
+
+=C-c C-e= shows what Claude Code sees in the working directory: the =CLAUDE.md= files, the permission rules, the hooks, the skills, the MCP servers, the subagents and the plugins. Press RET on a listed file to open it with the default application, after a yes.
+
+* 10. Your first init.ts (minutes 13 to 15)
+
+Nemesis reads =~/.config/nemesis/init.ts= at start and on =M-x reload-config=, the way Emacs reads =init.el=. It is trusted code with the app's privileges, so keep in it only what you would run in a terminal. Start with =--no-config= to skip it.
+
+Create the file with this, a trimmed version of the worked example in =docs/config.org=, then run =M-x reload-config=:
+
+#+begin_src typescript
+// ~/.config/nemesis/init.ts
+// Erasable TypeScript, no runtime imports.
+
+// Pin the appearance instead of following the OS.
+nemesis.settings.set('theme', 'dark')
+
+// One command: a kebab-case name, a doc line for the palette, a body.
+nemesis.defineCommand({
+  name: 'count-buffers',
+  doc: 'Says how many buffers are open.',
+  run(): void {
+    nemesis.notice(`${nemesis.buffers.list().length} buffers open`)
+  },
+})
+
+// One keymap: the user layer sits above the global map, so a chord here
+// wins over the cockpit's own. The new command gets a key too.
+nemesis.defineKeymap('user', {
+  'C-c n': 'count-buffers',
+})
+#+end_src
+
+=M-x count-buffers= now runs, and so does the key you bound. A mistake in the file opens a help buffer with the line and column, and the previous config stays live. The environment panel (=C-c C-e=) lists the file as loaded or as an error.
+
+* Where each piece is documented
+
+| Topic                                   | Read                                                      |
+|-----------------------------------------+-----------------------------------------------------------|
+| What Nemesis is, the roadmap, MCP door  | =README.org=                                              |
+| The config file, eval, the journal      | =docs/config.org=, ADR 0006                               |
+| Chords, layers, the user keymap         | ADR 0002 (=docs/adr/0002-keymaps.org=)                    |
+| The prompt buffer and the palette       | ADR 0003                                                  |
+| Page modes such as document, passthrough | ADR 0004                                                 |
+| Threat model, the blocker, privacy      | =SECURITY.org=                                            |
+| Outside agents driving Nemesis (MCP)    | README.org, ADR 0007 and ADR 0008                         |
+| Toolchain, the gate, notifications      | =CONTRIBUTING.org=                                        |
+| Why each feature exists                 | =docs/guidelines-map.org=, =docs/comparison.org=          |
+| Releases, signing                       | =docs/release-checklist.org=                              |
