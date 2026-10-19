@@ -38,7 +38,7 @@ test('the harness serves hostile fixtures to a hardened page buffer', async () =
       'nemesis',
     )
 
-    const buffer = await nemesis.openPageBuffer(fixtures.url('node-probe.html'))
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('node-probe.html'))
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('node probe')
 
@@ -55,7 +55,7 @@ test('the harness serves hostile fixtures to a hardened page buffer', async () =
     // The 404 path is a 404, so a spec cannot pass against a fixture that is gone.
     const missing = await buffer.page.evaluate(
       async (url) => (await fetch(url)).status,
-      fixtures.url('no-such-fixture.html'),
+      fixtures.secureUrl('no-such-fixture.html'),
     )
     expect(missing).toBe(404)
 
@@ -71,7 +71,7 @@ test('the harness serves hostile fixtures to a hardened page buffer', async () =
         disposition: response.headers.get('content-disposition'),
         bytes: (await response.arrayBuffer()).byteLength,
       }
-    }, fixtures.url('download.bin'))
+    }, fixtures.secureUrl('download.bin'))
     expect(attachment).toEqual({
       disposition: 'attachment; filename="download.bin"',
       bytes: 1024,

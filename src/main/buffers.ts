@@ -21,6 +21,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'plan',
   'spec',
   'environment',
+  'repl',
 ]
 
 const MAX_TITLE = 200

@@ -25,6 +25,17 @@ export function installModeline(): void {
   }
   const naming = new SessionNaming()
   window.nemesis.onAgentEvent((event) => render(event, { meter, hint, mode, name }, naming))
+  // The eval journal (#72): the definitions made at eval not yet promoted to
+  // init.ts or discarded, blank at none.
+  const journal = document.getElementById('journal-count')
+  if (journal === null) throw new Error('index.html has no #journal-count')
+  window.nemesis.onJournalChanged((state) => {
+    journal.textContent = state.unpromoted === 0 ? '' : `journal: ${state.unpromoted}`
+    journal.title =
+      state.unpromoted === 0
+        ? ''
+        : `${state.unpromoted} eval ${state.unpromoted === 1 ? 'definition' : 'definitions'} not in init.ts. M-x journal-promote or journal-discard.`
+  })
 }
 
 export interface ModelineElements {

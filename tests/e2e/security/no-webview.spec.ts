@@ -42,7 +42,7 @@ test('no page attaches a webview, and the internal pages carry none', async () =
   const fixtures = await fixtureServer()
   const nemesis = await launchNemesis()
   try {
-    const buffer = await nemesis.openPageBuffer(fixtures.url('webview.html'))
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('webview.html'))
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('webview')
 

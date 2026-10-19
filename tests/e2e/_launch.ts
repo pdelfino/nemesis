@@ -136,6 +136,9 @@ export async function launchApp(
       NODE_ENV: 'test',
       NEMESIS_USER_DATA: userData,
       NEMESIS_DOWNLOADS: downloadsDir,
+      // The config folder (#71) is the profile's, empty unless a spec writes
+      // an init.ts there, so no spec loads the developer's own config.
+      NEMESIS_CONFIG_DIR: userData,
       ...env,
     },
   })

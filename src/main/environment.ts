@@ -4,6 +4,7 @@ import type { BufferInfo } from '../shared/buffers'
 import type { EnvironmentContent } from '../shared/environment'
 import type { AgentNoticeEvent, AgentStartedEvent } from './agent/events'
 import type { BufferRegistry } from './buffers'
+import type { ConfigStatus } from './config/loader'
 import { displayPath } from './diffs'
 
 /**
@@ -120,6 +121,8 @@ export interface EnvironmentReport {
   readonly mcpFile: { readonly path: string; readonly names: readonly string[] } | null
   /** The init frame of the running session, or null before the first prompt. */
   readonly started: AgentStartedEvent | null
+  /** The Nemesis config file and its last load (#71), when the app reports one. */
+  readonly config?: ConfigStatus | undefined
 }
 
 export interface CollectOptions {
@@ -388,6 +391,9 @@ export function listedFiles(report: EnvironmentReport): readonly string[] {
     ...report.skills.map((file) => file.path),
     ...(report.mcpFile === null ? [] : [report.mcpFile.path]),
     ...report.agents.map((file) => file.path),
+    ...(report.config?.state === 'loaded' || report.config?.state === 'error'
+      ? [report.config.path]
+      : []),
   ]
   return [...new Set(paths)]
 }
@@ -542,8 +548,30 @@ export function renderEnvironment(report: EnvironmentReport): string {
     lines.push(`  Slash commands: ${listOrNone(started.slashCommands ?? [])}`)
   }
 
+  if (report.config !== undefined) {
+    lines.push('', 'Nemesis config')
+    lines.push(`  ${describeConfig(report, report.config)}`)
+  }
+
   lines.push('', `${ENVIRONMENT_KEYS_HINT}.`)
   return lines.join('\n')
+}
+
+/** The config file's line (#71): loaded with its counts, the error with its line, absent or skipped. */
+function describeConfig(report: EnvironmentReport, config: ConfigStatus): string {
+  if (config.state === 'skipped') return 'init.ts: not loaded (started with --no-config)'
+  const short = shortPath(report, config.path)
+  if (config.state === 'absent') return `${short}: absent`
+  if (config.state === 'error') {
+    const { line, column } = config.problem
+    const at =
+      line === null
+        ? ''
+        : ` at line ${line}${column === null || column === 0 ? '' : `, column ${column}`}`
+    return `${short}: error${at}: ${config.problem.message}`
+  }
+  const { commands, bindings, settings } = config.counts
+  return `${short}: loaded (${plural(commands, 'command')}, ${plural(bindings, 'binding')}, ${plural(settings, 'setting')})`
 }
 
 /** What `doctor` answers: the CLAUDE.md files over the threshold, or that all are within it. */
@@ -575,6 +603,8 @@ export interface EnvironmentBuffersOptions {
   readonly open: (path: string) => Promise<string>
   /** The git root finder; the default walks up from the working directory. */
   readonly findRoot?: ((cwd: string) => string | null) | undefined
+  /** The config file's status (#71); the panel leaves the section out without one. */
+  readonly config?: (() => ConfigStatus) | undefined
 }
 
 export type EnvironmentShownListener = (content: EnvironmentContent) => void
@@ -624,7 +654,11 @@ export class EnvironmentBuffers {
   collect(): EnvironmentReport {
     const { cwd, home } = this.options
     const root = (this.options.findRoot ?? findGitRoot)(cwd)
-    this.report = collectEnvironment({ cwd, home, root, started: this.options.started() })
+    const config = this.options.config?.()
+    this.report = {
+      ...collectEnvironment({ cwd, home, root, started: this.options.started() }),
+      ...(config === undefined ? {} : { config }),
+    }
     return this.report
   }
 

@@ -1,0 +1,140 @@
+#+TITLE: The config file
+#+OPTIONS: toc:nil
+
+Nemesis reads one file of your code at start and again on =M-x reload-config=,
+the way Emacs reads =init.el=. The design is ADR 0006
+([[file:adr/0006-config.org][docs/adr/0006-config.org]]); this page is how to use it. Landed in #71.
+
+* Trust
+
+*The config is trusted code with the app's privileges.* It runs in the main
+process, as you, like =init.el= runs in Emacs. The loader hands the file one
+object, =nemesis=, and nothing else is in scope, but =node:vm= is not a
+security boundary and Nemesis claims no sandbox: put nothing in the file you
+would not run in a terminal. The file never runs in the renderer or in a
+page, and no IPC channel loads or evaluates it.
+
+* Where it lives
+
+- =~/.config/nemesis/init.ts=, the user's, not the profile's: keep it in your
+  dotfiles. The app writes it only when you run =journal-promote= (see Eval),
+  and then only appends to its end.
+- =settings.json= stays in the profile's =userData= folder and loads first;
+  the init file overrides its values in memory and writes nothing back.
+- Start with =--no-config= to skip the file (the safe mode).
+- A missing file is silent. Under test (=NODE_ENV=test=) the folder named by
+  =NEMESIS_CONFIG_DIR= stands in for =~/.config/nemesis=, and no folder means
+  no config.
+
+* The language
+
+One file in the erasable subset of TypeScript, the subset Node strips without
+a compiler: interfaces, type aliases, annotations, =import type=, =as=,
+=satisfies=. No =enum=, no =namespace=, no constructor parameter property, no
+decorator. There is no runtime =import= and no =require=; =import type= is
+erased before the file runs. Types are replaced by whitespace, so a line and
+column in an error are the line and column in your file.
+
+* What =nemesis= offers
+
+| Member                                     | What it does                                                                                          |
+|--------------------------------------------+-------------------------------------------------------------------------------------------------------|
+| =nemesis.defineCommand({ name, doc, run })= | A command, as the cockpit's are: a kebab-case name, a doc line for the palette, a body. M-x finds it. |
+| =nemesis.defineKeymap('user', spec)=        | Bindings in the =user= layer, chord to command name, in Emacs notation (ADR 0002).                    |
+| =nemesis.bindKey(chord, command)=           | One binding in the =user= layer.                                                                      |
+| =nemesis.settings.set(key, value)=          | Overrides a =settings.json= key for this run, checked by the same rules.                              |
+| =nemesis.settings.get(key)=                 | The value in force for this load.                                                                     |
+| =nemesis.buffers.list()=                    | The open buffers: id, kind, title.                                                                    |
+| =nemesis.commands.run(name)=                | Runs a command by name, once the cockpit is up.                                                       |
+| =nemesis.notice(text)=                      | A notice in the transcript, recorded in the session folder.                                           |
+
+The =user= layer sits above the global map and below the per-buffer maps, so
+a chord there wins over the cockpit's global one. A config command cannot take
+a cockpit command's name: to change what a key does, bind it to a new name.
+=nemesis.hooks= arrives with ADR 0005's hook registry and =nemesis.defineMode=
+with ADR 0004's mode registry (ADR 0006, steps 2 and 3).
+
+* A worked example
+
+#+begin_src typescript
+// ~/.config/nemesis/init.ts
+// Trusted code: this file runs in the main process with the app's
+// privileges, like init.el. Erasable TypeScript, no runtime imports.
+
+// One setting: pin the appearance instead of following the OS. Checked
+// like settings.json would be; a typo in the key is an error with a line.
+nemesis.settings.set('theme', 'dark')
+
+// One command, the shape of src/main/commands/registry.ts: a kebab-case
+// name, a doc line the palette shows, a body.
+nemesis.defineCommand({
+  name: 'count-buffers',
+  doc: 'Says how many buffers are open.',
+  run(): void {
+    nemesis.notice(`${nemesis.buffers.list().length} buffers open`)
+  },
+})
+
+// One keymap, the shape of ADR 0002: the user layer sits above the global
+// map, so C-s now searches every transcript and C-x s searches this buffer,
+// the reverse of the cockpit's defaults; the new command gets a key too.
+nemesis.defineKeymap('user', {
+  'C-s': 'search-transcripts',
+  'C-x s': 'search-buffer',
+  'C-c n': 'count-buffers',
+})
+#+end_src
+
+* Reload
+
+=M-x reload-config= runs the file again. A load is staged and committed whole:
+everything the file asks for is checked first (a name that is not
+kebab-case, a chord that does not parse, a binding to a command that does not
+exist, an unknown setting), and only a load that runs to its end replaces the
+previous one. On success the previous load's commands and bindings are
+dropped, the new ones registered, the palette and the menu bar follow, and
+one line in the transcript gives the counts. =theme= applies at once,
+=model= on the next session and =verify= on the next check; =sessionsDir=
+and =keyscheme= are read once at start, and the line names them when they
+need a restart. A top-level loop is stopped after two seconds.
+
+* Errors
+
+A syntax error, an error the file throws, or a name the API rejects opens the
+help buffer under =Config errors= with the file, the line, the column when
+there is one, and the message, and a notice says the same in the transcript.
+Nothing from that load is applied: the previous config stays live, or the
+defaults on a first load, and the app keeps running. The environment panel
+(=C-c C-e=) lists the file as loaded with its counts, as an error with its
+line, or as absent; =RET= on it opens the file after a yes.
+
+* Eval and the journal
+
+=M-x eval-expression= reads one form of erasable TypeScript and evaluates it
+in the main process with the same =nemesis= object the file gets, and nothing
+else in scope; the value is a notice in the transcript. =M-x repl= opens the
+=*repl*= buffer, where =RET= reads a form and the form and its value are
+added to the buffer. Every form shares one =node:vm= context for the life of
+the app, so a =const= one form declares, the next one reads. A form is one
+line of at most 200 characters, read through the palette. Landed in #72.
+
+A form that defines or redefines a command or a binding takes effect at once:
+the command is in M-x, the key runs it. It may redefine a command of the file
+or of an earlier eval, never one of the cockpit's. =nemesis.settings.set= is
+refused at eval: settings belong in the file. A reload keeps what eval
+defined, except where the file now defines the same command or binds the same
+chord, which wins.
+
+Every such form is appended to =journal.org= beside =init.ts=, an Org file
+with one heading per entry, its timestamp and what it defined, and the form in
+a source block. The mode line shows =journal: N= while N entries wait.
+=M-x journal-promote= picks an entry and appends its form to the end of
+=init.ts= with a comment naming where it came from, then drops it from the
+journal; =M-x reload-config= loads it from the file. =M-x journal-discard=
+deletes an entry; what it defined stays live until a restart. Under
+=--no-config= eval still works and nothing is journaled, and the note after
+each definition says so.
+
+Eval runs only on a command you ran from the cockpit's keys or palette. No
+page buffer and no MCP server reaches it. Like the file, it is trusted code
+with the app's privileges.

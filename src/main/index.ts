@@ -27,17 +27,25 @@ import { installKeyBridge } from './commands/key-bridge'
 import {
   cockpitKeymapLayers,
   createCockpitDispatcher,
+  createCockpitRegistry,
   resolveCockpitDeps,
+  setUserKeymap,
 } from './commands/keyscheme'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
+import { defineCommand } from './commands/registry'
+import { ConfigEval } from './config/eval'
+import { Journal, journalPath } from './config/journal'
+import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './config/loader'
 import { DiffBuffers } from './diffs'
 import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { installMenu } from './menu'
+import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
+import { Repl } from './repl'
 import { Screenshots, SCREENSHOTS_FOLDER } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
@@ -58,7 +66,9 @@ import {
   type RequestRecord,
 } from './security/partitions'
 import { originOf, PermissionPolicy } from './security/permissions'
+import { TransportPolicy } from './security/transport'
 import { internalPagePreferences } from './security/web-preferences'
+import { JOURNAL_CHANGED_CHANNEL } from '../shared/repl'
 import { warnLimited } from './security/warn-limited'
 import { SessionIndex } from './sessions'
 import { SpecBuffers } from './specs'
@@ -114,6 +124,12 @@ const external = new ExternalPolicy({
 })
 // A yes for a download is good for one request within 30 seconds (#100); on quit none survives.
 app.on('will-quit', () => downloads.clear())
+// T3 (#52): plain http: off loopback is upgraded or refused, and a certificate
+// error is fatal, with a notice naming the host and the code. The test-only
+// trust anchor is read from the environment here, once, and never outside a
+// test run.
+const transport = new TransportPolicy()
+transport.guardCertificates(app)
 // A quiet app still prints the last "suppressed N more" line of each key.
 app.on('will-quit', () => warnLimited.flush())
 
@@ -136,6 +152,13 @@ app.on('web-contents-created', (_event, contents) => {
   // supplies openPage once a page buffer exists (M4, #73); until then a window
   // a page asks for is denied with nothing in its place.
   applyNavigationPolicy(contents, 'page')
+  // T3 (#52): a page's plain http: navigation off loopback is re-issued on
+  // https: once, after the policy above has let the scheme through. The
+  // internal page corrects its kind in createWindow, so it is never upgraded
+  // around the policy's refusal. The anchor seam covers whatever session
+  // this WebContents uses, a partition created later included.
+  transport.watch(contents, 'page')
+  transport.apply(contents.session)
   // T1 (#47): read the preferences back off every WebContents the app creates,
   // the cockpit window included. The walk waits for the first load because
   // getLastWebPreferences() answers for the page that committed.
@@ -171,6 +194,7 @@ function createWindow(): BrowserWindow {
   // navigation of the page to itself, lands (#96); a packaged run, or a run
   // without the variable, adds nothing.
   applyNavigationPolicy(win.webContents, 'internal', {}, devOrigin === null ? [] : [devOrigin])
+  transport.watch(win.webContents, 'internal')
 
   const devServer = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devServer) {
@@ -243,6 +267,9 @@ function clipboardImageOf(image: Electron.NativeImage): ClipboardImage | null {
   return { png: image.toPNG(), width, height }
 }
 
+/** The command that runs the config file again (#71). */
+const RELOAD_CONFIG = 'reload-config'
+
 /** One stream of the cockpit's own notices out of several policies. */
 function mergeNotices(...sources: readonly EventSource[]): EventSource {
   return {
@@ -265,6 +292,7 @@ void app.whenReady().then(() => {
   const partitions = createPartitions(permissionPolicy)
   for (const one of [session.defaultSession, partitions.persistent, partitions.ephemeral]) {
     downloads.apply(one)
+    transport.apply(one)
   }
   if (process.env['NODE_ENV'] === 'test') {
     // Installed before the cockpit window loads, so the first request the
@@ -279,15 +307,39 @@ void app.whenReady().then(() => {
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
-  const settings = readSettings()
-  // The appearance (#33): `system` follows the OS, `light` and `dark` pin it.
-  // Set before the window exists, so the renderer's prefers-color-scheme is
-  // right on its first paint and the renderer never reads the settings.
-  nativeTheme.themeSource = settings.theme
   // The buffer list is the spine: the keymap and, later, the palette act on
   // it, so it exists before the window that shows it (#60).
   const buffers = createCockpitBuffers()
   installBufferBridge(buffers)
+  // The config file (#71, ADR 0006): run and checked whole before anything
+  // reads a setting, against the cockpit's command names, so the settings it
+  // overrides are in force from the start and a failing file changes
+  // nothing. Its commands and keys are committed once the registry exists
+  // below; the error, if any, waits for the window.
+  let dispatcher: ReturnType<typeof createCockpitDispatcher> | null = null
+  const initFile = configPath({ home: app.getPath('home'), env: process.env, argv: process.argv })
+  const config = new ConfigLoader({
+    path: initFile,
+    base: readSettings,
+    buffers: () => buffers.list(),
+    run: (name) =>
+      dispatcher === null
+        ? Promise.reject(new Error('Commands run once the cockpit is up, not while it starts'))
+        : dispatcher.registry.run(name, { source: 'config' }),
+  })
+  const firstLoad = config.stage(
+    new Set([
+      ...createCockpitRegistry()
+        .list()
+        .map((command) => command.name),
+      RELOAD_CONFIG,
+    ]),
+  )
+  const settings = config.settings
+  // The appearance (#33): `system` follows the OS, `light` and `dark` pin it.
+  // Set before the window exists, so the renderer's prefers-color-scheme is
+  // right on its first paint and the renderer never reads the settings.
+  nativeTheme.themeSource = settings.theme
   // One agent session per cockpit, in the folder the app was started in; the
   // SDK loads the CLI's own settings, so the permission rules are the CLI's
   // and so is the model unless the settings name one (#61, #64). It starts on
@@ -308,11 +360,20 @@ void app.whenReady().then(() => {
     leavePlanMode: (): Promise<void> => agent.leavePlanMode(),
   })
   // The manager holds that session and swaps it on new-task or a rewind (#84).
+  // The model is read when a session starts, so a reload's model is the
+  // next session's (#71).
   const agent: SessionManager = new SessionManager({
     cwd: process.cwd(),
-    model: settings.model,
+    get model() {
+      return config.settings.model
+    },
     permissionHandler: plans,
+    requests: permissions,
   })
+  // Walking away (#90): a finished turn, a request or an error is a macOS
+  // notification, and a Telegram push when its two variables are set, with
+  // the session's name, the elapsed time and the tool-call count only.
+  installNotifications({ agent, permissions, buffers, env: process.env })
   // The Edit and Write calls of the session, listed and opened as diff
   // buffers (#68). The collector reads the live events and a resumed
   // session's history before the bridge pushes them, so list-diffs is never
@@ -349,6 +410,7 @@ void app.whenReady().then(() => {
     started: () => agent.started,
     confirm: (question) => confirm(prompter, OPEN_FILE_SOURCE, question),
     open: (path) => shell.openPath(path),
+    config: () => config.status,
   })
   // The verify key (#81): the check of the attached issue, else the settings'
   // verify entry, else npm run gate, run as a child of the cockpit with the
@@ -359,7 +421,10 @@ void app.whenReady().then(() => {
   const issues = new IssueAttachment({ cwd: process.cwd(), fetch: fetchIssueWithGh })
   const verifier = new Verifier({
     cwd: process.cwd(),
-    settingsCommand: settings.verify,
+    // Read on every check, so a reload's verify is the next check's (#71).
+    get settingsCommand() {
+      return config.settings.verify
+    },
     issueBody: () => issues.current?.body ?? null,
     confirm: (command) => confirm(prompter, VERIFY_SOURCE, verifyQuestion(command)),
   })
@@ -391,6 +456,26 @@ void app.whenReady().then(() => {
   // within the limits of fetch-url.ts, and wrapped as untrusted content.
   const files = new WorkingFiles({ cwd: process.cwd() })
   const fetcher = new UrlFetcher()
+  // Eval in the config scope (#72): the forms run in the main process with
+  // the init file's `nemesis` object, and a definition is applied to the
+  // running cockpit and journaled beside init.ts until it is promoted or
+  // discarded. The evaluator needs the registry, built below, so it is
+  // reached through `evaluator` once the cockpit is up.
+  const journal =
+    initFile === null ? null : new Journal({ path: journalPath(initFile), configFile: initFile })
+  let evaluator: ConfigEval | null = null
+  const repl = new Repl(buffers, {
+    journal,
+    evaluate: (form) =>
+      evaluator === null
+        ? Promise.resolve({
+            ok: false,
+            text: 'Eval runs once the cockpit is up, not while it starts',
+            defined: null,
+            journal: null,
+          })
+        : evaluator.evaluate(form),
+  })
   const prompts = installSessionBridge({
     agent,
     permissions,
@@ -407,6 +492,9 @@ void app.whenReady().then(() => {
       screenshots,
       fetcher,
       environment,
+      transport,
+      config,
+      repl,
     ),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
@@ -429,6 +517,7 @@ void app.whenReady().then(() => {
     clipboard: { readImage: readClipboardImage },
     fetcher,
     environment,
+    repl,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
@@ -439,14 +528,67 @@ void app.whenReady().then(() => {
     plans,
     specs,
     environment,
+    repl,
+    journal,
   })
   // Keys mean nothing until the registry and the keymaps are up (#59).
-  const dispatcher = createCockpitDispatcher(deps)
-  installKeyBridge(dispatcher)
-  // The menu bar lists every command with its chord as text (#30). Built once
-  // here; a reload of the keymaps (#71) calls installMenu again.
-  installMenu(dispatcher.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged })
-  createWindow()
+  const cockpit = createCockpitDispatcher(deps)
+  dispatcher = cockpit
+  installKeyBridge(cockpit)
+  // What a config load swaps (#71): its commands in the registry, the user
+  // keymap layer the resolver reads on every key, the settings read at use
+  // time, and the menu bar, which lists every command with its chord as text
+  // (#30) and is built again so the labels follow. The palette's commands
+  // source reads the registry and the layers on every open.
+  const target: ConfigTarget = {
+    registry: cockpit.registry,
+    setUserKeymap,
+    applySettings: (next) => {
+      nativeTheme.themeSource = next.theme
+    },
+    rebuilt: () => installMenu(cockpit.registry, cockpitKeymapLayers(), { isDev: !app.isPackaged }),
+  }
+  cockpit.registry.register(
+    defineCommand({
+      name: RELOAD_CONFIG,
+      doc: 'Run the config file again; a failing file leaves the previous config live.',
+      run: () => {
+        const result = config.reload(target)
+        if (result.ok) {
+          config.notify(result.line)
+          return
+        }
+        deps.help.show(renderProblem(result.problem))
+        config.notify(`Config not reloaded: ${result.problem.message}`)
+      },
+    }),
+  )
+  if (firstLoad.ok) config.commit(firstLoad.config, target)
+  else target.rebuilt()
+  evaluator = new ConfigEval({
+    loader: config,
+    target,
+    journal,
+    buffers: () => buffers.list(),
+    run: (name) => cockpit.registry.run(name, { source: 'config' }),
+  })
+  const win = createWindow()
+  // The mode line's journal count is pushed on every change; a page that
+  // loads, or loads again, gets the count as it stands.
+  if (journal !== null) {
+    win.webContents.on('did-finish-load', () => {
+      win.webContents.send(JOURNAL_CHANGED_CHANNEL, { unpromoted: journal.count })
+    })
+  }
+  // A load error at start is shown once the window can show it, and the
+  // app runs on the defaults.
+  if (!firstLoad.ok) {
+    const problem = firstLoad.problem
+    win.webContents.once('did-finish-load', () => {
+      deps.help.show(renderProblem(problem))
+      config.notify(`Config not loaded: ${problem.message}`)
+    })
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

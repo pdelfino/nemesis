@@ -24,6 +24,7 @@ import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
+import { Repl } from '../repl'
 import { Screenshots } from '../screenshots'
 import { formatSessionDate, NO_SESSIONS, type SessionSource } from '../sessions'
 import { SpecBuffers } from '../specs'
@@ -34,7 +35,7 @@ import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
 import type { BufferKeymaps, Keymap } from './keymap'
-import { defineKeymap, KeyResolver } from './keymap'
+import { defineKeymap, isShadowed, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
 import {
   askCodebasePrompt,
@@ -108,7 +109,11 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * read-only buffer, where `RET` is `open-environment-file`, a listed file
  * through the open door of #68; `edit-claude-md` takes the nearest CLAUDE.md
  * through the same door with the guide's reminder, and `doctor` lists the
- * CLAUDE.md files over the length threshold.
+ * CLAUDE.md files over the length threshold. Eval in the config scope
+ * (#72): `eval-expression` reads a form as free text and answers with a
+ * notice, `repl` opens the `*repl*` buffer, where `RET` is `repl-read`, and
+ * `journal-promote` and `journal-discard` read an entry of the eval journal
+ * off the palette and move it to init.ts or delete it.
  */
 
 /** How many options a question may offer, per the AskUserQuestion schema. */
@@ -154,6 +159,8 @@ export interface CockpitDeps {
   readonly fetcher: UrlFetcher
   /** The environment of the working directory, as one buffer (#86). */
   readonly environment: EnvironmentBuffers
+  /** Eval in the config scope, the `*repl*` buffer and the journal (#72). */
+  readonly repl: Repl
 }
 
 export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitDeps {
@@ -230,6 +237,8 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         confirm: () => Promise.resolve(false),
         open: () => Promise.resolve('No file opener is installed'),
       }),
+    // Without the app there is no config scope: every form is refused.
+    repl: partial.repl ?? new Repl(buffers),
   }
 }
 
@@ -263,6 +272,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     clipboard,
     fetcher,
     environment,
+    repl,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -770,6 +780,61 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'eval-expression',
+      doc: 'Evaluate a TypeScript form in the config scope; a definition is applied and journaled.',
+      run: () => {
+        // The window reads the key shape again after the outcome: the form may have bound a key.
+        prompter.read({ source: 'eval-form', prompt: 'Eval:', freeText: true }, async (form) => {
+          await repl.evaluate(form, true)
+          return { command: 'eval-expression' }
+        })
+      },
+    }),
+    defineCommand({
+      name: 'repl',
+      doc: 'Open the *repl* buffer, where RET evaluates a form in the config scope.',
+      run: () => {
+        repl.open()
+      },
+    }),
+    defineCommand({
+      name: 'repl-read',
+      doc: 'Read a form and evaluate it in the *repl* buffer.',
+      run: () => {
+        prompter.read({ source: 'eval-form', prompt: 'Eval:', freeText: true }, async (form) => {
+          repl.open()
+          await repl.evaluate(form, false)
+          return { command: 'repl-read' }
+        })
+      },
+    }),
+    defineCommand({
+      name: 'journal-promote',
+      doc: 'Move an entry of the eval journal to the end of init.ts.',
+      run: () => {
+        if (repl.entries().length === 0) {
+          repl.notify('The eval journal has no entry to promote.')
+          return
+        }
+        prompter.read({ source: 'journal', prompt: 'Promote to init.ts:' }, (id) => {
+          repl.promote(id)
+        })
+      },
+    }),
+    defineCommand({
+      name: 'journal-discard',
+      doc: 'Delete an entry of the eval journal; what it defined stays live until a restart.',
+      run: () => {
+        if (repl.entries().length === 0) {
+          repl.notify('The eval journal has no entry to discard.')
+          return
+        }
+        prompter.read({ source: 'journal', prompt: 'Discard from the journal:' }, (id) => {
+          repl.discard(id)
+        })
+      },
+    }),
+    defineCommand({
       name: 'send-prompt',
       doc: 'Send the prompt buffer to the agent.',
       run: () => {
@@ -852,7 +917,9 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * two reads of #83: the files of the working directory as of the last
  * refresh, and the https URLs in the prompt draft, the last typed first,
  * for a free-text read that takes any other; and the files the environment
- * panel lists (#86), in the panel's order, for `RET` there.
+ * panel lists (#86), in the panel's order, for `RET` there; and the two
+ * reads of eval (#72): a form, over nothing, and the journal's entries in
+ * file order.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -866,6 +933,7 @@ export function cockpitSources(
   files: WorkingFiles,
   prompts: Pick<PromptQueue, 'draft'>,
   environment: EnvironmentBuffers,
+  repl: Repl,
 ): readonly PaletteSource[] {
   return [
     {
@@ -998,6 +1066,20 @@ export function cockpitSources(
           doc: path,
         })),
     },
+    {
+      name: 'eval-form',
+      candidates: () => [],
+    },
+    {
+      name: 'journal',
+      candidates: () =>
+        repl.entries().map((entry) => ({
+          id: entry.id,
+          label: `${entry.id}. ${entry.summary}`,
+          detail: entry.at,
+          doc: entry.form.split('\n')[0] ?? '',
+        })),
+    },
   ]
 }
 
@@ -1077,15 +1159,48 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   environment: defineKeymap('environment', {
     RET: 'open-environment-file',
   }),
+  // In the *repl* buffer RET reads the next form (#72).
+  repl: defineKeymap('repl', {
+    RET: 'repl-read',
+  }),
 }
 
 /** The chord that abandons a half-typed sequence. */
 export const ABORT_CHORD = 'C-g'
 
+/**
+ * The user's layer from the config file (#71, ADR 0006), above the global
+ * map, and the global map as describe and the menu show it once that layer
+ * shadows some of its chords. Null until a config binds a key.
+ */
+let userLayer: { readonly keymap: Keymap; readonly global: Keymap } | null = null
+
+/** Installs or drops the user layer. The config loader calls it on a commit. */
+export function setUserKeymap(keymap: Keymap | null): void {
+  if (keymap === null) {
+    userLayer = null
+    return
+  }
+  const visible = GLOBAL_KEYMAP.entries().filter((entry) => !isShadowed(keymap, entry.chord))
+  userLayer = {
+    keymap,
+    global: defineKeymap(
+      GLOBAL_KEYMAP.name,
+      Object.fromEntries(visible.map((entry) => [entry.chord, entry.command])),
+    ),
+  }
+}
+
+/** The user layer, when a config installed one. */
+export function userKeymap(): Keymap | null {
+  return userLayer?.keymap ?? null
+}
+
 /** Every keymap with the buffers it applies to, for describe-command (#65). */
 export function cockpitKeymapLayers(): readonly KeymapLayer[] {
   return [
-    { keymap: GLOBAL_KEYMAP, bufferType: null },
+    ...(userLayer === null ? [] : [{ keymap: userLayer.keymap, bufferType: null }]),
+    { keymap: userLayer?.global ?? GLOBAL_KEYMAP, bufferType: null },
     ...(Object.entries(BUFFER_KEYMAPS) as [BufferType, Keymap][]).map(([bufferType, keymap]) => ({
       keymap,
       bufferType,
@@ -1109,6 +1224,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.files,
     deps.prompts,
     deps.environment,
+    deps.repl,
   )) {
     deps.prompter.addSource(source)
   }
@@ -1119,6 +1235,7 @@ export function createCockpitResolver(): KeyResolver {
   return new KeyResolver({
     global: GLOBAL_KEYMAP,
     byBufferType: BUFFER_KEYMAPS,
+    user: userKeymap,
     abort: ABORT_CHORD,
   })
 }

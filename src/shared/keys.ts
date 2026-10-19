@@ -12,7 +12,15 @@
 
 /** Buffer types the cockpit knows about. Per-type keymaps override the global map. */
 export type BufferType =
-  'prompt' | 'transcript' | 'permission' | 'help' | 'diff' | 'plan' | 'spec' | 'environment'
+  | 'prompt'
+  | 'transcript'
+  | 'permission'
+  | 'help'
+  | 'diff'
+  | 'plan'
+  | 'spec'
+  | 'environment'
+  | 'repl'
 
 /**
  * Buffer types where an unmodified key is a command, not text (`y`/`n` on a

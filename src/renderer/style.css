@@ -62,6 +62,13 @@ body {
 #context-meter[data-level='full'] {
   color: #b32424;
 }
+/* The eval journal's count (#72): shown while a definition waits to be promoted. */
+#journal-count {
+  white-space: nowrap;
+}
+#journal-count:empty {
+  display: none;
+}
 #modeline-hint:empty {
   display: none;
 }
@@ -195,6 +202,32 @@ main {
   outline: none;
 }
 #environment .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+/* The *repl* buffer is a read-only document under the transcript (#72). */
+#repl {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+#repl[hidden] {
+  display: none;
+}
+#repl-keys {
+  margin: 0.3rem 0 0;
+}
+#repl .cm-editor {
+  min-height: 0;
+}
+#repl .cm-editor.cm-focused {
+  outline: none;
+}
+#repl .cm-scroller {
   overflow: auto;
   font-family: inherit;
   font-size: inherit;

@@ -6,6 +6,8 @@ import type {
   AgentStartedEvent,
   PermissionHandler,
 } from './events'
+import type { SessionAttentionListener } from '../../shared/notify'
+import { AttentionTracker } from './attention'
 import { CorrectionCounter, NUDGE_AFTER, nudgeText } from './corrections'
 import type { AgentDriver, AgentSession, Checkpoint, ToolCall, UserImageBlock } from './session'
 import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } from './session'
@@ -26,6 +28,8 @@ import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } f
  * mode lives here too (#82): the next session starts in it, the running one
  * is told when it changes, and `togglePlanMode` is the guide's plan mode as
  * a key, with the mode it replaced kept for when the plan is approved.
+ * The attention stream (#90) says when the user is wanted: a finished turn,
+ * a permission request or a question, an error, for the notifications.
  *
  * Listeners subscribe once, here, and hear every session the manager runs in
  * turn: the prompt queue, the recorder and the window never learn that the
@@ -43,6 +47,10 @@ export interface SessionManagerOptions {
   readonly permissionHandler: PermissionHandler
   /** Injected by the tests; production resolves the driver from NODE_ENV. */
   readonly driver?: AgentDriver | undefined
+  /** The permission bridge's announcements, read for the "needs you" moment (#90). */
+  readonly requests?: { on(listener: AgentEventListener): () => void } | undefined
+  /** The clock the attention stream measures turns with; the tests pass their own. */
+  readonly now?: (() => number) | undefined
 }
 
 /** What a rewind restores. `summarize` is not among them: the SDK exposes no such call. */
@@ -177,6 +185,8 @@ export class SessionManager {
   private readonly options: SessionManagerOptions
   private readonly listeners = new Set<AgentEventListener>()
   private readonly historyListeners = new Set<SessionHistoryListener>()
+  private readonly attentionListeners = new Set<SessionAttentionListener>()
+  private readonly attention: AttentionTracker
   private driver: AgentDriver | null
   private session: AgentSession | null = null
   private offSession: (() => void) | null = null
@@ -193,6 +203,8 @@ export class SessionManager {
   constructor(options: SessionManagerOptions) {
     this.options = options
     this.driver = options.driver ?? null
+    this.attention = new AttentionTracker(options.now)
+    options.requests?.on((event) => this.attend(event))
   }
 
   /** Subscribe to every session's events, this one and the next. */
@@ -213,6 +225,19 @@ export class SessionManager {
     this.historyListeners.add(listener)
     return () => {
       this.historyListeners.delete(listener)
+    }
+  }
+
+  /**
+   * The third stream (#90): the moments the user is wanted, derived from
+   * every event the manager relays and every request the bridge announces.
+   * Each carries the session's name, the elapsed time and the tool-call
+   * count, and nothing of the conversation.
+   */
+  onAttention(listener: SessionAttentionListener): () => void {
+    this.attentionListeners.add(listener)
+    return () => {
+      this.attentionListeners.delete(listener)
     }
   }
 
@@ -294,6 +319,7 @@ export class SessionManager {
   /** The guide's Esc: stop the running turn, keep the session (#84). */
   async interrupt(): Promise<boolean> {
     if (this.session === null) return false
+    this.attention.interrupted()
     return this.session.interrupt()
   }
 
@@ -333,6 +359,8 @@ export class SessionManager {
     }
     if (this.driver === null) this.driver = await resolveDriver()
     for (const listener of [...this.historyListeners]) listener(history)
+    // A resumed session keeps the name it was given, for the notifications (#90).
+    for (const event of history) if (event.type === 'named') this.attention.observe(event)
     const turns = history.filter((event) => event.type === 'user-text').length
     this.emit({
       type: 'notice',
@@ -569,6 +597,13 @@ export class SessionManager {
 
   private emit(event: AgentEvent): void {
     for (const listener of [...this.listeners]) listener(event)
+    this.attend(event)
+  }
+
+  private attend(event: AgentEvent): void {
+    const raised = this.attention.observe(event)
+    if (raised === null) return
+    for (const listener of [...this.attentionListeners]) listener(raised)
   }
 }
 

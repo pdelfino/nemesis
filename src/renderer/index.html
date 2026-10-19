@@ -33,6 +33,8 @@
       >
       <!-- The context meter (#80): fill of the window as a fraction and a bar. -->
       <span id="context-meter" aria-label="context" data-level="none"></span>
+      <!-- The eval journal (#72): how many definitions wait to be promoted to init.ts; blank at none. -->
+      <span id="journal-count" aria-label="journal"></span>
       <!-- The cockpit's nudge (#80): shown until the next prompt. -->
       <span id="modeline-hint" aria-label="hint"></span>
     </header>
@@ -56,6 +58,11 @@
       <section id="environment" aria-label="environment" data-buffer-type="environment" hidden>
         <div id="environment-editor"></div>
         <p id="environment-keys" class="placeholder"></p>
+      </section>
+      <!-- The *repl* buffer (#72): forms evaluated in the config scope and their values, read-only. -->
+      <section id="repl" aria-label="repl" data-buffer-type="repl" hidden>
+        <div id="repl-editor"></div>
+        <p id="repl-keys" class="placeholder"></p>
       </section>
       <!-- The help buffer (#65): a read-only document, shown while a help buffer exists. -->
       <section id="help" aria-label="help" data-buffer-type="help" hidden>

@@ -63,7 +63,7 @@ test('every device and data permission resolves denied, with no dialog and a not
   const denied = (): string[][] =>
     Array.from(stderr.matchAll(DENIED), (match) => [match[1] ?? '', match[3] ?? ''])
   try {
-    const url = fixtures.url('permissions.html')
+    const url = fixtures.secureUrl('permissions.html')
     const buffer = await nemesis.openPageBuffer(url)
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('permissions')
@@ -110,7 +110,7 @@ test('every device and data permission resolves denied, with no dialog and a not
       (probe) => probe !== 'bluetooth' || denied().some(([name]) => name === 'bluetooth'),
     )
     for (const probe of decided) {
-      await expect.poll(denied).toContainEqual([REFUSED[probe], fixtures.httpOrigin])
+      await expect.poll(denied).toContainEqual([REFUSED[probe], fixtures.httpsOrigin])
     }
     for (const line of stderr.split('\n').filter((one) => one.startsWith('permissions:'))) {
       expect(line).not.toContain('permissions.html')
@@ -123,7 +123,7 @@ test('every device and data permission resolves denied, with no dialog and a not
       await expect
         .poll(notes)
         .toContain(
-          `Denied ${REFUSED[probe]} for ${fixtures.httpOrigin}: permissions are off by default (SECURITY.org, T6)`,
+          `Denied ${REFUSED[probe]} for ${fixtures.httpsOrigin}: permissions are off by default (SECURITY.org, T6)`,
         )
     }
     // Asking again adds a refusal to the log and nothing to the transcript.

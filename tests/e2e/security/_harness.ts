@@ -5,12 +5,13 @@ import {
   type ServerResponse,
 } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
-import { readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, extname, join, resolve } from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
 import { HARDENED_WEB_PREFERENCES } from '../../../src/main/security/web-preferences'
 import { launchApp } from '../_launch'
-import { selfSignedCertificate } from './_certificate'
+import { selfSignedCertificate, type SelfSignedCertificate } from './_certificate'
 
 /**
  * The harness every spec under tests/e2e/security shares (#46): a throwaway
@@ -20,7 +21,33 @@ import { selfSignedCertificate } from './_certificate'
  * It is deliberately the only place that knows how to start the app for a
  * security spec. One spec per row of the non-negotiables table in SECURITY.org
  * copies tests/e2e/security/example.spec.ts and adds its own assertions.
+ *
+ * Transport (#52, T3): the app is HTTPS-only off loopback and a certificate
+ * error is fatal, so a spec loads its hostile page from `secureUrl(...)`, and
+ * the launch trusts this run's fixture certificate on purpose: the PEM is
+ * written next to the throwaway profile and named by `NEMESIS_TEST_CA`, which
+ * the main process reads only under `NODE_ENV=test`. One certificate serves
+ * the fixture server and every launch of a run, so the two need no handshake.
+ * `launchNemesis({ trustFixtures: false })` is the launch that does not
+ * trust it, for the spec that watches the refusal.
  */
+
+/**
+ * A name off loopback that the app resolves to the fixture server, through
+ * Chromium's `--host-resolver-rules` on the test launch only. `.test` is
+ * reserved (RFC 2606) and never resolves outside this mapping, and the rule
+ * keeps the port, so a plain `http:` URL on this host is what the upgrade of
+ * #52 acts on, with the fixture server on the other end of the upgrade.
+ */
+export const OFF_LOOPBACK_HOST = 'nemesis.test'
+
+let issued: SelfSignedCertificate | null = null
+
+/** This run's fixture certificate, issued once per worker and shared by the server and the launches. */
+function runCertificate(): SelfSignedCertificate {
+  issued ??= selfSignedCertificate('nemesis-fixtures', ['localhost', OFF_LOOPBACK_HOST])
+  return issued
+}
 
 const FIXTURES = resolve(__dirname, 'fixtures')
 
@@ -35,18 +62,28 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
 }
 
 export interface FixtureServer {
-  /** `http://127.0.0.1:<port>`, a plain and therefore forbidden origin (T3). */
+  /** `http://127.0.0.1:<port>`, plain, and allowed because it is loopback (T3, #52). */
   readonly httpOrigin: string
-  /** `https://127.0.0.1:<port>`, served with a certificate nothing trusts (T3). */
+  /** `https://127.0.0.1:<port>`, served with this run's certificate, trusted by a launch on purpose (T3). */
   readonly httpsOrigin: string
   /** The PEM certificate, for a client that wants to trust it on purpose. */
   readonly certificate: string
   /** The paths both servers were asked for, in order. */
   readonly requested: readonly string[]
-  /** `url('node-probe.html')` for the plain origin. */
+  /** `url('node-probe.html')` for the plain loopback origin. */
   url(fixture: string): string
-  /** `secureUrl('node-probe.html')` for the HTTPS origin. */
+  /** `secureUrl('node-probe.html')` for the HTTPS origin: how a spec loads a hostile page. */
   secureUrl(fixture: string): string
+  /**
+   * `http://nemesis.test:<https port>/...`: plain `http:` off loopback whose
+   * upgrade to `https:` lands on the HTTPS server, same port (T3, #52).
+   */
+  upgradableUrl(fixture: string): string
+  /**
+   * `http://nemesis.test:<http port>/...`: plain `http:` off loopback whose
+   * upgrade cannot land, because the plain server speaks no TLS (T3, #52).
+   */
+  offLoopbackUrl(fixture: string): string
   close(): Promise<void>
 }
 
@@ -117,7 +154,7 @@ function serveFixtures(requested: string[]) {
 export async function fixtureServer(): Promise<FixtureServer> {
   const requested: string[] = []
   const handler = serveFixtures(requested)
-  const { key, certificate } = selfSignedCertificate()
+  const { key, certificate } = runCertificate()
 
   const plain = createHttpServer(handler)
   const secure = createHttpsServer({ key, cert: certificate }, handler)
@@ -134,6 +171,8 @@ export async function fixtureServer(): Promise<FixtureServer> {
     requested,
     url: (fixture) => `${httpOrigin}/${fixture}`,
     secureUrl: (fixture) => `${httpsOrigin}/${fixture}`,
+    upgradableUrl: (fixture) => `http://${OFF_LOOPBACK_HOST}:${httpsPort}/${fixture}`,
+    offLoopbackUrl: (fixture) => `http://${OFF_LOOPBACK_HOST}:${httpPort}/${fixture}`,
     close: async () => {
       await Promise.all([closeServer(plain), closeServer(secure)])
     },
@@ -151,6 +190,15 @@ export interface PageBuffer {
 
 export interface PageBufferOptions {
   readonly withPreload?: boolean
+}
+
+export interface LaunchOptions {
+  /**
+   * Trust this run's fixture certificate through the test-only anchor
+   * (`NEMESIS_TEST_CA`, #52). On by default; the HTTPS-only spec turns it
+   * off to watch the certificate error be fatal.
+   */
+  readonly trustFixtures?: boolean
 }
 
 export interface Nemesis {
@@ -176,17 +224,29 @@ export interface Nemesis {
  * the main process resolves the deterministic Agent SDK mock (src/main/agent/mock.ts)
  * and never reaches the network or an account.
  */
-export async function launchNemesis(): Promise<Nemesis> {
+export async function launchNemesis(options: LaunchOptions = {}): Promise<Nemesis> {
+  // The anchor lives in its own throwaway directory, deleted with the profile.
+  const anchorDir = mkdtempSync(join(tmpdir(), 'nemesis-security-ca-'))
+  const anchorPath = join(anchorDir, 'fixtures-ca.pem')
+  writeFileSync(anchorPath, runCertificate().certificate)
+  const env = options.trustFixtures === false ? {} : { NEMESIS_TEST_CA: anchorPath }
   // Fake camera and microphone devices (#49): with the real ones, a
   // microphone request from a page buffer sat in Chromium's audio capture
   // on macOS and never reached the app's permission handler, whatever the
   // system's own permission said. The fake devices skip that stack, so the
   // request reaches the handler, which is the control under test. The
   // switch grants nothing: that would be `--use-fake-ui-for-media-stream`,
-  // which no spec may pass.
-  const { app, userData, downloadsDir } = await launchApp('nemesis-security-', [
-    '--use-fake-device-for-media-stream',
-  ])
+  // which no spec may pass. The resolver rule maps the off-loopback fixture
+  // name to the loopback servers, port kept (#52).
+  const { app, userData, downloadsDir } = await launchApp(
+    'nemesis-security-',
+    [
+      '--use-fake-device-for-media-stream',
+      `--host-resolver-rules=MAP ${OFF_LOOPBACK_HOST} 127.0.0.1`,
+    ],
+    {},
+    env,
+  )
   const window = await app.firstWindow()
   await window.waitForLoadState('domcontentloaded')
 
@@ -252,6 +312,7 @@ export async function launchNemesis(): Promise<Nemesis> {
       }
       await app.close()
       rmSync(userData, { recursive: true, force: true })
+      rmSync(anchorDir, { recursive: true, force: true })
     },
   }
 }

@@ -51,7 +51,7 @@ test('a page origin posting to a privileged channel gets nothing, the cockpit ge
     expect(before?.currentId).not.toBeNull()
 
     // The hostile case: a web page that somehow has the bridge.
-    const hostile = await nemesis.openPageBuffer(fixtures.url('node-probe.html'), {
+    const hostile = await nemesis.openPageBuffer(fixtures.secureUrl('node-probe.html'), {
       withPreload: true,
     })
     expect(hostile.loadError).toBeNull()
@@ -79,7 +79,7 @@ test('a page origin posting to a privileged channel gets nothing, the cockpit ge
     // on that line. A log that printed the payload or the path would not match.
     await expect
       .poll(() => Array.from(stderr.matchAll(DROPPED), (match) => [match[1], match[2]]))
-      .toContainEqual([BUFFERS_CHANNEL, fixtures.httpOrigin])
+      .toContainEqual([BUFFERS_CHANNEL, fixtures.httpsOrigin])
 
     // The cockpit is unchanged and still answers.
     const after = await nemesis.window.evaluate(() =>

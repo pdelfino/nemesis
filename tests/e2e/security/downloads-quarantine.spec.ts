@@ -56,7 +56,7 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
   const nemesis = await launchNemesis()
   try {
     const quarantine = join(nemesis.downloadsDir, QUARANTINE_FOLDER)
-    const origin = fixtures.httpOrigin
+    const origin = fixtures.httpsOrigin
     const palette = nemesis.window.locator('#palette')
     const promptLabel = nemesis.window.locator('#palette-prompt')
     const keyboard = nemesis.window.keyboard
@@ -76,7 +76,7 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
         EXTERNAL_LOG,
       )
 
-    const buffer = await nemesis.openPageBuffer(fixtures.url('download.html'))
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('download.html'))
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('download')
     const windowsBefore = nemesis.app.windows().length
@@ -180,7 +180,7 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
       .poll(notes)
       .toContain(`Refused mailto: link from ${origin}: nothing was opened (SECURITY.org, T2)`)
     expect(await launched()).toEqual([])
-    expect(await committed()).toContain(fixtures.url('download.html'))
+    expect(await committed()).toContain(fixtures.secureUrl('download.html'))
 
     // A custom scheme is refused without a prompt in version 1.
     await follow('custom-link')
@@ -191,7 +191,7 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
       )
     await expect(palette).toBeHidden()
     expect(await launched()).toEqual([])
-    expect(await committed()).toContain(fixtures.url('download.html'))
+    expect(await committed()).toContain(fixtures.secureUrl('download.html'))
     expect(nemesis.app.windows().length).toBe(windowsBefore)
     expect(filesUnder(nemesis.downloadsDir)).toEqual([join(QUARANTINE_FOLDER, 'download.bin')])
 

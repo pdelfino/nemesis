@@ -12,6 +12,7 @@ import type { EnvironmentContent } from './environment'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 import type { PlanAnswer, PlanContent } from './plan'
+import type { JournalState, ReplContent } from './repl'
 import type { SpecContent } from './spec'
 
 /**
@@ -60,6 +61,10 @@ export interface NemesisApi {
   onPromptInsert(listener: (insert: PromptInsert) => void): void
   /** The environment buffer has content: the environment command listed the session's files and servers (#86). */
   onEnvironmentShown(listener: (content: EnvironmentContent) => void): void
+  /** The `*repl*` buffer has content: a form was evaluated there (#72). Push only: the page sends no form. */
+  onReplShown(listener: (content: ReplContent) => void): void
+  /** The eval journal changed, or the page loaded: the count for the mode line (#72). */
+  onJournalChanged(listener: (state: JournalState) => void): void
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */
