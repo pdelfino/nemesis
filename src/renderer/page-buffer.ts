@@ -4,9 +4,10 @@
  * box while a page buffer is current and the palette is closed, else null,
  * which hides the view. The palette is drawn by this page, and a view over
  * the page would cover it, so the view gives way while it is open, as Nyxt's
- * prompt buffer does. Keys and focus inside a page are M4.2's; here the
- * section only takes the point when its buffer becomes current, so the
- * cockpit's keys see a page buffer.
+ * prompt buffer does. The main process hands the keyboard to the page
+ * while it shows and back to this window when it hides (#120); the section
+ * takes the point here so that, when the cockpit has the keyboard, its keys
+ * see a page buffer.
  */
 export function installPageBuffer(): void {
   const section = document.getElementById('page')

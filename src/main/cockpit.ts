@@ -259,6 +259,9 @@ export function createCockpit(
       },
     },
     policies: shared.pagePolicies,
+    // A key typed in a page goes through this window's dispatcher first
+    // (#120): bound in the page's modes, it is the cockpit's; else the page's.
+    keys: (press, modes) => dispatcher.take(press, modes).consumed,
   })
   installPageBridge(pages, contents)
   window.on('closed', () => pages.destroyAll())

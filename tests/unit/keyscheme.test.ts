@@ -17,9 +17,12 @@ import {
   cockpitCommands,
   createCockpitDispatcher,
   createCockpitRegistry,
+  createCockpitResolver,
   GLOBAL_KEYMAP,
+  MODE_KEYMAPS,
   resolveCockpitDeps,
 } from '../../src/main/commands/keyscheme'
+import { parseStroke } from '../../src/main/commands/keymap'
 
 function press(key: string, options: Partial<KeyPress> = {}): KeyPress {
   return {
@@ -207,6 +210,93 @@ describe('the dispatcher', () => {
     })
     expect(errors).toHaveBeenCalled()
     errors.mockRestore()
+  })
+})
+
+describe('the page layer and its modes (#120)', () => {
+  const DOCUMENT = ['document']
+  const PASSTHROUGH = ['passthrough', 'document']
+
+  /** What one chord means in a page buffer in these modes, from a fresh resolver. */
+  function inPage(chord: string, modes: readonly string[] = DOCUMENT): string | null {
+    const keys = createCockpitResolver()
+    let last = null as ReturnType<typeof keys.resolve> | null
+    for (const token of chord.split(' ')) last = keys.resolve(parseStroke(token), 'page', modes)
+    return last?.kind === 'command' ? last.command : (last?.kind ?? null)
+  }
+
+  it('resolves the chords document mode lists, and keeps the cockpit chords', () => {
+    expect(inPage('C-v')).toBe('scroll-page-down')
+    expect(inPage('M-v')).toBe('scroll-page-up')
+    expect(inPage('C-n')).toBe('scroll-line-down')
+    expect(inPage('C-p')).toBe('scroll-line-up')
+    expect(inPage('<')).toBe('scroll-to-top')
+    expect(inPage('>')).toBe('scroll-to-bottom')
+    expect(inPage('C-s')).toBe('find-in-page')
+    expect(inPage('C-+')).toBe('zoom-in')
+    expect(inPage('C--')).toBe('zoom-out')
+    expect(inPage('M-w')).toBe('copy-page-selection')
+    expect(inPage('g')).toBe('reload-page')
+    expect(inPage('C-z')).toBe('toggle-passthrough')
+    expect(inPage('C-x C-f')).toBe('open-url')
+    // The cockpit's own chords keep their meaning in a page.
+    expect(inPage('C-x b')).toBe('switch-buffer')
+    expect(inPage('C-x k')).toBe('kill-buffer')
+    expect(inPage('M-x')).toBe('execute-command')
+    expect(inPage('C-c C-c')).toBe('send-prompt')
+    expect(inPage('C-g')).toBe('keyboard-quit')
+    // ...and C-s everywhere else is still the buffer search.
+    expect(GLOBAL_KEYMAP.commandFor('C-s')).toBe('search-buffer')
+  })
+
+  it('leaves an unbound printable key to the page', () => {
+    for (const key of ['a', 'q', 'G', '1', ' ']) {
+      const dispatcher = createCockpitDispatcher()
+      const taken = dispatcher.take(press(key, { bufferType: 'page' }), DOCUMENT)
+      expect(taken.consumed).toBe(false)
+    }
+    expect(inPage('a')).toBe('unbound')
+  })
+
+  it('consumes a bound chord and every stroke of a sequence it holds', () => {
+    const dispatcher = createCockpitDispatcher()
+    const page = { bufferType: 'page' as const }
+    expect(
+      dispatcher.take(press('x', { ...page, ctrlKey: true, code: 'KeyX' }), DOCUMENT).consumed,
+    ).toBe(true)
+    // C-x q is no binding, but the q was typed into the cockpit's sequence.
+    expect(dispatcher.take(press('q', { ...page, code: 'KeyQ' }), DOCUMENT).consumed).toBe(true)
+    expect(dispatcher.take(press('q', { ...page, code: 'KeyQ' }), DOCUMENT).consumed).toBe(false)
+    expect(dispatcher.take(press('Control', page), DOCUMENT).consumed).toBe(false)
+  })
+
+  it('passthrough forwards everything but C-z, C-g and the cockpit chords included', () => {
+    expect(inPage('C-z', PASSTHROUGH)).toBe('toggle-passthrough')
+    for (const chord of ['C-v', 'C-s', 'C-g', 'C-x', 'C-c', 'M-x', 'g', '<', 'a']) {
+      expect(inPage(chord, PASSTHROUGH)).toBe('unbound')
+    }
+    const dispatcher = createCockpitDispatcher()
+    const page = { bufferType: 'page' as const }
+    expect(
+      dispatcher.take(press('x', { ...page, ctrlKey: true, code: 'KeyX' }), PASSTHROUGH).consumed,
+    ).toBe(false)
+    expect(
+      dispatcher.take(press('g', { ...page, ctrlKey: true, code: 'KeyG' }), PASSTHROUGH).consumed,
+    ).toBe(false)
+    expect(
+      dispatcher.take(press('z', { ...page, ctrlKey: true, code: 'KeyZ' }), PASSTHROUGH).consumed,
+    ).toBe(true)
+  })
+
+  it('keeps passthrough to its exit chord, and every mode command registered', () => {
+    expect(MODE_KEYMAPS['passthrough']?.keymap.entries()).toEqual([
+      { chord: 'C-z', command: 'toggle-passthrough' },
+    ])
+    expect(MODE_KEYMAPS['passthrough']?.sealed).toBe(true)
+    const registry = createCockpitRegistry()
+    for (const mode of Object.values(MODE_KEYMAPS)) {
+      for (const { command } of mode.keymap.entries()) expect(registry.has(command)).toBe(true)
+    }
   })
 })
 

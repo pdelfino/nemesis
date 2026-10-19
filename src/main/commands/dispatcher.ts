@@ -130,28 +130,61 @@ export class KeyDispatcher {
     return this.resolver.bindings()
   }
 
-  async handle(press: KeyPress): Promise<KeyOutcome> {
-    const stroke = strokeFromKeyPress(press)
-    if (stroke === null) return { status: 'ignored', chord: this.resolver.pending ?? '' }
+  handle(press: KeyPress, modes: readonly string[] = []): Promise<KeyOutcome> {
+    return this.take(press, modes).outcome
+  }
 
-    const resolution = this.resolver.resolve(stroke, press.bufferType)
-    if (resolution.kind === 'pending') return { status: 'pending', chord: resolution.chord }
+  /**
+   * Resolves a press now and runs its command after (#120). A page's
+   * `before-input-event` must decide before it returns whether the key is
+   * the cockpit's, so the answer comes back synchronously: `consumed` is
+   * true for a key the cockpit binds in these modes, for every stroke of a
+   * sequence it holds and for a key read for describe-key; an unbound key
+   * typed on its own, or a bare modifier, is the page's.
+   */
+  take(
+    press: KeyPress,
+    modes: readonly string[] = [],
+  ): { readonly consumed: boolean; readonly outcome: Promise<KeyOutcome> } {
+    const stroke = strokeFromKeyPress(press)
+    if (stroke === null) {
+      return {
+        consumed: false,
+        outcome: Promise.resolve({ status: 'ignored', chord: this.resolver.pending ?? '' }),
+      }
+    }
+
+    const resolution = this.resolver.resolve(stroke, press.bufferType, modes)
+    if (resolution.kind === 'pending') {
+      return {
+        consumed: true,
+        outcome: Promise.resolve({ status: 'pending', chord: resolution.chord }),
+      }
+    }
 
     // A sequence read for describe-key is described, not run (#65).
     if (this.reader.pending) {
       const command = resolution.kind === 'command' ? resolution.command : null
       this.reader.settle({ chord: resolution.chord, command, bufferType: press.bufferType })
       return {
-        status: 'captured',
-        chord: resolution.chord,
-        ...(command === null ? {} : { command }),
+        consumed: true,
+        outcome: Promise.resolve({
+          status: 'captured',
+          chord: resolution.chord,
+          ...(command === null ? {} : { command }),
+        }),
       }
     }
     if (resolution.kind !== 'command') {
-      return { status: resolution.kind, chord: resolution.chord }
+      return {
+        consumed: resolution.chord.includes(' '),
+        outcome: Promise.resolve({ status: resolution.kind, chord: resolution.chord }),
+      }
     }
+    return { consumed: true, outcome: this.run(resolution.command, resolution.chord, press) }
+  }
 
-    const { command, chord } = resolution
+  private async run(command: string, chord: string, press: KeyPress): Promise<KeyOutcome> {
     this.record({ at: Date.now(), chord, command, bufferType: press.bufferType })
     try {
       await this.registry.run(command, { source: 'key', chord, bufferType: press.bufferType })

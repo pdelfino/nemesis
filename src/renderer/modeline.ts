@@ -1,5 +1,6 @@
 import type { AgentEvent } from '../shared/agent'
 import { APP_NAME } from '../shared/api'
+import type { BufferList } from '../shared/buffers'
 import { describeContext } from '../shared/context'
 
 /**
@@ -36,6 +37,26 @@ export function installModeline(): void {
         ? ''
         : `${state.unpromoted} eval ${state.unpromoted === 1 ? 'definition' : 'definitions'} not in init.ts. M-x journal-promote or journal-discard.`
   })
+  // The current page buffer's modes and zoom (#120), off the buffer list.
+  const page = document.getElementById('page-state')
+  if (page === null) throw new Error('index.html has no #page-state')
+  window.nemesis.onBuffersChanged((list) => {
+    page.textContent = pageState(list)
+  })
+}
+
+/**
+ * What the mode line says of the current page buffer (#120): `passthrough`
+ * while every key but C-z goes to the page, and the zoom when it is not
+ * 100%. Blank for every other buffer, and for a page in plain `document`.
+ */
+export function pageState(list: BufferList): string {
+  const current = list.buffers.find((buffer) => buffer.id === list.currentId)
+  if (current?.kind !== 'page') return ''
+  const parts: string[] = []
+  if (current.modes?.includes('passthrough') === true) parts.push('passthrough')
+  if (current.zoom !== undefined && current.zoom !== 100) parts.push(`${current.zoom}%`)
+  return parts.join(' ')
 }
 
 export interface ModelineElements {

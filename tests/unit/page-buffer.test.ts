@@ -3,13 +3,18 @@ import type { WebPreferences } from 'electron'
 import type { AgentEvent } from '../../src/main/agent/events'
 import { BufferRegistry } from '../../src/main/buffers'
 import {
+  nextZoomLevel,
   PageBuffers,
   parsePageBounds,
+  pressFromInput,
   urlFromInput,
+  zoomPercent,
   type PageContents,
+  type PageInput,
   type PageView,
   type RedirectDetails,
 } from '../../src/main/page-buffer'
+import type { KeyPress } from '../../src/shared/keys'
 import { HARDENED_WEB_PREFERENCES } from '../../src/main/security/web-preferences'
 import type { PageBounds, PageEvent } from '../../src/shared/buffers'
 
@@ -104,6 +109,58 @@ class FakeContents implements PageContents {
   close(): void {
     this.closed = true
   }
+
+  zoomLevel = 0
+  readonly found: string[] = []
+  readonly sent: string[] = []
+
+  focus(): void {
+    this.log.push(`focus page ${this.id}`)
+  }
+
+  getZoomLevel(): number {
+    return this.zoomLevel
+  }
+
+  setZoomLevel(level: number): void {
+    this.zoomLevel = level
+  }
+
+  findInPage(text: string): number {
+    this.found.push(text)
+    return this.found.length
+  }
+
+  stopFindInPage(action: string): void {
+    this.found.push(`stop ${action}`)
+  }
+
+  copy(): void {
+    this.log.push(`copy ${this.id}`)
+  }
+
+  sendInputEvent(event: { readonly type: string; readonly keyCode: string }): void {
+    this.sent.push(`${event.type} ${event.keyCode}`)
+  }
+
+  /** Types a key down in the page; true when the cockpit took it. */
+  type(input: Partial<PageInput> & { readonly key: string }): boolean {
+    let prevented = false
+    this.emit(
+      'before-input-event',
+      { preventDefault: () => (prevented = true) },
+      {
+        type: 'keyDown',
+        code: '',
+        shift: false,
+        control: false,
+        alt: false,
+        meta: false,
+        ...input,
+      },
+    )
+    return prevented
+  }
 }
 
 class FakeView implements PageView {
@@ -132,7 +189,7 @@ interface Rig {
   readonly events: PageEvent[]
 }
 
-function rig(): Rig {
+function rig(keys?: (press: KeyPress, modes: readonly string[]) => boolean): Rig {
   const buffers = new BufferRegistry()
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
   const views: FakeView[] = []
@@ -155,6 +212,7 @@ function rig(): Rig {
       transport: (contents) => log.push(`transport ${contents.id}`),
       permissions: (contents) => log.push(`permissions ${contents.id}`),
     },
+    ...(keys === undefined ? {} : { keys }),
   })
   const notices: string[] = []
   pages.on((event: AgentEvent) => {
@@ -407,19 +465,186 @@ describe('showing and hiding (#119)', () => {
   })
 })
 
-describe('the keyboard while a page shows (#119, until M4.2)', () => {
-  it('goes back to the cockpit when a page is attached and when the shown page commits', () => {
+describe('focus follows the shown page (#120)', () => {
+  it('gives the keyboard to a page when it shows and back to the cockpit when none shows', () => {
+    const { pages, buffers, views, log } = rig()
+    const one = pages.createPage()
+    const two = pages.createPage()
+    const [first, second] = views
+    if (first === undefined || second === undefined) throw new Error('two views')
+    const focus = (): string[] => log.filter((line) => line.startsWith('focus'))
+
+    // Not shown: nothing moves.
+    buffers.switchTo(one.id)
+    expect(focus()).toEqual([])
+    pages.setBounds({ x: 0, y: 0, width: 10, height: 10 })
+    expect(focus()).toEqual([`focus page ${first.webContents.id}`])
+    // A commit, a title, a resize: the page keeps the keyboard, nothing is refocused.
+    first.webContents.emit('did-navigate', {}, 'https://example.test/')
+    pages.setBounds({ x: 0, y: 0, width: 20, height: 20 })
+    expect(focus()).toHaveLength(1)
+
+    // A switch to another page focuses that page.
+    buffers.switchTo(two.id)
+    expect(focus().at(-1)).toBe(`focus page ${second.webContents.id}`)
+    // The palette takes the keyboard while open, and gives it back.
+    pages.setBounds(null)
+    expect(focus().at(-1)).toBe('focus cockpit')
+    pages.setBounds({ x: 0, y: 0, width: 20, height: 20 })
+    expect(focus().at(-1)).toBe(`focus page ${second.webContents.id}`)
+    // A switch away from every page gives it to the cockpit.
+    buffers.switchTo(buffers.list()[0]?.id ?? '')
+    expect(buffers.current?.kind).toBe('transcript')
+    expect(focus().at(-1)).toBe('focus cockpit')
+    expect(focus()).toHaveLength(5)
+  })
+})
+
+describe('keys typed in a page (#120)', () => {
+  it('asks the cockpit with the page buffer type and the modes, and consumes only what it takes', () => {
+    const asked: { press: KeyPress; modes: readonly string[] }[] = []
+    const { pages, views } = rig((press, modes) => {
+      asked.push({ press, modes })
+      return press.ctrlKey
+    })
+    pages.createPage()
+    const contents = only(views).webContents
+    expect(contents.type({ key: 'v', code: 'KeyV', control: true })).toBe(true)
+    expect(contents.type({ key: 'a', code: 'KeyA' })).toBe(false)
+    expect(asked.map(({ press }) => press.bufferType)).toEqual(['page', 'page'])
+    expect(asked[0]?.modes).toEqual(['document'])
+  })
+
+  it('leaves a key up, a composing key and every key without a keymap to the page', () => {
+    const asked: KeyPress[] = []
+    const { pages, views } = rig((press) => {
+      asked.push(press)
+      return true
+    })
+    pages.createPage()
+    const contents = only(views).webContents
+    expect(contents.type({ key: 'v', type: 'keyUp', control: true })).toBe(false)
+    expect(contents.type({ key: 'v', isComposing: true })).toBe(false)
+    expect(asked).toEqual([])
+
+    const bare = rig()
+    bare.pages.createPage()
+    expect(only(bare.views).webContents.type({ key: 'v', control: true })).toBe(false)
+  })
+
+  it('puts passthrough in front of document on toggle, and in the buffer list', () => {
+    const asked: (readonly string[])[] = []
+    const { pages, buffers, views } = rig((_press, modes) => {
+      asked.push(modes)
+      return false
+    })
+    const buffer = pages.createPage()
+    buffers.switchTo(buffer.id)
+    expect(buffers.get(buffer.id)?.modes).toEqual(['document'])
+    pages.togglePassthrough()
+    expect(buffers.get(buffer.id)?.modes).toEqual(['passthrough', 'document'])
+    only(views).webContents.type({ key: 'x' })
+    expect(asked.at(-1)).toEqual(['passthrough', 'document'])
+    pages.togglePassthrough()
+    expect(buffers.get(buffer.id)?.modes).toEqual(['document'])
+  })
+
+  it('reads a key the way the renderer reports one', () => {
+    expect(
+      pressFromInput({
+        type: 'keyDown',
+        key: '√',
+        code: 'KeyV',
+        shift: false,
+        control: false,
+        alt: true,
+        meta: false,
+      }),
+    ).toEqual({
+      key: '√',
+      code: 'KeyV',
+      ctrlKey: false,
+      altKey: true,
+      shiftKey: false,
+      metaKey: false,
+      bufferType: 'page',
+    })
+    const base = {
+      type: 'keyDown',
+      code: '',
+      shift: false,
+      control: false,
+      alt: false,
+      meta: false,
+    }
+    expect(pressFromInput({ ...base, key: '' })).toBeNull()
+    expect(pressFromInput({ ...base, key: 'x'.repeat(33) })).toBeNull()
+  })
+})
+
+describe('document mode on a page (#120)', () => {
+  it('scrolls by synthesized keys, finds, copies, and refuses without a current page', () => {
     const { pages, buffers, views, log } = rig()
     const buffer = pages.createPage()
     const contents = only(views).webContents
-    // Not shown: a commit takes nothing from the cockpit.
-    contents.emit('did-navigate', {}, 'https://example.test/')
-    expect(log.filter((line) => line === 'focus cockpit')).toHaveLength(0)
+    expect(() => pages.scroll('page-down')).toThrow('The current buffer is not a page')
     buffers.switchTo(buffer.id)
-    pages.setBounds({ x: 0, y: 0, width: 10, height: 10 })
-    expect(log.filter((line) => line === 'focus cockpit')).toHaveLength(1)
-    contents.emit('did-navigate', {}, 'https://example.test/next')
-    expect(log.filter((line) => line === 'focus cockpit')).toHaveLength(2)
+
+    pages.scroll('page-down')
+    pages.scroll('top')
+    expect(contents.sent).toEqual([
+      'keyDown PageDown',
+      'keyUp PageDown',
+      'keyDown Home',
+      'keyUp Home',
+    ])
+
+    pages.find('needle')
+    pages.find('needle')
+    pages.find('other')
+    pages.find('')
+    expect(contents.found).toEqual([
+      'stop clearSelection',
+      'needle',
+      'needle',
+      'stop clearSelection',
+      'other',
+      'stop clearSelection',
+    ])
+
+    pages.copy()
+    expect(log).toContain(`copy ${contents.id}`)
+  })
+
+  it("zooms in Chromium's steps, per origin, into every page's buffer", () => {
+    const { pages, buffers, views } = rig()
+    const one = pages.createPage()
+    const two = pages.createPage()
+    const [first, second] = views
+    if (first === undefined || second === undefined) throw new Error('two views')
+    expect(buffers.get(one.id)?.zoom).toBe(100)
+    buffers.switchTo(one.id)
+
+    // Chromium shares the level across the origin; the other page is read again.
+    second.webContents.getZoomLevel = () => first.webContents.zoomLevel
+    pages.zoom(1)
+    expect(buffers.get(one.id)?.zoom).toBe(110)
+    expect(buffers.get(two.id)?.zoom).toBe(110)
+    pages.zoom(1)
+    expect(buffers.get(one.id)?.zoom).toBe(125)
+    pages.zoom(-1)
+    expect(buffers.get(one.id)?.zoom).toBe(110)
+    expect(buffers.get(two.id)?.zoom).toBe(110)
+  })
+
+  it('walks the zoom steps and stops at their ends', () => {
+    expect(zoomPercent(0)).toBe(100)
+    expect(zoomPercent(nextZoomLevel(0, 1))).toBe(110)
+    expect(zoomPercent(nextZoomLevel(0, -1))).toBe(90)
+    expect(zoomPercent(nextZoomLevel(Math.log(5) / Math.log(1.2), 1))).toBe(500)
+    expect(zoomPercent(nextZoomLevel(Math.log(0.25) / Math.log(1.2), -1))).toBe(25)
+    // A level between steps goes to the next step past it.
+    expect(zoomPercent(nextZoomLevel(0.1, 1))).toBe(110)
   })
 })
 

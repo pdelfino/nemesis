@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>key recorder</title>
+  </head>
+  <body>
+    <h1>Key recorder</h1>
+    <p>
+      Every key that reaches this page is written down, so a spec can tell a key the cockpit took
+      from one it forwarded (#120). Named keys are left out. A tall page, so scrolling has somewhere
+      to go.
+    </p>
+    <pre id="keys"></pre>
+    <div style="height: 6000px"></div>
+    <script>
+      var keys = []
+      globalThis.__keys = keys
+      document.addEventListener(
+        'keydown',
+        function (event) {
+          // Characters and chords on them only: a bare modifier, and the
+          // PageDown or Home the cockpit's scroll sends, are not typed keys.
+          if (event.key.length !== 1) return
+          var parts = []
+          if (event.ctrlKey) parts.push('C-')
+          if (event.altKey) parts.push('M-')
+          parts.push(event.key)
+          keys.push(parts.join(''))
+          document.getElementById('keys').textContent = keys.join(' ')
+        },
+        true,
+      )
+    </script>
+  </body>
+</html>

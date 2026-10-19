@@ -192,9 +192,24 @@ export function defineKeymap(name: string, spec: KeymapSpec): Keymap {
 
 export type BufferKeymaps = Readonly<Partial<Record<BufferType, Keymap>>>
 
+/**
+ * The keymap layer of a mode a buffer is in (ADR 0004; `document` and
+ * `passthrough` on a page buffer since #120). A sealed mode is the last layer
+ * looked in: nothing under it, the buffer type's map and the global map
+ * included, sees a key while it is on, so an unbound key is the page's.
+ */
+export interface ModeLayer {
+  readonly keymap: Keymap
+  readonly sealed?: boolean
+}
+
+export type ModeKeymaps = Readonly<Record<string, ModeLayer>>
+
 export interface KeyResolverOptions {
   readonly global: Keymap
   readonly byBufferType?: BufferKeymaps
+  /** Mode layers by name; a buffer's modes are consulted first, in their order. */
+  readonly modes?: ModeKeymaps
   /**
    * The user's layer from the config file (#71, ADR 0006), read on every
    * sequence so a reload takes effect on the next key. It sits above the
@@ -222,6 +237,7 @@ export type Resolution =
 export class KeyResolver {
   private readonly global: Keymap
   private readonly byBufferType: BufferKeymaps
+  private readonly modes: ModeKeymaps
   private readonly user: () => Keymap | null
   private readonly abortStroke: string | undefined
   private path: string[] = []
@@ -230,6 +246,7 @@ export class KeyResolver {
   constructor(options: KeyResolverOptions) {
     this.global = options.global
     this.byBufferType = options.byBufferType ?? {}
+    this.modes = options.modes ?? {}
     this.user = options.user ?? (() => null)
     this.abortStroke = options.abort === undefined ? undefined : normalizeChord(options.abort)
   }
@@ -254,11 +271,15 @@ export class KeyResolver {
     return { global: mergeShapes(this.global.shape(), user?.shape()), byBufferType }
   }
 
-  resolve(stroke: KeyStroke, bufferType: BufferType | null = null): Resolution {
+  resolve(
+    stroke: KeyStroke,
+    bufferType: BufferType | null = null,
+    modes: readonly string[] = [],
+  ): Resolution {
     const token = formatStroke(stroke)
     // C-g abandons the sequence, then is looked up on its own.
     if (this.path.length > 0 && token === this.abortStroke) this.reset()
-    if (this.path.length === 0) this.layers = this.layersFor(bufferType)
+    if (this.path.length === 0) this.layers = this.layersFor(bufferType, modes)
     this.path.push(token)
 
     for (const layer of this.layers) {
@@ -276,10 +297,18 @@ export class KeyResolver {
     return { kind: 'unbound', chord }
   }
 
-  private layersFor(bufferType: BufferType | null): Keymap[] {
+  private layersFor(bufferType: BufferType | null, modes: readonly string[]): Keymap[] {
+    const layers: Keymap[] = []
+    for (const name of modes) {
+      const mode = this.modes[name]
+      if (mode === undefined) continue
+      layers.push(mode.keymap)
+      if (mode.sealed === true) return layers
+    }
     const buffer = bufferType === null ? undefined : this.byBufferType[bufferType]
     const user = this.user()
     return [
+      ...layers,
       ...(buffer === undefined ? [] : [buffer]),
       ...(user === null ? [] : [user]),
       this.global,

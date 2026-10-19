@@ -1,6 +1,7 @@
 import type { WebPreferences } from 'electron'
 import type { AgentEvent, AgentEventListener } from './agent/events'
 import type { BufferInfo, PageBounds, PageEvent, PageSpec } from '../shared/buffers'
+import type { KeyPress } from '../shared/keys'
 import type { BufferRegistry } from './buffers'
 import { CommandError } from './commands/registry'
 import { navigationAllowed } from './security/navigation-policy'
@@ -29,6 +30,15 @@ import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
  *   at the rectangle the renderer reports, and every other page is detached,
  *   its state, history and scroll kept. No rectangle (the palette is open, or
  *   the renderer has not laid out the page section yet) attaches nothing.
+ * - Keys (#120): a main-process `before-input-event` listener on each page
+ *   asks the cockpit's keymap, for the `page` buffer type and the page's
+ *   modes, whether a key is the cockpit's. A bound key is consumed and
+ *   dispatched, every other key goes to the page; no script runs in the
+ *   page and the page never learns a binding. Every page is in `document`;
+ *   `passthrough` goes in front of it on `C-z` and seals the layers below.
+ * - Focus follows the current buffer: a page shown takes the keyboard, and
+ *   a page hidden (a switch away, or the palette's null rectangle) gives it
+ *   back to the cockpit.
  *
  * The module holds no Electron value: the view, the window's content view and
  * the policies come in through `PageBuffersOptions`, so the unit tests drive
@@ -52,6 +62,44 @@ const MAX_TITLE = 200
 const ERR_ABORTED = -3
 /** A rectangle past this, in CSS pixels, is no window's. */
 const MAX_EXTENT = 100_000
+
+/** The mode every page buffer is in, and the one `C-z` puts in front of it (#120). */
+export const DOCUMENT_MODE = 'document'
+export const PASSTHROUGH_MODE = 'passthrough'
+
+/** Chromium's zoom steps, as factors; Chromium's own menu walks the same list. */
+const ZOOM_FACTORS = [
+  0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5,
+]
+/** A zoom level is a power of 1.2: level 0 is 100 percent. */
+const ZOOM_BASE = 1.2
+/** A find longer than this is not one the user typed. */
+const MAX_FIND = 1000
+
+/** The part of Electron's `Input` a page's key listener reads. */
+export interface PageInput {
+  readonly type: string
+  readonly key: string
+  readonly code: string
+  readonly shift: boolean
+  readonly control: boolean
+  readonly alt: boolean
+  readonly meta: boolean
+  readonly isComposing?: boolean
+}
+
+/** How `document` mode moves a page: synthesized keys, never a page script. */
+export type PageScroll = 'page-down' | 'page-up' | 'line-down' | 'line-up' | 'top' | 'bottom'
+
+/** The key Chromium scrolls on for each move, as `sendInputEvent` spells it. */
+const SCROLL_KEYS: Readonly<Record<PageScroll, string>> = {
+  'page-down': 'PageDown',
+  'page-up': 'PageUp',
+  'line-down': 'Down',
+  'line-up': 'Up',
+  top: 'Home',
+  bottom: 'End',
+}
 
 /** What a redirect reports, the part of Electron's event a page buffer reads. */
 export interface RedirectDetails {
@@ -80,12 +128,24 @@ export interface PageContents {
     ) => void,
   ): unknown
   on(event: 'did-redirect-navigation', listener: (details: RedirectDetails) => void): unknown
+  on(
+    event: 'before-input-event',
+    listener: (event: { preventDefault(): void }, input: PageInput) => void,
+  ): unknown
   off(event: string, listener: (...args: never[]) => void): unknown
   loadURL(url: string): Promise<void>
   reload(): void
   getURL(): string
   isDestroyed(): boolean
   close(): void
+  focus(): void
+  /** Chromium's zoom, kept per origin in the session's zoom level store. */
+  getZoomLevel(): number
+  setZoomLevel(level: number): void
+  findInPage(text: string): number
+  stopFindInPage(action: 'clearSelection' | 'keepSelection' | 'activateSelection'): void
+  copy(): void
+  sendInputEvent(event: { readonly type: 'keyDown' | 'keyUp'; readonly keyCode: string }): void
   readonly navigationHistory: {
     canGoBack(): boolean
     canGoForward(): boolean
@@ -106,11 +166,7 @@ export interface PageView {
 export interface PageHost<V extends PageView> {
   addChildView(view: V): void
   removeChildView(view: V): void
-  /**
-   * Gives the keyboard back to the cockpit's own page. Keys and focus inside
-   * a page are M4.2's (#120); until then a page shown takes no keys from the
-   * cockpit, so `C-x k` and `M-x` reach the page buffer.
-   */
+  /** Gives the keyboard back to the cockpit's own page, when no page shows (#120). */
   focusCockpit(): void
 }
 
@@ -130,6 +186,12 @@ export interface PageBuffersOptions<V extends PageView> {
   readonly createView: (webPreferences: WebPreferences) => V
   readonly host: PageHost<V>
   readonly policies: PagePolicies<V>
+  /**
+   * The cockpit's keymap, asked on every key typed in a page (#120): true
+   * when the cockpit binds it in these modes and has taken it, false when the
+   * page should have it. Absent, every key is the page's.
+   */
+  readonly keys?: (press: KeyPress, modes: readonly string[]) => boolean
 }
 
 /** What the commands ask of the page buffers; a window without them refuses (keyscheme.ts). */
@@ -140,20 +202,33 @@ export interface PageCommands {
   reload(): void
   back(): void
   forward(): void
+  /** `document` mode on the current page buffer (#120). */
+  scroll(how: PageScroll): void
+  /** Finds `text` in the page, the next match on a repeat; empty clears the find. */
+  find(text: string): void
+  /** One of Chromium's zoom steps in or out, for the page's origin. */
+  zoom(by: 1 | -1): void
+  /** The page's selection to the clipboard. */
+  copy(): void
+  /** Puts `passthrough` in front of `document`, or takes it off. */
+  togglePassthrough(): void
+}
+
+const noPages = (): never => {
+  throw new CommandError('No page buffers in this window')
 }
 
 /** Without a window there is no view to hold a page. */
 export const NO_PAGES: PageCommands = {
   open: () => Promise.reject(new CommandError('No page buffers in this window')),
-  reload: () => {
-    throw new CommandError('No page buffers in this window')
-  },
-  back: () => {
-    throw new CommandError('No page buffers in this window')
-  },
-  forward: () => {
-    throw new CommandError('No page buffers in this window')
-  },
+  reload: noPages,
+  back: noPages,
+  forward: noPages,
+  scroll: noPages,
+  find: noPages,
+  zoom: noPages,
+  copy: noPages,
+  togglePassthrough: noPages,
 }
 
 export type PageEventListener = (event: PageEvent) => void
@@ -164,6 +239,40 @@ interface Page<V extends PageView> {
   /** Every listener this module put on the contents, for destroy to take off. */
   readonly listeners: (readonly [string, (...args: never[]) => void])[]
   attached: boolean
+  /** The page's modes, first wins: `document`, with `passthrough` in front while on. */
+  modes: readonly string[]
+  /** The text of the last find, so a repeat steps to the next match. */
+  found: string
+}
+
+/** A zoom level as the percentage the mode line shows. */
+export function zoomPercent(level: number): number {
+  return Math.round(100 * ZOOM_BASE ** level)
+}
+
+/** The zoom level one Chromium step from `level`, in or out, kept inside the steps. */
+export function nextZoomLevel(level: number, by: 1 | -1): number {
+  const factor = ZOOM_BASE ** level
+  const steps = by === 1 ? ZOOM_FACTORS : [...ZOOM_FACTORS].reverse()
+  // A level set by Chromium itself can sit between steps; the next one past it wins.
+  const next =
+    steps.find((step) => (by === 1 ? step > factor + 1e-6 : step < factor - 1e-6)) ?? steps.at(-1)
+  return Math.log(next ?? 1) / Math.log(ZOOM_BASE)
+}
+
+/** A key typed in a page, read as the cockpit reads a key from its own renderer. */
+export function pressFromInput(input: PageInput): KeyPress | null {
+  if (input.type !== 'keyDown' || input.isComposing === true) return null
+  if (typeof input.key !== 'string' || input.key.length === 0 || input.key.length > 32) return null
+  return {
+    key: input.key,
+    code: typeof input.code === 'string' ? input.code.slice(0, 32) : '',
+    ctrlKey: input.control === true,
+    altKey: input.alt === true,
+    shiftKey: input.shift === true,
+    metaKey: input.meta === true,
+    bufferType: 'page',
+  }
 }
 
 /** A string the page sent that may stand as a URL: bounded and parseable, or null. */
@@ -222,6 +331,8 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   private readonly notices = new Set<AgentEventListener>()
   private readonly streams = new Set<PageEventListener>()
   private bounds: PageBounds | null = null
+  /** The page that has the keyboard, so focus moves only when the shown page changes. */
+  private focused: string | null = null
 
   constructor(private readonly options: PageBuffersOptions<V>) {
     // A kill from anywhere, `C-x k` or the palette, destroys the page, and a
@@ -278,8 +389,19 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       title: spec.url === undefined ? 'Page' : hostOf(spec.url),
       elementId: PAGE_ELEMENT_ID,
     })
-    const page: Page<V> = { id: buffer.id, view, listeners: [], attached: false }
+    const page: Page<V> = {
+      id: buffer.id,
+      view,
+      listeners: [],
+      attached: false,
+      modes: [DOCUMENT_MODE],
+      found: '',
+    }
     this.pages.set(buffer.id, page)
+    this.options.buffers.update(buffer.id, {
+      modes: page.modes,
+      zoom: zoomPercent(contents.getZoomLevel()),
+    })
     this.listen(page)
     if (spec.url !== undefined) void this.load(buffer.id, spec.url)
     return buffer
@@ -356,6 +478,61 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     this.step(1)
   }
 
+  scroll(how: PageScroll): void {
+    const contents = this.current().view.webContents
+    const keyCode = SCROLL_KEYS[how]
+    contents.sendInputEvent({ type: 'keyDown', keyCode })
+    contents.sendInputEvent({ type: 'keyUp', keyCode })
+  }
+
+  find(text: string): void {
+    const page = this.current()
+    const contents = page.view.webContents
+    const wanted = text.slice(0, MAX_FIND)
+    if (wanted.length === 0) {
+      page.found = ''
+      contents.stopFindInPage('clearSelection')
+      return
+    }
+    // A repeat of the same text steps to the next match, as C-s C-s does.
+    if (wanted !== page.found) contents.stopFindInPage('clearSelection')
+    page.found = wanted
+    contents.findInPage(wanted)
+  }
+
+  zoom(by: 1 | -1): void {
+    const contents = this.current().view.webContents
+    contents.setZoomLevel(nextZoomLevel(contents.getZoomLevel(), by))
+    // Chromium zooms every page of the origin in this session, so every page is read again.
+    this.readZoom()
+  }
+
+  copy(): void {
+    this.current().view.webContents.copy()
+  }
+
+  togglePassthrough(): void {
+    const page = this.current()
+    page.modes = page.modes.includes(PASSTHROUGH_MODE)
+      ? page.modes.filter((mode) => mode !== PASSTHROUGH_MODE)
+      : [PASSTHROUGH_MODE, ...page.modes]
+    this.options.buffers.update(page.id, { modes: page.modes })
+  }
+
+  /** The modes of a page buffer, first wins; empty for an id that holds no page. */
+  modesOf(id: string): readonly string[] {
+    return this.pages.get(id)?.modes ?? []
+  }
+
+  /** Every page's zoom into the buffer list, as Chromium holds it per origin now. */
+  private readZoom(): void {
+    for (const page of this.pages.values()) {
+      const contents = page.view.webContents
+      if (contents.isDestroyed()) continue
+      this.options.buffers.update(page.id, { zoom: zoomPercent(contents.getZoomLevel()) })
+    }
+  }
+
   private step(by: -1 | 1): void {
     const page = this.current()
     const history = page.view.webContents.navigationHistory
@@ -395,7 +572,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     return upgradeOf(bounded) ?? bounded
   }
 
-  /** Attaches the current page at the reported rectangle and detaches every other. */
+  /**
+   * Attaches the current page at the reported rectangle and detaches every
+   * other. The keyboard goes to a page when it starts to show, and back to
+   * the cockpit when no page shows any more.
+   */
   private show(): void {
     const current = this.options.buffers.current
     const shown =
@@ -408,13 +589,22 @@ export class PageBuffers<V extends PageView> implements PageCommands {
         page.attached = false
       }
     }
-    if (shown === undefined || this.bounds === null) return
+    if (shown === undefined || this.bounds === null) {
+      if (this.focused !== null) {
+        this.focused = null
+        this.options.host.focusCockpit()
+      }
+      return
+    }
     if (!shown.attached) {
       this.options.host.addChildView(shown.view)
       shown.attached = true
-      this.options.host.focusCockpit()
     }
     shown.view.setBounds(this.bounds)
+    if (this.focused !== shown.id) {
+      this.focused = shown.id
+      shown.view.webContents.focus()
+    }
   }
 
   /** The event stream of one page, each event checked before it is acted on. */
@@ -479,6 +669,18 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     }
     contents.on('did-redirect-navigation', redirected)
     add('did-redirect-navigation', redirected)
+
+    // The cockpit's keys first (#120): a key bound in the page's modes never
+    // reaches the page. The listener runs in the main process; nothing of
+    // the keymap crosses into the page.
+    const typed = (event: { preventDefault(): void }, input: PageInput): void => {
+      const keys = this.options.keys
+      const press = pressFromInput(input)
+      if (keys === undefined || press === null) return
+      if (keys(press, this.modesOf(pageId))) event.preventDefault()
+    }
+    contents.on('before-input-event', typed)
+    add('before-input-event', typed)
   }
 
   /** The registry follows the stream: the committed URL and the title; a failure is a notice. */
@@ -487,9 +689,8 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     if (!this.pages.has(event.pageId) || buffers.get(event.pageId) === undefined) return
     switch (event.type) {
       case 'committed':
-        // Chromium hands the keyboard to a page that commits; the cockpit
-        // keeps it until keys inside a page exist (M4.2, #120).
-        if (this.pages.get(event.pageId)?.attached === true) this.options.host.focusCockpit()
+        // Chromium keeps the zoom per origin: a new origin may bring its own.
+        this.readZoom()
         break
       case 'url-changed': {
         const before = buffers.get(event.pageId)

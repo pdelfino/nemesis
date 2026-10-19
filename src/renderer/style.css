@@ -120,6 +120,9 @@ main {
 #page-url:empty {
   display: none;
 }
+#page-state:empty {
+  display: none;
+}
 /* Plain http: on loopback is allowed (#52) and never looks like https:. */
 #page-url .insecure {
   color: #b32424;

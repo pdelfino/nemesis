@@ -30,6 +30,14 @@ export interface BufferInfo {
    * that has committed nothing yet.
    */
   readonly url?: string
+  /**
+   * The modes a page buffer is in, first wins (ADR 0004, #120): `document`
+   * always, `passthrough` in front of it while every key but its exit chord
+   * goes to the page. Absent on every other kind.
+   */
+  readonly modes?: readonly string[]
+  /** A page buffer's zoom as a percentage, Chromium's per origin (#120). Absent on every other kind. */
+  readonly zoom?: number
 }
 
 /** The whole buffer list in creation order, plus which buffer is current. */

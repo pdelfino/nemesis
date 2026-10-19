@@ -25,7 +25,7 @@ import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
-import { NO_PAGES, type PageCommands } from '../page-buffer'
+import { DOCUMENT_MODE, NO_PAGES, PASSTHROUGH_MODE, type PageCommands } from '../page-buffer'
 import { Repl } from '../repl'
 import { reviewApplyPrompt } from '../review-prompt'
 import { ReviewBuffers } from '../reviews'
@@ -39,7 +39,7 @@ import { Worktrees, type Worktree } from '../worktrees'
 import type { KeymapLayer } from './describe'
 import { bindingNote, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
-import type { BufferKeymaps, Keymap } from './keymap'
+import type { BufferKeymaps, Keymap, ModeKeymaps } from './keymap'
 import { defineKeymap, isShadowed, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
 import {
@@ -1050,6 +1050,98 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         pages.forward()
       },
     }),
+    // document mode (#120): a page moves, finds, zooms and copies on the
+    // cockpit's keys, through Chromium, never through a script in the page.
+    defineCommand({
+      name: 'scroll-page-down',
+      mcp: 'never',
+      doc: 'Scroll the current page buffer down one screen.',
+      run: () => {
+        pages.scroll('page-down')
+      },
+    }),
+    defineCommand({
+      name: 'scroll-page-up',
+      mcp: 'never',
+      doc: 'Scroll the current page buffer up one screen.',
+      run: () => {
+        pages.scroll('page-up')
+      },
+    }),
+    defineCommand({
+      name: 'scroll-line-down',
+      mcp: 'never',
+      doc: 'Scroll the current page buffer down one line.',
+      run: () => {
+        pages.scroll('line-down')
+      },
+    }),
+    defineCommand({
+      name: 'scroll-line-up',
+      mcp: 'never',
+      doc: 'Scroll the current page buffer up one line.',
+      run: () => {
+        pages.scroll('line-up')
+      },
+    }),
+    defineCommand({
+      name: 'scroll-to-top',
+      mcp: 'never',
+      doc: 'Scroll the current page buffer to its top.',
+      run: () => {
+        pages.scroll('top')
+      },
+    }),
+    defineCommand({
+      name: 'scroll-to-bottom',
+      mcp: 'never',
+      doc: 'Scroll the current page buffer to its bottom.',
+      run: () => {
+        pages.scroll('bottom')
+      },
+    }),
+    defineCommand({
+      name: 'find-in-page',
+      mcp: 'never',
+      doc: 'Read a text and find it in the current page buffer; the same text again finds the next match, an empty one clears.',
+      run: () => {
+        prompter.read({ source: 'find-in-page', prompt: 'Find in page:', freeText: true }, (text) =>
+          pages.find(text),
+        )
+      },
+    }),
+    defineCommand({
+      name: 'zoom-in',
+      mcp: 'never',
+      doc: "Zoom the current page buffer in one step, for every page of its origin, as Chromium's zoom does.",
+      run: () => {
+        pages.zoom(1)
+      },
+    }),
+    defineCommand({
+      name: 'zoom-out',
+      mcp: 'never',
+      doc: "Zoom the current page buffer out one step, for every page of its origin, as Chromium's zoom does.",
+      run: () => {
+        pages.zoom(-1)
+      },
+    }),
+    defineCommand({
+      name: 'copy-page-selection',
+      mcp: 'never',
+      doc: "Copy the current page buffer's selection to the clipboard.",
+      run: () => {
+        pages.copy()
+      },
+    }),
+    defineCommand({
+      name: 'toggle-passthrough',
+      mcp: 'never',
+      doc: 'Send every key but C-z to the current page buffer, for a site with its own keys; C-z again gives them back.',
+      run: () => {
+        pages.togglePassthrough()
+      },
+    }),
     defineCommand({
       name: 'kill-buffer',
       doc: 'Kill the current buffer.',
@@ -1289,6 +1381,11 @@ export function cockpitSources(
       name: 'page-url',
       candidates: () => [],
     },
+    // The text find-in-page reads (#120); nothing to choose from.
+    {
+      name: 'find-in-page',
+      candidates: () => [],
+    },
     {
       name: 'journal',
       candidates: () =>
@@ -1399,6 +1496,40 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   }),
 }
 
+/**
+ * The modes of a page buffer (#120, ADR 0004), consulted before the `page`
+ * map and the global one. `document` is on in every page buffer and stays
+ * small, as Nyxt keeps its own: what it does not bind, `C-x`, `C-c` and
+ * `M-x` chords and `C-g` among them, falls through to the cockpit's maps,
+ * and what no layer binds goes to the page. `passthrough` is sealed: its
+ * only key is its own exit, and every other key, `C-g` included, is the
+ * page's while it is on.
+ */
+export const MODE_KEYMAPS: ModeKeymaps = {
+  [DOCUMENT_MODE]: {
+    keymap: defineKeymap(DOCUMENT_MODE, {
+      'C-v': 'scroll-page-down',
+      'M-v': 'scroll-page-up',
+      'C-n': 'scroll-line-down',
+      'C-p': 'scroll-line-up',
+      '<': 'scroll-to-top',
+      '>': 'scroll-to-bottom',
+      'C-s': 'find-in-page',
+      'C-+': 'zoom-in',
+      'C--': 'zoom-out',
+      'M-w': 'copy-page-selection',
+      g: 'reload-page',
+      'C-z': 'toggle-passthrough',
+    }),
+  },
+  [PASSTHROUGH_MODE]: {
+    keymap: defineKeymap(PASSTHROUGH_MODE, {
+      'C-z': 'toggle-passthrough',
+    }),
+    sealed: true,
+  },
+}
+
 /** The chord that abandons a half-typed sequence. */
 export const ABORT_CHORD = 'C-g'
 
@@ -1439,6 +1570,11 @@ export function cockpitKeymapLayers(): readonly KeymapLayer[] {
       keymap,
       bufferType,
     })),
+    // The page modes are a page buffer's only, for now (#120).
+    ...Object.values(MODE_KEYMAPS).map((mode) => ({
+      keymap: mode.keymap,
+      bufferType: 'page' as const,
+    })),
   ]
 }
 
@@ -1470,6 +1606,7 @@ export function createCockpitResolver(): KeyResolver {
   return new KeyResolver({
     global: GLOBAL_KEYMAP,
     byBufferType: BUFFER_KEYMAPS,
+    modes: MODE_KEYMAPS,
     user: userKeymap,
     abort: ABORT_CHORD,
   })
@@ -1479,6 +1616,10 @@ export function createCockpitResolver(): KeyResolver {
 export function createCockpitDispatcher(partial: Partial<CockpitDeps> = {}): KeyDispatcher {
   const deps = resolveCockpitDeps(partial)
   const registry = createCockpitRegistry(deps)
-  assertBindingsAreRegistered(registry, [GLOBAL_KEYMAP, ...Object.values(BUFFER_KEYMAPS)])
+  assertBindingsAreRegistered(registry, [
+    GLOBAL_KEYMAP,
+    ...Object.values(BUFFER_KEYMAPS),
+    ...Object.values(MODE_KEYMAPS).map((mode) => mode.keymap),
+  ])
   return new KeyDispatcher(registry, createCockpitResolver(), deps.keys)
 }
