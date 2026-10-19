@@ -1,7 +1,7 @@
 #+TITLE: Getting started: the first fifteen minutes with Nemesis
 #+OPTIONS: toc:nil
 
-This page takes you from a fresh clone to a session, a page buffer and a first line of your own config. It is modeled on Nyxt's getting-started guide: every step is a key, and every key named here is bound in =src/main/commands/keyscheme.ts= on main. Written on 2026-OCTOBER-19. Chords are in Emacs notation (ADR 0002): =C-x= is Control and x together, =M-x= is Meta and x, and a space separates the keys of a chord.
+This page takes you from a fresh clone to a session, a page buffer and a first line of your own config. It is modeled on Nyxt's getting-started guide: every step is a key, and every key named here is bound in =src/main/commands/keyscheme.ts= on main. Written on 2026-OCTOBER-19 and extended the same day for the browser stack (sections 11 to 14, optional). Chords are in Emacs notation (ADR 0002): =C-x= is Control and x together, =M-x= is Meta and x, and a space separates the keys of a chord.
 
 * 1. Install and open (minutes 0 to 3)
 
@@ -21,7 +21,7 @@ The window opens on the prompt buffer, a text area with Emacs keys. Type a reque
 - =C-x b= switches buffers, =C-x k= kills the current one.
 - =C-c C-l= clears the context and =C-c C-k= compacts it; the context meter on the mode line shows how full it is.
 - =C-c C-p= toggles plan mode: the plan opens as a buffer, and there =C-c C-c= approves it and =C-c C-k= rejects it.
-- =C-c C-v= runs the verify command of the project and =C-c C-r= reviews a diff.
+- =C-c C-v= runs the verify command of the project and =C-c C-r= reviews a diff, in every buffer but a page buffer: there it is reader mode (section 11).
 - =C-g= abandons a half-typed chord and closes the palette; with nothing open it stops the running turn and keeps the context.
 
 In the prompt, =@= at the start of a word mentions a file with completion, =C-c C-i= attaches an image and =C-c C-u= fetches a URL as untrusted content.
@@ -83,7 +83,7 @@ A page buffer keeps its keys small, as Nyxt's document mode does. What it does n
 | =C-z=     | Passthrough: every key but =C-z= goes to the page        |
 | =C-c S=   | Share the page through the system share menu             |
 
-A site with keys of its own, a web mail or an editor, needs passthrough: press =C-z=, use the site, press =C-z= to get the cockpit back. Going back and forward is a trackpad swipe, or =M-x go-back= and =M-x go-forward=.
+A site with keys of its own, a web mail or an editor, needs passthrough: press =C-z=, use the site, press =C-z= to get the cockpit back. Going back and forward is a trackpad swipe, or =M-x go-back= and =M-x go-forward=. The page's own tools, hints, the semantic view, reader mode and the form guide, are section 11.
 
 * 7. History and bookmarks (minutes 11 to 12)
 
@@ -132,6 +132,67 @@ nemesis.defineKeymap('user', {
 
 =M-x count-buffers= now runs, and so does the key you bound. A mistake in the file opens a help buffer with the line and column, and the previous config stays live. The environment panel (=C-c C-e=) lists the file as loaded or as an error.
 
+* 11. The page's own tools (optional, minutes 15 to 25)
+
+Five keys work on a page buffer and nowhere else. Each is a command too, so =C-h k= asks any of them what it does.
+
+** The semantic view: =C-c C-s=
+
+=C-c C-s= (=show-semantic-view=) opens a read-only buffer with the page's landmarks, headings, links, buttons and fields, each with a =ref=. It is the same view an outside agent gets from =browser_snapshot= (section 14), so it shows what a driver can see and name.
+
+** Hints: =f= and =F=
+
+In a page buffer, =f= (=follow-hint=) puts a short label on every interactive element in view; type the letters of a label and a link is followed, a button pressed and a field focused. =F= (=copy-hint-url=) does the same but copies the link's URL. =C-g= takes the labels down. The labels come from the =hints.alphabet= setting (the home row by default) and are at most =hints.maxLength= long (=docs/config.org=). While the labels are up every key is a label key: nothing else gets it.
+
+** Reader mode: =C-c C-r=, export and attach
+
+=C-c C-r= in a page buffer is =reader-mode=: the page's main text, stripped of chrome, in a read-only buffer with title, headings, paragraphs, lists and the links as numbered footnotes. Two commands without a key work from the page or from its reader buffer:
+
+- =M-x export-page-text= writes the text as an Org file in the =pages= folder of the sessions folder, headed by the page's origin and the time, so a later session can cite it. It never overwrites an earlier export.
+- =M-x attach-page-text= puts the text into the prompt, wrapped as untrusted content from the page's origin, and switches to the prompt buffer. The page is data, not instructions.
+
+=C-c C-r= is bound twice, and the buffer decides:
+
+| Buffer                                              | =C-c C-r= runs                         |
+|-----------------------------------------------------+----------------------------------------|
+| A page buffer                                       | =reader-mode=, the page as text        |
+| Any other buffer: prompt, transcript, plan, reader  | =review-diff=, a reviewer window       |
+
+** The form guide: =C-c C-w= and =C-c C-y=
+
+=C-c C-w= (=form-guide-mode=) starts watching the form in the page buffer and opens a pane beside the page that guides the filling, field by field; press it again to stop. The guide never types, clicks or submits. While it watches, =C-c C-y= (Emacs's yank) types the shown suggestion into the focused field, when that is the field the suggestion names. A password or card field is masked in the page, so the guide never sees its value, and you type it yourself.
+
+** Share, swipe and full screen
+
+- =C-c S= (=share-page=) pops the system share menu with the page's URL and title. Nothing is sent until you pick a target there.
+- A trackpad swipe goes back and forward through the page's history, as =M-x go-back= and =M-x go-forward= do. macOS must allow it: System Settings, Trackpad, More Gestures, Swipe between pages.
+- =C-x 5 F= (=toggle-full-screen=) puts the window in full screen and back; the page follows the new size.
+
+* 12. Downloads (optional)
+
+A page that offers a file does not get to write it. The offer is refused the moment it arrives, and the prompt buffer asks, with the filename, the size and the origin, and the no highlighted, so a stray RET declines.
+
+- On a no, nothing is written anywhere, and a notice says so.
+- On a yes, Nemesis requests the file itself, within 30 seconds of your answer, into =~/Downloads/nemesis-quarantine/=. The file carries the macOS quarantine attribute, and Nemesis never opens it: Gatekeeper asks when you do.
+- A refused offer leaves nothing in =~/Downloads=. While an offer waits for your answer, Chromium's temporary bytes sit in a staging folder in the profile, =download-staging/<pid>/=, readable by you alone and removed at quit (#137). The design is =SECURITY.org= (T2).
+
+* 13. Session restore (optional)
+
+At quit, each window's page buffers and its folder are written to =windows.json= in the profile; at the next start the same windows reopen with their pages, each loaded when you first show it. Only a page's URL and title are saved, never its content, and a page in the ephemeral partition is never saved. The agent session is not restored: a restored window starts without one, and =M-x resume-session= brings a past one back (section 5).
+
+- Start with =--no-restore= to skip the reopening once, the way =--no-config= skips the config.
+- Set the =restore= setting to =false= in =init.ts= to neither save nor reopen (=docs/config.org=).
+
+* 14. Let an outside Claude drive the cockpit (optional)
+
+A running Nemesis is an MCP server: a =claude= in a terminal can list its commands, read its buffers and its pages, and act through the same command table, under the same questions. Open Nemesis, then from the checkout:
+
+#+begin_src sh
+claude mcp add --scope local nemesis -- node "$PWD/bin/nemesis-mcp"
+#+end_src
+
+Then =/mcp= in =claude= shows =nemesis= connected. Reads answer at once; anything that acts, navigates or types asks you first, in the prompt buffer, and the no is highlighted. Every tool and its class, the Claude Desktop setup and the rules for the page tier are in =docs/mcp.org=.
+
 * Where each piece is documented
 
 | Topic                                   | Read                                                      |
@@ -142,7 +203,7 @@ nemesis.defineKeymap('user', {
 | The prompt buffer and the palette       | ADR 0003                                                  |
 | Page modes such as document, passthrough | ADR 0004                                                 |
 | Threat model, the blocker, privacy      | =SECURITY.org=                                            |
-| Outside agents driving Nemesis (MCP)    | README.org, ADR 0007 and ADR 0008                         |
+| Outside agents driving Nemesis (MCP)    | =docs/mcp.org=, ADR 0007 to ADR 0009                      |
 | Toolchain, the gate, notifications      | =CONTRIBUTING.org=                                        |
 | Why each feature exists                 | =docs/guidelines-map.org=, =docs/comparison.org=          |
 | Releases, signing                       | =docs/release-checklist.org=                              |
