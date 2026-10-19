@@ -21,6 +21,9 @@ asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk-*/claude.exe
 mac:
   target: dir
+  # The mark of #91 in the bundle, so Finder and the Dock show it (#148);
+  # electron-builder looks only in build/ unless told.
+  icon: resources/icon.icns
   # Signing (#36). `npm run package` signs nothing (CSC_IDENTITY_AUTO_DISCOVERY
   # is off), so these apply only to `npm run package:signed`, a Developer ID
   # build that is then notarized, and `npm run package:hardened`, an ad hoc
