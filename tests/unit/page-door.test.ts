@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  decodeQuery,
+  encodeQuery,
   MAX_MUTATION_SUMMARY,
+  MAX_NODE_TEXT,
+  MAX_QUERY_HTML,
+  MAX_QUERY_MATCHES,
+  MAX_QUERY_SELECTOR,
+  MAX_SELECT_OPTIONS,
   MAX_PAGE_TITLE,
   MAX_TEXT_CHARS,
   MUTATION_RING,
@@ -178,6 +185,103 @@ describe('the mutations answer (#29)', () => {
     ]) {
       expect(() => parsePageAnswer('mutations', bad)).toThrow()
     }
+  })
+})
+
+describe('the query request and answer (#141, ADR 0009 amendment)', () => {
+  it('carries the selector as code units after the limit, and reads it back whole', () => {
+    const selector = 'form#login > input[name="q"]:not([hidden]), a[href^="/é"]'
+    const args = encodeQuery(selector, 7)
+    expect(args[0]).toBe(7)
+    expect(args.every((one) => Number.isSafeInteger(one))).toBe(true)
+    expect(decodeQuery(args)).toEqual({ selector, limit: 7 })
+    expect(decodeQuery(encodeQuery('x'.repeat(MAX_QUERY_SELECTOR), 1)).selector).toHaveLength(
+      MAX_QUERY_SELECTOR,
+    )
+  })
+
+  it('refuses an empty or oversized selector and a limit out of range, either way', () => {
+    expect(() => encodeQuery('', 1)).toThrow()
+    expect(() => encodeQuery('x'.repeat(MAX_QUERY_SELECTOR + 1), 1)).toThrow()
+    expect(() => encodeQuery('a', 0)).toThrow()
+    expect(() => encodeQuery('a', MAX_QUERY_MATCHES + 1)).toThrow()
+    expect(() => decodeQuery([])).toThrow()
+    expect(() => decodeQuery([1])).toThrow()
+    expect(() => decodeQuery([0, 97])).toThrow()
+    expect(() => decodeQuery([1, 0x10000])).toThrow()
+    expect(() =>
+      decodeQuery([1, ...Array.from({ length: MAX_QUERY_SELECTOR + 1 }, () => 97)]),
+    ).toThrow()
+  })
+
+  it('takes a status, a count and bounded matches, and nothing else', () => {
+    const match = { id: 3, masked: 0, html: '<a href="/">Home</a>' }
+    expect(parsePageAnswer('query', { status: 'ok', matched: 9, matches: [match] })).toEqual({
+      status: 'ok',
+      matched: 9,
+      matches: [match],
+    })
+    const many = Array.from({ length: MAX_QUERY_MATCHES + 1 }, (_, index) => ({
+      ...match,
+      id: index + 1,
+    }))
+    for (const bad of [
+      { status: 'eval', matched: 0, matches: [] },
+      { status: 'ok', matched: -1, matches: [] },
+      { status: 'ok', matched: 51, matches: many },
+      { status: 'ok', matched: 1, matches: [{ ...match, html: 'x'.repeat(MAX_QUERY_HTML + 1) }] },
+      { status: 'ok', matched: 1, matches: [{ ...match, masked: 2 }] },
+      { status: 'ok', matched: 1, matches: [{ ...match, id: 0 }] },
+      { status: 'ok', matched: 1, matches: [{ ...match, value: 'hunter2' }] },
+      { status: 'ok', matched: 0, matches: [], script: 'alert(1)' },
+      { status: 'ok', matched: 0 },
+    ]) {
+      expect(() => parsePageAnswer('query', bad)).toThrow()
+    }
+  })
+})
+
+describe("the options and select answers (#141, the door's one write)", () => {
+  const option = { value: 'ca', label: 'Canada', disabled: 0 }
+
+  it('takes bounded options of a select, and a status and a count for the write', () => {
+    expect(parsePageAnswer('options', { status: 'ok', multiple: 0, options: [option] })).toEqual({
+      status: 'ok',
+      multiple: 0,
+      options: [option],
+    })
+    expect(parsePageAnswer('select', { status: 'ok', selected: 1 })).toEqual({
+      status: 'ok',
+      selected: 1,
+    })
+    const many = Array.from({ length: MAX_SELECT_OPTIONS + 1 }, () => option)
+    for (const bad of [
+      { status: 'ok', multiple: 2, options: [] },
+      { status: 'ok', multiple: 0, options: many },
+      { status: 'ok', multiple: 0, options: [{ ...option, label: 'x'.repeat(MAX_NODE_TEXT + 1) }] },
+      { status: 'ok', multiple: 0, options: [{ ...option, selected: true }] },
+      { status: 'chosen', multiple: 0, options: [] },
+    ]) {
+      expect(() => parsePageAnswer('options', bad)).toThrow()
+    }
+    for (const bad of [
+      { status: 'ok', selected: -1 },
+      { status: 'ok', selected: MAX_SELECT_OPTIONS + 1 },
+      { status: 'ok', selected: 1, value: 'ca' },
+      { status: 'done', selected: 1 },
+    ]) {
+      expect(() => parsePageAnswer('select', bad)).toThrow()
+    }
+  })
+
+  it("sets a select's choice in the preload, by index, and nothing in the page evaluates", () => {
+    const preload = readFileSync(resolve(ROOT, 'src/preload/page.ts'), 'utf8')
+    // The one write: a select's choice, and the two events a user's choice fires.
+    expect(preload).toContain("new IsolatedEvent('input'")
+    expect(preload).toContain("new IsolatedEvent('change'")
+    // The selector reaches querySelectorAll and nothing else.
+    expect(preload.match(/querySelectorAll\(selector\)/g)).toHaveLength(1)
+    expect(preload).not.toMatch(/\.matches\(selector\)|closest\(selector\)/)
   })
 })
 

@@ -11,14 +11,25 @@
  * before a consumer existed; the semantic view (#122) adds `snapshot`, and
  * hint mode (#123) adds `hints` and `hints-show`, reader mode (#128)
  * adds `reader`, the form guide (#94) adds `form`, the MCP page tier
- * (#138) adds `text`, and its mutation feed (#29) adds `mutations`.
+ * (#138) adds `text`, its mutation feed (#29) adds `mutations`, and
+ * `browser_query` and `browser_select_option` (#141) add `query`, `options`
+ * and `select`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
  * text a page wrote. `hints-show` takes labels as code points, `form`
  * takes one number, the change count main last saw, `text` takes three:
  * the element's number, the first character and how many, and `mutations`
- * one, the last record number main holds.
+ * one, the last record number main holds. `options` takes an element's
+ * number, and `select` that number, the option count main read and the
+ * chosen options' indexes.
+ *
+ * Two exceptions, ADR 0009's amendment for #141. `query` carries one string,
+ * the agent's CSS selector, at most MAX_QUERY_SELECTOR characters, as its
+ * code points: text, but text main received from the agent, never from a
+ * page, and the preload only hands it to `querySelectorAll`, which selects
+ * and cannot call code. `select` is the door's one write: it sets a
+ * `<select>`'s chosen options and dispatches `input` and `change`.
  */
 
 /** Main to the page preload: `{ id, name }`, no code and no free text. */
@@ -391,6 +402,88 @@ export interface MutationsAnswer {
   readonly records: readonly MutationRecordAnswer[]
 }
 
+/** The longest CSS selector `query` carries (#141). */
+export const MAX_QUERY_SELECTOR = 512
+
+/** The most matches one `query` answer carries; `matched` counts them all. */
+export const MAX_QUERY_MATCHES = 50
+
+/** The longest outer HTML one match carries; a longer one is cut. */
+export const MAX_QUERY_HTML = 4000
+
+/**
+ * What a `query` found: matches, a selector the page's engine cannot parse,
+ * or a refusal because the document holds a secret field whose `value`
+ * attribute is set, which an attribute selector could test a character at a
+ * time, so no selector is answered on that document.
+ */
+export const QUERY_STATUSES = ['ok', 'invalid', 'masked'] as const
+
+export type QueryStatus = (typeof QUERY_STATUSES)[number]
+
+/**
+ * One element a selector matched: the preload's number for it, the
+ * snapshot's own (#122), so main makes a ref of it, and its outer HTML, cut.
+ * `masked` is 1, and `html` empty, when it is or holds a secret field.
+ */
+export interface QueryMatch {
+  readonly id: number
+  readonly masked: number
+  readonly html: string
+}
+
+/** `query` (#141): how many elements matched, and the first ones, in document order. */
+export interface QueryAnswer {
+  readonly status: QueryStatus
+  readonly matched: number
+  readonly matches: readonly QueryMatch[]
+}
+
+/** The most options one `options` answer carries; a `<select>` past it is not chosen in. */
+export const MAX_SELECT_OPTIONS = 500
+
+/**
+ * What an `options` read or a `select` found: done; a secret field, refused
+ * before any value is read; no element under that number; an element that
+ * is no `<select>`; a disabled one; options that changed since main read
+ * them; or a choice the `<select>` cannot take (a disabled option, two on a
+ * single choice).
+ */
+export const SELECT_STATUSES = [
+  'ok',
+  'masked',
+  'gone',
+  'not-select',
+  'disabled',
+  'changed',
+  'invalid',
+] as const
+
+export type SelectStatus = (typeof SELECT_STATUSES)[number]
+
+/** One option of a `<select>`: its value and its label, page content both, and whether it is disabled. */
+export interface SelectOption {
+  readonly value: string
+  readonly label: string
+  readonly disabled: number
+}
+
+/**
+ * `options` (#141): a `<select>`'s options, in order, and whether it takes
+ * several. Empty unless `status` is `ok`.
+ */
+export interface OptionsAnswer {
+  readonly status: SelectStatus
+  readonly multiple: number
+  readonly options: readonly SelectOption[]
+}
+
+/** `select` (#141): how it went, and how many options are chosen after it. */
+export interface SelectAnswer {
+  readonly status: SelectStatus
+  readonly selected: number
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
@@ -401,6 +494,9 @@ export interface PageAnswers {
   readonly form: FormAnswer
   readonly text: TextAnswer
   readonly mutations: MutationsAnswer
+  readonly query: QueryAnswer
+  readonly options: OptionsAnswer
+  readonly select: SelectAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -534,6 +630,36 @@ export const PAGE_ANSWERS: {
       }),
     } as const,
   }),
+  query: Object.freeze({
+    status: { kind: 'enum', values: QUERY_STATUSES } as const,
+    matched: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    matches: {
+      kind: 'list',
+      max: MAX_QUERY_MATCHES,
+      item: Object.freeze({
+        id: { kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+        masked: { kind: 'number', min: 0, max: 1, integer: true } as const,
+        html: { kind: 'string', max: MAX_QUERY_HTML } as const,
+      }),
+    } as const,
+  }),
+  options: Object.freeze({
+    status: { kind: 'enum', values: SELECT_STATUSES } as const,
+    multiple: { kind: 'number', min: 0, max: 1, integer: true } as const,
+    options: {
+      kind: 'list',
+      max: MAX_SELECT_OPTIONS,
+      item: Object.freeze({
+        value: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        label: { kind: 'string', max: MAX_NODE_TEXT } as const,
+        disabled: { kind: 'number', min: 0, max: 1, integer: true } as const,
+      }),
+    } as const,
+  }),
+  select: Object.freeze({
+    status: { kind: 'enum', values: SELECT_STATUSES } as const,
+    selected: { kind: 'number', min: 0, max: MAX_SELECT_OPTIONS, integer: true } as const,
+  }),
 })
 
 /** What main sends. */
@@ -612,6 +738,43 @@ export function decodeHintLabels(args: readonly number[]): readonly HintLabel[] 
     at += 2 + length
   }
   return labels
+}
+
+/**
+ * `query`'s args: how many matches to carry, then the selector's characters
+ * as UTF-16 code units. Throws on an empty selector, one past
+ * MAX_QUERY_SELECTOR, or a limit outside 1 to MAX_QUERY_MATCHES.
+ */
+export function encodeQuery(selector: string, limit: number): readonly number[] {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_QUERY_MATCHES) {
+    throw new TypeError('The query has no usable limit')
+  }
+  if (selector.length === 0 || selector.length > MAX_QUERY_SELECTOR) {
+    throw new TypeError('The query has no usable selector')
+  }
+  const args = [limit]
+  for (let index = 0; index < selector.length; index += 1) args.push(selector.charCodeAt(index))
+  return args
+}
+
+/** `query`'s args read back, as the page preload reads them. Throws on anything malformed. */
+export function decodeQuery(args: readonly number[]): {
+  readonly selector: string
+  readonly limit: number
+} {
+  const [limit, ...codes] = args
+  if (limit === undefined || limit < 1 || limit > MAX_QUERY_MATCHES) {
+    throw new TypeError('The query has no usable limit')
+  }
+  if (codes.length === 0 || codes.length > MAX_QUERY_SELECTOR) {
+    throw new TypeError('The query has no usable selector')
+  }
+  let selector = ''
+  for (const code of codes) {
+    if (code < 0 || code > 0xffff) throw new TypeError('The selector is not code units')
+    selector += String.fromCharCode(code)
+  }
+  return { selector, limit }
 }
 
 /** A reply's envelope, its `data` not yet parsed. */

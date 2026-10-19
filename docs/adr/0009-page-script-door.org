@@ -118,6 +118,41 @@ life, which main polls, so =watch-form= and =unwatch-form= were not needed.
 =hints-show= and =form= carry the door's only arguments, numbers alone
 (labels travel as code points), as the next rule allows.
 
+Amendment of 2026-OCTOBER-19 (#141, option A, picked by Pedro in session):
+two rows of ADR 0008's page tier need a wider door, and get two
+exceptions, each its own request name with a schema, and nothing else of
+these rules changes.
+
+- =query= carries one string: a CSS selector the agent sent to
+  =browser_query=, at most 512 characters, as its code units after the
+  match limit, so the request's =args= stay numbers on the wire. The
+  string is the agent's, never the page's, and the preload hands it to
+  =querySelectorAll= in the isolated world and nowhere else: a selector
+  selects, it cannot call code. The answer is the match count and, for at
+  most 50 matches, the element's number and its outer HTML cut at 4000
+  characters, which main puts in =wrapUntrusted='s block. A match that is
+  or holds a secret field of #94's masking list gives its number and no
+  HTML; and since an attribute selector can test a =value= attribute a
+  character at a time, a document where a secret field carries a non-empty
+  =value= attribute answers no selector at all.
+- =select= is the door's one write: it sets a =<select>='s chosen options
+  by option index (numbers only: the element's number, the option count
+  main read, the indexes) and dispatches =input= and =change= from the
+  element, as a user's choice would. Input synthesized in main does not
+  reach the native menu a =<select>= opens on macOS, which is why this
+  write is in the page. It is refused on a secret field, a disabled
+  =<select>= or option, a count that no longer matches (the options
+  changed), and two indexes on a single choice. Main learns the options
+  through =options=, a read like the others (the element's number in, each
+  option's value, label and disabled flag out); it matches the agent's
+  =values= against them, by value and then by label, so the values never
+  cross the door.
+
+The door's promise is now "read-only but for one write": =select=, the one
+request that changes what the page holds, and only after the user's yes on
+=browser_select_option=. The hint overlay's host stays the one node the
+door adds.
+
 ** Rule: main asks by name, the script answers data
 
 - Requests flow one way: main sends ={id, name}= on one channel to the page's

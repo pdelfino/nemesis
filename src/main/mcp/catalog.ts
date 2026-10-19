@@ -1,6 +1,14 @@
 import { z } from 'zod'
 import { MAX_PROMPT_LENGTH } from '../../shared/agent'
-import { MAX_PAGE_URL, MAX_TEXT_CHARS } from '../../shared/page-door'
+import {
+  MAX_NODE_TEXT,
+  MAX_PAGE_URL,
+  MAX_QUERY_HTML,
+  MAX_QUERY_MATCHES,
+  MAX_QUERY_SELECTOR,
+  MAX_SELECT_OPTIONS,
+  MAX_TEXT_CHARS,
+} from '../../shared/page-door'
 import { CONSOLE_RING } from '../pages/console'
 import { MAX_MATCHES } from '../transcript-search'
 import { SESSION_NAME_LENGTH } from '../transcripts'
@@ -22,7 +30,8 @@ import { SESSION_NAME_LENGTH } from '../transcripts'
  * which click, hover, type, press keys, drag and capture, the last two kinds
  * each asked once per call: on the socket in the prompt buffer, inside the
  * cockpit by the permission bridge, which offers no `a` for a `browser_`
- * name. Their structure holds
+ * name. `browser_query` reads and `browser_select_option` acts through ADR
+ * 0009's two exceptions to the door's rules (#141). Their structure holds
  * only what Nemesis controls; the page's own strings come in one
  * `wrapUntrusted` block (page-tier.ts). No row evaluates code, for any
  * client (ADR 0008, "tools that never exist").
@@ -88,6 +97,9 @@ export const READ_TEXT_CHARS = 20_000
 
 /** The console entries `browser_get_console_logs` returns when `limit` is not given. */
 export const CONSOLE_LIMIT = 100
+
+/** The matches `browser_query` carries when `limit` is not given. */
+export const QUERY_LIMIT = 10
 
 /** A navigation tool waits this long, in seconds, for the load to settle before it answers. */
 export const SETTLE_CAP_SECONDS = 15
@@ -346,6 +358,24 @@ export const CATALOG: readonly CatalogTool[] = [
     }),
   },
   {
+    name: 'browser_query',
+    tier: 'browser',
+    description: `Find elements by a CSS selector, at most ${MAX_QUERY_SELECTOR} characters, run in the page's isolated world, where a selector selects and cannot call code. \`matched\` counts every match; the first \`limit\` (${QUERY_LIMIT} by default, at most ${MAX_QUERY_MATCHES}) come with their ref and outer HTML, cut at ${MAX_QUERY_HTML} characters, and \`truncated\` says more matched. An element that is or holds a secret field shows its ref and no HTML, and a page whose secret field carries a value attribute answers no selector: the human reads it. ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'free',
+    inApp: true,
+    args: z.object({
+      page: pageArg,
+      selector: z.string().min(1).max(MAX_QUERY_SELECTOR),
+      limit: z.number().int().min(1).max(MAX_QUERY_MATCHES).optional(),
+    }),
+    returns: z.object({
+      page: z.string(),
+      origin: z.string(),
+      matched: z.number(),
+      truncated: z.boolean(),
+    }),
+  },
+  {
     name: 'browser_navigate',
     tier: 'browser',
     description: `Load a URL in a page buffer; a host alone is opened on https:. ${NAVIGATION} ${PAGE_DEFAULT} ${UNTRUSTED}`,
@@ -427,6 +457,25 @@ export const CATALOG: readonly CatalogTool[] = [
       origin: z.string(),
       ref: z.string(),
       submitted: z.boolean(),
+    }),
+  },
+  {
+    name: 'browser_select_option',
+    tier: 'browser',
+    description: `Choose options in a dropdown, a \`<select>\`: each of \`values\` names an option by its value, else by its label, and a single-choice dropdown takes one. The choice is set in the page and announced with input and change events, as a user's choice is, since a native dropdown's menu takes no synthesized input. A secret field (a card's expiry, say) is refused before anyone is asked: the human chooses it. ${ELEMENT} Asks the user once per call. Answers once the page settles, with the page's snapshot; \`selected\` is how many options are chosen after it. ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({
+      element: elementArg,
+      ref: refArg,
+      values: z.array(z.string().max(MAX_NODE_TEXT)).min(1).max(MAX_SELECT_OPTIONS),
+      page: pageArg,
+    }),
+    returns: z.object({
+      page: z.string(),
+      origin: z.string(),
+      ref: z.string(),
+      selected: z.number(),
     }),
   },
   {

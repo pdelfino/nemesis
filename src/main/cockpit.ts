@@ -37,7 +37,7 @@ import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
 import { installSwipe, PageBuffers, type PagePolicies } from './page-buffer'
 import type { PageScriptDoor } from './page-door'
-import type { PageAnswers } from '../shared/page-door'
+import { encodeQuery, type PageAnswers, type PageRequestName } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
 import { FormGuide } from './pages/form-guide'
@@ -507,6 +507,25 @@ export function createCockpit(
   // exist below; the server reads them at call time. A client that connected
   // while this window was focused drives this cockpit (#70). What the window
   // is pushed of every other buffer kind is kept for its reads (#117).
+  /**
+   * A door request about a page's current document (#141): the answer and
+   * the document number refs are made under, refused when the page
+   * navigated while it was asked.
+   */
+  const askDocument = async <N extends PageRequestName>(
+    pageId: string,
+    name: N,
+    args: readonly number[],
+  ): Promise<{ answer: PageAnswers[N]; document: number }> => {
+    const view = pages.viewOf(pageId)
+    if (view === undefined) throw new Error('The page is gone')
+    const document = semantic.currentDocument(pageId)
+    const answer = await shared.pageDoor.request(view.webContents, name, args)
+    if (semantic.currentDocument(pageId) !== document) {
+      throw new Error('The page navigated while it was asked')
+    }
+    return { answer, document }
+  }
   const texts = new BufferTexts(buffers)
   const shown = (content: { readonly text: string }): string => content.text
   texts.follow(diffs, (content) => diffText(content.diff))
@@ -561,6 +580,15 @@ export function createCockpit(
       },
       console: consoleLog,
       events: (listener) => pages.onPageEvent(listener),
+      // ADR 0009's two exceptions (#141): the agent's selector, as code
+      // points, and a `<select>`'s choice, by option index.
+      query: (pageId, selector, limit) =>
+        askDocument(pageId, 'query', encodeQuery(selector, limit)),
+      selects: {
+        options: (pageId, element) => askDocument(pageId, 'options', [element]),
+        select: (pageId, element, count, indexes) =>
+          askDocument(pageId, 'select', [element, count, ...indexes]),
+      },
       // The navigation tools (#139), through the paths the keys take, so
       // the navigation and transport policies decide. A page the agent
       // opens does not take the user's point.

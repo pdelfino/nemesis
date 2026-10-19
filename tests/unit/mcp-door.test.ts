@@ -73,8 +73,9 @@ function png(width: number, height: number): string {
 /**
  * One page buffer to act on (#140), scrolled 1000 px down: a link and a
  * search field in view, a masked password field, an image the hint read does
- * not report, and a region far below the fold. Every string the page wrote
- * carries a canary; what the acts did is recorded in order.
+ * not report, a region far below the fold, and two dropdowns, a country and
+ * a masked card expiry (#141). Every string the page wrote carries a canary;
+ * what the acts did is recorded in order.
  */
 function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps {
   return (buffers) => {
@@ -101,6 +102,8 @@ function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps 
         node(3, 'textbox', 'Password', 1090, masked),
         node(4, 'img', 'NEMESIS-IMG-CANARY', 1200),
         node(5, 'button', 'Far below', 5000),
+        node(6, 'combobox', 'Country', 1130),
+        node(7, 'combobox', 'Expiry', 1170, masked),
       ],
     })
     let focused = 0
@@ -129,6 +132,27 @@ function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps 
       console: { read: () => ({ entries: [], truncated: false }) },
       events: () => () => undefined,
       moves: { load: never, create: never, step: never, close: never },
+      selects: {
+        options: async (_id, element) => ({
+          document: 4,
+          answer:
+            element === 6
+              ? {
+                  status: 'ok',
+                  multiple: 0,
+                  options: [
+                    { value: 'ca', label: 'Canada', disabled: 0 },
+                    { value: 'fr', label: 'NEMESIS-OPTION-CANARY', disabled: 0 },
+                    { value: 'xx', label: 'Closed', disabled: 1 },
+                  ],
+                }
+              : { status: element === 7 ? 'masked' : 'not-select', multiple: 0, options: [] },
+        }),
+        select: async (_id, element, count, indexes) => {
+          acted.push(`select ${element} ${count} ${indexes.join(',')}`)
+          return { document: 4, answer: { status: 'ok', selected: indexes.length } }
+        },
+      },
       acts: {
         hints: async () => ({
           nodes: [1, 2, 3].map((id) => ({
@@ -560,6 +584,39 @@ describe('the MCP door (#28, ADR 0007)', () => {
     ).rejects.toThrow('masked field: the human types it')
   })
 
+  it('refuses a select_option the dropdown cannot take before any question, and chooses nothing (#141)', async () => {
+    const acted: string[] = []
+    const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted))
+    const refusals: [Record<string, unknown>, string][] = [
+      [{ ref: 'd4e7', values: ['12'] }, 'masked field: the human chooses it'],
+      [{ ref: 'd4e1', values: ['a'] }, 'is not a <select>'],
+      [{ ref: 'd4e6', values: ['de'] }, 'No option of d4e6 has the value or label "de"'],
+      [{ ref: 'd4e6', values: ['xx'] }, 'The option "xx" of d4e6 is disabled'],
+      [{ ref: 'd4e6', values: ['ca', 'fr'] }, 'takes one choice'],
+      [{ ref: 'd3e6', values: ['ca'] }, 'take a new snapshot'],
+    ]
+    for (const [args, said] of refusals) {
+      const result = await mcp.call(
+        'browser_select_option',
+        { element: 'the dropdown', ...args },
+        { door: 'socket', client: 'claude-code' },
+      )
+      expect(result.isError, said).toBe(true)
+      const [item] = result.content as readonly { readonly text?: string }[]
+      expect(item?.text, said).toContain(said)
+      expect(prompter.pending, said).toBeNull()
+    }
+    // The in-app door is refused the same way, before the bridge asks.
+    await expect(
+      mcp.inAppQuestion('browser_select_option', {
+        element: 'Expiry',
+        ref: 'd4e7',
+        values: ['12'],
+      }),
+    ).rejects.toThrow('masked field: the human chooses it')
+    expect(acted).toEqual([])
+  })
+
   it('answers a stale ref with isError and a word to take a new snapshot, unasked (#140)', async () => {
     const acted: string[] = []
     const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted))
@@ -610,6 +667,18 @@ describe('the MCP door (#28, ADR 0007)', () => {
         { element: 'Search box', ref: 'd4e2', text: 'shoes', submit: true },
         `browser_type on ${on}: type 5 characters into "Search box" in ${pageId}, then press Enter to submit it?`,
         ['click 60,60', 'type shoes', 'key Enter'],
+      ],
+      [
+        'browser_select_option',
+        { element: 'the country', ref: 'd4e6', values: ['fr'] },
+        `browser_select_option on ${on}: choose "fr" in "the country" in ${pageId}?`,
+        ['select 6 3 1'],
+      ],
+      [
+        'browser_select_option',
+        { element: 'the country', ref: 'd4e6', values: ['Canada', 'ca'] },
+        `browser_select_option on ${on}: choose "Canada", "ca" in "the country" in ${pageId}?`,
+        ['select 6 3 0'],
       ],
       [
         'browser_press_key',

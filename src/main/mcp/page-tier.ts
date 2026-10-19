@@ -4,6 +4,10 @@ import {
   MAX_SNAPSHOT_NODES,
   type FormAnswer,
   type HintsAnswer,
+  type OptionsAnswer,
+  type QueryAnswer,
+  type SelectAnswer,
+  type SelectStatus,
   type TextAnswer,
 } from '../../shared/page-door'
 import { wrapUntrusted } from '../agent/boundary'
@@ -17,6 +21,7 @@ import type { PageFeedSources } from './page-feeds'
 import { formReading, formText } from '../pages/form-guide'
 import { readerBody, type ReaderDocument } from '../pages/reader'
 import {
+  formatRef,
   parseRef,
   semanticText,
   semanticTree,
@@ -27,6 +32,7 @@ import {
 } from '../pages/semantic'
 import {
   CONSOLE_LIMIT,
+  QUERY_LIMIT,
   READ_TEXT_CHARS,
   SETTLE_CAP_SECONDS,
   WAIT_CAP_SECONDS,
@@ -58,6 +64,16 @@ import {
  * never a script (ADR 0009). The question names the tool, the page's origin
  * and the agent's `element` words quoted, never the page's own text; a stale
  * ref, and a masked field for `browser_type`, are refused before it.
+ *
+ * Its two rows through ADR 0009's exceptions (#141). `browser_query` sends
+ * the agent's CSS selector to the door's `query`, which runs it in the
+ * page's isolated world; the matches come back as refs and outer HTML, the
+ * HTML in the block. `browser_select_option` reads a `<select>`'s options
+ * with the door's `options`, matches the agent's values against them in
+ * main, by value and then by label, and sends the door's one write, `select`,
+ * the chosen indexes: numbers, never the values. A masked field, a stale ref,
+ * an element that is no `<select>` and a value no option has are refused
+ * before anyone is asked.
  *
  * The label rule of ADR 0008: what Nemesis controls (the buffer id, the
  * origin of the committed top-frame URL main holds, counts, flags, times,
@@ -105,6 +121,16 @@ export interface PageTierDeps {
   readonly moves: PageMoves
   /** The acting tools' input and captures (#140); absent, every acting call is an error. */
   readonly acts?: PageActs | undefined
+  /** The door's `query` for `browser_query` (#141), and the document its refs are made under; absent, the call is an error. */
+  readonly query?:
+    | ((
+        pageId: string,
+        selector: string,
+        limit: number,
+      ) => Promise<{ answer: QueryAnswer; document: number }>)
+    | undefined
+  /** The door's `options` and `select` for `browser_select_option` (#141); absent, the call is an error. */
+  readonly selects?: PageSelects | undefined
   /** The three feeds of #29, served as resources by page-feeds.ts; absent, none is served. */
   readonly feeds?: PageFeedSources | undefined
   readonly buffers: {
@@ -156,11 +182,26 @@ export interface PageActs {
   captureFull(pageId: string): Promise<string>
 }
 
-/** The tools that act on a page (#140), each asked once per call. */
+/**
+ * A `<select>`'s choice through the door (#141): its options, read, and the
+ * one write, by index, each with the document number the element's ref is under.
+ */
+export interface PageSelects {
+  options(pageId: string, element: number): Promise<{ answer: OptionsAnswer; document: number }>
+  select(
+    pageId: string,
+    element: number,
+    count: number,
+    indexes: readonly number[],
+  ): Promise<{ answer: SelectAnswer; document: number }>
+}
+
+/** The tools that act on a page (#140, #141), each asked once per call. */
 export const ACTING_TOOLS: ReadonlySet<string> = new Set([
   'browser_click',
   'browser_hover',
   'browser_type',
+  'browser_select_option',
   'browser_press_key',
   'browser_drag',
   'browser_screenshot',
@@ -168,6 +209,16 @@ export const ACTING_TOOLS: ReadonlySet<string> = new Set([
 
 /** What `browser_type` answers for a secret field, before anyone is asked (ADR 0008). */
 export const MASKED_TYPE = 'masked field: the human types it'
+
+/** What `browser_select_option` answers for a secret field, before anyone is asked (#141). */
+export const MASKED_SELECT = 'masked field: the human chooses it'
+
+/** What `browser_query` answers on a page whose secret field carries a value attribute (#141). */
+export const MASKED_QUERY =
+  'masked field: a secret field of this page carries a value attribute, which a selector could test, so no selector is answered here; the human reads it'
+
+/** How many of `browser_select_option`'s values its question quotes. */
+const QUOTED_VALUES = 5
 
 /** How long an act waits for the page to start a navigation it caused. */
 export const ACT_SETTLE_MS = 300
@@ -262,6 +313,8 @@ export class PageTier {
         return this.formState(page)
       case 'browser_get_console_logs':
         return this.consoleLogs(page, numberOr(args['limit'], CONSOLE_LIMIT))
+      case 'browser_query':
+        return this.query(page, String(args['selector']), numberOr(args['limit'], QUERY_LIMIT))
       case 'browser_navigate':
         return this.navigate(page, String(args['url']), signal)
       case 'browser_go_back':
@@ -284,6 +337,8 @@ export class PageTier {
           args['submit'] === true,
           signal,
         )
+      case 'browser_select_option':
+        return this.selectOption(page, String(args['ref']), stringList(args['values']), signal)
       case 'browser_press_key':
         return this.pressKey(page, String(args['key']), signal)
       case 'browser_drag':
@@ -359,6 +414,7 @@ export class PageTier {
       }
       pageId = page.pageId
       if (name === 'browser_type' && isMasked(node)) throw new Error(MASKED_TYPE)
+      if (name === 'browser_select_option' && isMasked(node)) throw new Error(MASKED_SELECT)
     }
     if (pageId === undefined) throw new Error('No page to act on')
     const element = quote(String(args['element']))
@@ -374,6 +430,15 @@ export class PageTier {
         const count = [...String(args['text'])].length
         const then = args['submit'] === true ? ', then press Enter to submit it' : ''
         does = `type ${count} character${count === 1 ? '' : 's'} into ${element} in ${pageId}${then}`
+        break
+      }
+      case 'browser_select_option': {
+        const values = stringList(args['values'])
+        await this.choices(pageId, String(args['ref']), values)
+        const shown = values.slice(0, QUOTED_VALUES).map(quote).join(', ')
+        const more =
+          values.length > QUOTED_VALUES ? `, and ${values.length - QUOTED_VALUES} more` : ''
+        does = `choose ${shown}${more} in ${element} in ${pageId}`
         break
       }
       case 'browser_press_key': {
@@ -900,6 +965,75 @@ export class PageTier {
     )
   }
 
+  /**
+   * Chooses options in a `<select>`: refused when it is masked, its values
+   * matched against the options the door reads, and the indexes sent with
+   * the option count, so a dropdown whose options changed since is refused
+   * in the page rather than chosen in wrong.
+   */
+  private async selectOption(
+    given: string | undefined,
+    ref: string,
+    values: readonly string[],
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    const { page, node } = await this.element(given, ref)
+    if (isMasked(node)) throw new Error(MASKED_SELECT)
+    const { element, count, indexes } = await this.choices(page.pageId, ref, values)
+    const settled = this.settle(page.pageId, signal)
+    const { answer, document } = await this.selects().select(page.pageId, element, count, indexes)
+    if (document !== parseRef(ref)?.document) {
+      throw new Error(`The ref ${ref} is not live: take a new snapshot`)
+    }
+    if (answer.status !== 'ok') throw new Error(selectRefusal(answer.status, ref))
+    await settled
+    return this.landed(
+      page.pageId,
+      { ref, selected: answer.selected },
+      `Chose ${indexes.length} option${indexes.length === 1 ? '' : 's'} in ${ref}:`,
+    )
+  }
+
+  private selects(): PageSelects {
+    if (this.deps.selects === undefined) throw new Error('This cockpit does not choose in pages')
+    return this.deps.selects
+  }
+
+  /**
+   * The indexes `values` name among a `<select>`'s options, as the door
+   * reads them: each value is an option's value, else its label. Refused
+   * when the element is no live `<select>`, a value names no option or a
+   * disabled one, or a single-choice dropdown is given two.
+   */
+  private async choices(
+    pageId: string,
+    ref: string,
+    values: readonly string[],
+  ): Promise<{ element: number; count: number; indexes: readonly number[] }> {
+    const target = parseRef(ref)
+    if (target === null) throw new Error(`The ref ${ref} is not live: take a new snapshot`)
+    const { answer, document } = await this.selects().options(pageId, target.element)
+    if (document !== target.document) {
+      throw new Error(`The ref ${ref} is not live: take a new snapshot`)
+    }
+    if (answer.status !== 'ok') throw new Error(selectRefusal(answer.status, ref))
+    if (values.length === 0) throw new Error('Name at least one value to choose')
+    const indexes: number[] = []
+    for (const value of values) {
+      let index = answer.options.findIndex((option) => option.value === value)
+      if (index < 0) index = answer.options.findIndex((option) => option.label === value)
+      const option = answer.options[index]
+      if (option === undefined)
+        throw new Error(`No option of ${ref} has the value or label "${value}"`)
+      if (option.disabled === 1) throw new Error(`The option "${value}" of ${ref} is disabled`)
+      if (!indexes.includes(index)) indexes.push(index)
+    }
+    if (answer.multiple === 0 && indexes.length > 1) {
+      throw new Error(`The dropdown of ${ref} takes one choice: pass one value`)
+    }
+    return { element: target.element, count: answer.options.length, indexes }
+  }
+
   private async pressKey(
     given: string | undefined,
     key: string,
@@ -1004,6 +1138,40 @@ export class PageTier {
     }
   }
 
+  /**
+   * The elements a CSS selector matches, through the door's `query`: the
+   * count and whether more matched than came back in the structure, each
+   * match's ref and outer HTML in the block. A selector the page's engine
+   * cannot parse, and a page whose secret field carries a value attribute,
+   * are refused.
+   */
+  private async query(
+    given: string | undefined,
+    selector: string,
+    limit: number,
+  ): Promise<PageAnswer> {
+    if (this.deps.query === undefined) throw new Error('This cockpit does not query pages')
+    const { pageId, url, origin } = this.resolve(given)
+    const { answer, document } = await this.deps.query(pageId, selector, limit)
+    if (this.deps.committedUrl(pageId) !== url) {
+      throw new Error('The page navigated while it was queried')
+    }
+    if (answer.status === 'invalid') {
+      throw new Error('Not a selector the page can match: check its CSS syntax')
+    }
+    if (answer.status === 'masked') throw new Error(MASKED_QUERY)
+    const truncated = answer.matched > answer.matches.length
+    const parts = answer.matches.map(
+      (match) =>
+        `[${formatRef(document, match.id)}]\n${match.masked === 1 ? '(a secret field: no HTML, the human reads it)' : match.html}`,
+    )
+    return {
+      structured: { page: pageId, origin, matched: answer.matched, truncated },
+      text: `${answer.matched} elements of ${pageId} on ${origin} match${truncated ? `, the first ${answer.matches.length} given` : ''}.`,
+      block: wrapUntrusted(origin, parts.length === 0 ? 'No element matches.' : parts.join('\n\n')),
+    }
+  }
+
   private consoleLogs(given: string | undefined, limit: number): PageAnswer {
     const { pageId, origin } = this.resolve(given)
     const { entries, truncated } = this.deps.console.read(pageId, limit)
@@ -1024,6 +1192,24 @@ function schemeOf(url: string): string {
     return new URL(url).protocol
   } catch {
     return 'not a URL'
+  }
+}
+
+/** Why the door refused an `options` read or a `select` (#141). */
+function selectRefusal(status: Exclude<SelectStatus, 'ok'>, ref: string): string {
+  switch (status) {
+    case 'masked':
+      return MASKED_SELECT
+    case 'gone':
+      return `The element of ${ref} is no longer on the page: take a new snapshot`
+    case 'not-select':
+      return `The element of ${ref} is not a <select>: open a custom dropdown with browser_click`
+    case 'disabled':
+      return `The dropdown of ${ref} is disabled`
+    case 'changed':
+      return `The options of ${ref} changed while it was chosen in: call again`
+    case 'invalid':
+      return `The dropdown of ${ref} cannot take that choice`
   }
 }
 
@@ -1086,6 +1272,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }
     signal?.addEventListener('abort', stop, { once: true })
   })
+}
+
+function stringList(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
 }
 
 function optionalString(value: unknown): string | undefined {

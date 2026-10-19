@@ -138,7 +138,12 @@ describe("the door's hint entries", () => {
   it('the preload draws into a closed shadow root it owns, with no markup from a string', () => {
     const source = readFileSync(resolve(ROOT, 'src/preload/page.ts'), 'utf8')
     expect(source).toMatch(/attachShadow\(\{ mode: 'closed' \}\)/)
-    expect(source).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/)
+    // No markup is ever set; `query` (#141) only reads an element's outer HTML.
+    expect(source).not.toMatch(
+      /(?:innerHTML|outerHTML)\s*\+?=(?!=)|insertAdjacentHTML|document\.write/,
+    )
+    expect(source.match(/\.outerHTML\b/g)).toHaveLength(1)
+    expect(source).not.toMatch(/innerHTML/)
     expect(source).not.toMatch(/mode: 'open'/)
   })
 })

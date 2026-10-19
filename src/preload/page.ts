@@ -19,6 +19,9 @@ import {
   MAX_TEXT_CHARS,
   MAX_MUTATION_SUMMARY,
   MUTATION_RING,
+  decodeQuery,
+  MAX_QUERY_HTML,
+  MAX_SELECT_OPTIONS,
   type DrawnLabel,
   type FormAlert,
   type FormAnswer,
@@ -29,7 +32,12 @@ import {
   type MutationKind,
   type MutationRecordAnswer,
   type MutationsAnswer,
+  type OptionsAnswer,
   type PageAnswers,
+  type QueryAnswer,
+  type QueryMatch,
+  type SelectAnswer,
+  type SelectOption,
   type PageRequestName,
   type ReaderAnswer,
   type SemanticRole,
@@ -50,7 +58,9 @@ import { extractReader, type ReaderNode } from '../shared/reader'
 // It gives the page nothing. No contextBridge, no write to window: a page
 // looking for a bridge finds the same globals as a page with no preload.
 // It answers main and only main, by name, from the fixed table below; a
-// request carries no code, and nothing here evaluates text.
+// request carries no code, and nothing here evaluates text. `query`'s
+// selector, the one string a request carries (#141), goes to
+// `querySelectorAll` and nowhere else.
 
 /** A rectangle as `getBoundingClientRect` reports it. */
 interface PageRect {
@@ -155,6 +165,31 @@ interface PageWorld {
 }
 
 const world = globalThis as unknown as PageWorld
+
+/** The parts of an `<option>` the choice reads and sets (#141). */
+interface PageOption {
+  readonly value: string
+  readonly label: string
+  selected: boolean
+  matches(selector: string): boolean
+}
+
+/** The parts of a `<select>` the choice reads and sets, and of any element `query` reads (#141). */
+interface ChoosingElement extends PageElement {
+  readonly outerHTML: string
+  readonly multiple?: boolean
+  readonly options?: ArrayLike<PageOption>
+  selectedIndex?: number
+  matches(selector: string): boolean
+  dispatchEvent(event: unknown): boolean
+}
+
+/** The isolated world's own Event, so the page's replacement of it is never what dispatches. */
+const IsolatedEvent = (
+  globalThis as unknown as {
+    readonly Event: new (type: string, init: { bubbles: boolean; composed?: boolean }) => unknown
+  }
+).Event
 
 // The semantic view (#122). Roles and names are computed here from the DOM
 // and ARIA, the reduced tree ADR 0009 option A allows. Each element gets a
@@ -883,7 +918,121 @@ function mutations(args: readonly number[]): MutationsAnswer {
   return { last: mutationSeq, records: mutationRing.filter((record) => record.seq > from) }
 }
 
-/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138, #29). */
+// `browser_query` and `browser_select_option` (#141), ADR 0009's two
+// exceptions. `query` runs the agent's CSS selector with `querySelectorAll`
+// in this world: a selector selects, it cannot call code. A matched element
+// that is, or holds, a secret field gives its number and no HTML; and since
+// an attribute selector can test a `value` attribute a character at a time,
+// a document where a secret field carries one answers no selector at all.
+// `select` is the door's one write: it sets a `<select>`'s chosen options by
+// index, as main matched the agent's values against `options`, and
+// dispatches `input` and `change` as a user's choice would. A secret field
+// is refused before its options are read.
+
+/** The `value` attribute of a secret field anywhere in the document, the one a selector could test. */
+function secretAttributeSet(): boolean {
+  const fields = world.document.querySelectorAll('input[value], textarea[value]')
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]
+    if (field === undefined || (field.getAttribute('value') ?? '').length === 0) continue
+    if (holdsSecret(field)) return true
+  }
+  return false
+}
+
+/** `query`: args are the limit, then the selector as code units. */
+function query(args: readonly number[]): QueryAnswer {
+  const { selector, limit } = decodeQuery(args)
+  let found: ArrayLike<PageElement>
+  try {
+    found = world.document.querySelectorAll(selector)
+  } catch {
+    return { status: 'invalid', matched: 0, matches: [] }
+  }
+  if (secretAttributeSet()) return { status: 'masked', matched: 0, matches: [] }
+  const matches: QueryMatch[] = []
+  for (let index = 0; index < found.length && matches.length < limit; index += 1) {
+    const element = found[index] as ChoosingElement | undefined
+    if (element === undefined) continue
+    const masked = holdsSecret(element)
+    matches.push({
+      id: elementId(element),
+      masked: masked ? 1 : 0,
+      html: masked ? '' : element.outerHTML.slice(0, MAX_QUERY_HTML),
+    })
+  }
+  return { status: 'ok', matched: found.length, matches }
+}
+
+/** The `<select>` numbered `id`, or why it cannot be chosen in; decided before any option is read. */
+function chosenSelect(id: number): ChoosingElement | Exclude<SelectAnswer['status'], 'ok'> {
+  const element = elementById(id) as ChoosingElement | null
+  if (element === null) return 'gone'
+  if (element.tagName !== 'SELECT' || element.options === undefined) return 'not-select'
+  if (holdsSecret(element)) return 'masked'
+  if (element.matches(':disabled')) return 'disabled'
+  return element
+}
+
+/** `options`: the one arg is the element's number. */
+function options(args: readonly number[]): OptionsAnswer {
+  const [id] = args
+  if (args.length !== 1 || id === undefined || id < 1) {
+    throw new TypeError('options takes an element')
+  }
+  const element = chosenSelect(id)
+  if (typeof element === 'string') return { status: element, multiple: 0, options: [] }
+  const all = element.options ?? []
+  if (all.length > MAX_SELECT_OPTIONS) return { status: 'invalid', multiple: 0, options: [] }
+  const read: SelectOption[] = []
+  for (let index = 0; index < all.length; index += 1) {
+    const option = all[index]
+    if (option === undefined) continue
+    read.push({
+      value: option.value.slice(0, MAX_NODE_TEXT),
+      label: line(option.label),
+      disabled: option.matches(':disabled') ? 1 : 0,
+    })
+  }
+  return { status: 'ok', multiple: element.multiple === true ? 1 : 0, options: read }
+}
+
+/** `select`: args are the element's number, the option count main read, then the chosen indexes. */
+function select(args: readonly number[]): SelectAnswer {
+  const [id, count, ...chosen] = args
+  if (id === undefined || id < 1 || count === undefined || chosen.length === 0) {
+    throw new TypeError('select takes an element, a count and the chosen options')
+  }
+  const element = chosenSelect(id)
+  if (typeof element === 'string') return { status: element, selected: 0 }
+  const all = element.options ?? []
+  if (all.length !== count) return { status: 'changed', selected: 0 }
+  const picked = new Set(chosen)
+  if (picked.size !== chosen.length || (element.multiple !== true && picked.size !== 1)) {
+    return { status: 'invalid', selected: 0 }
+  }
+  for (const index of picked) {
+    const option = all[index]
+    if (option === undefined || option.matches(':disabled'))
+      return { status: 'invalid', selected: 0 }
+  }
+  if (element.multiple === true) {
+    for (let index = 0; index < all.length; index += 1) {
+      const option = all[index]
+      if (option !== undefined) option.selected = picked.has(index)
+    }
+  } else {
+    element.selectedIndex = chosen[0] ?? -1
+  }
+  element.dispatchEvent(new IsolatedEvent('input', { bubbles: true, composed: true }))
+  element.dispatchEvent(new IsolatedEvent('change', { bubbles: true }))
+  let selected = 0
+  for (let index = 0; index < all.length; index += 1)
+    if (all[index]?.selected === true) selected += 1
+  return { status: 'ok', selected }
+}
+
+/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138, #29, #141). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
 } = Object.freeze({
@@ -898,6 +1047,9 @@ const HANDLERS: {
   form,
   text,
   mutations,
+  query,
+  options,
+  select,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

@@ -23,7 +23,7 @@ import {
   parsePageFeedUri,
   TIER_PREFIX,
 } from '../../src/main/mcp/catalog'
-import type { PageTierDeps } from '../../src/main/mcp/page-tier'
+import { MASKED_QUERY, type PageTierDeps } from '../../src/main/mcp/page-tier'
 import type { BufferRegistry } from '../../src/main/buffers'
 import { CONSOLE_RING, ConsoleLog } from '../../src/main/pages/console'
 import { NETWORK_RING, NetworkLog } from '../../src/main/pages/network'
@@ -34,7 +34,10 @@ import {
   FORM_FLAGS,
   MUTATION_RING,
   SEMANTIC_STATES,
+  MAX_QUERY_MATCHES,
+  MAX_QUERY_SELECTOR,
   type MutationRecordAnswer,
+  type QueryAnswer,
   type TextAnswer,
 } from '../../src/shared/page-door'
 import { connectClient, fakeCockpit } from './mcp-fakes'
@@ -58,6 +61,7 @@ const READ_TOOLS = [
   'browser_read_text',
   'browser_form_state',
   'browser_get_console_logs',
+  'browser_query',
 ]
 
 /** Its navigation (#139). */
@@ -74,6 +78,7 @@ const ACT_TOOLS = [
   'browser_click',
   'browser_hover',
   'browser_type',
+  'browser_select_option',
   'browser_press_key',
   'browser_drag',
   'browser_screenshot',
@@ -82,7 +87,7 @@ const ACT_TOOLS = [
 const PAGE_TOOLS = [...READ_TOOLS, ...NAVIGATION_TOOLS, ...ACT_TOOLS]
 
 describe('the MCP catalog (#28, ADR 0008)', () => {
-  it('is the eight cockpit tools and seventeen page tools, and tools/list serves exactly the table', async () => {
+  it('is the eight cockpit tools and nineteen page tools, and tools/list serves exactly the table', async () => {
     expect(CATALOG.map((tool) => tool.name)).toEqual([...COCKPIT_TOOLS, ...PAGE_TOOLS])
     const client = await connectClient(fakeCockpit().mcp)
     const { tools } = await client.listTools()
@@ -116,13 +121,8 @@ describe('the MCP catalog (#28, ADR 0008)', () => {
       // Every page row names its page, but the one that makes a new page.
       if (tool.name !== 'browser_open_page') expect(tool.args.shape).toHaveProperty('page')
     }
-    // No query or select (#141), and nothing that submits or fills in a batch.
-    for (const name of [
-      'browser_query',
-      'browser_select_option',
-      'browser_submit',
-      'browser_fill_form',
-    ]) {
+    // Nothing that submits or fills in a batch.
+    for (const name of ['browser_submit', 'browser_fill_form']) {
       expect(CATALOG.map((tool) => tool.name)).not.toContain(name)
     }
     expect(CATALOG.map((tool) => tool.name).filter((name) => /eval|_script/.test(name))).toEqual([])
@@ -340,6 +340,9 @@ interface PageRig {
   document: number
   /** The mutation polls running, each a tick to fire by hand. */
   polls: Set<() => void>
+  /** What the door's `query` answers (#141), and every selector and limit it was asked. */
+  query: QueryAnswer
+  queried: string[]
 }
 
 function hostilePages(rig: Partial<PageRig> = {}): {
@@ -363,6 +366,15 @@ function hostilePages(rig: Partial<PageRig> = {}): {
     asked: [],
     document: 7,
     polls: new Set(),
+    query: {
+      status: 'ok',
+      matched: 3,
+      matches: [
+        { id: 1, masked: 0, html: `<h1 title="${CANARY}">${CANARY}</h1>` },
+        { id: 2, masked: 1, html: '' },
+      ],
+    },
+    queried: [],
     ...rig,
   }
   const emit = (event: PageEvent): void => {
@@ -464,6 +476,10 @@ function hostilePages(rig: Partial<PageRig> = {}): {
         },
       }),
       console: state.console,
+      query: async (_id, selector, limit) => {
+        state.queried.push(`${limit} ${selector}`)
+        return { answer: state.query, document }
+      },
       events: (listener) => {
         state.events.add(listener)
         return () => state.events.delete(listener)
@@ -546,6 +562,7 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
       ['browser_read_text', { ref: formatRef(7, 1) }],
       ['browser_form_state', {}],
       ['browser_get_console_logs', {}],
+      ['browser_query', { selector: 'h1' }],
     ]
     for (const [name, args] of calls) {
       const result = await client.callTool({ name, arguments: args })
@@ -615,10 +632,62 @@ describe('the page tier, reading (#138, ADR 0008)', () => {
     for (const name of READ_TOOLS) {
       const none = await client.callTool({
         name,
-        arguments: name === 'browser_wait' ? { time: 1 } : { ref: 'd7e1' },
+        arguments:
+          name === 'browser_wait'
+            ? { time: 1 }
+            : name === 'browser_query'
+              ? { selector: 'h1' }
+              : { ref: 'd7e1' },
       })
       expect(none.isError, name).toBe(true)
     }
+  })
+
+  it('queries by a CSS selector: the count in the structure, refs and outer HTML in the block, a secret without its HTML (#141)', async () => {
+    const { build, rig } = hostilePages()
+    const client = await connectClient(fakeCockpit(undefined, build).mcp)
+    const found = await client.callTool({
+      name: 'browser_query',
+      arguments: { selector: 'main h1, input[type=password]' },
+    })
+    expect(found.isError).toBeFalsy()
+    expect(found.structuredContent).toEqual({
+      page: rig.pageId,
+      origin: ORIGIN,
+      matched: 3,
+      truncated: true,
+    })
+    const block = items(found)[1] ?? ''
+    expect(block).toContain(`[d7e1]\n<h1 title="${CANARY}">${CANARY}</h1>`)
+    expect(block).toContain('[d7e2]\n(a secret field: no HTML, the human reads it)')
+    // The selector goes to the door as the agent wrote it, with the default limit.
+    expect(rig.queried).toEqual(['10 main h1, input[type=password]'])
+    await client.callTool({ name: 'browser_query', arguments: { selector: 'a', limit: 2 } })
+    expect(rig.queried.at(-1)).toBe('2 a')
+
+    // A selector past the cap, or a limit past the most matches, is no call at all.
+    const args = CATALOG.find((tool) => tool.name === 'browser_query')?.args
+    expect(args?.safeParse({ selector: 'x'.repeat(MAX_QUERY_SELECTOR) }).success).toBe(true)
+    expect(args?.safeParse({ selector: 'x'.repeat(MAX_QUERY_SELECTOR + 1) }).success).toBe(false)
+    expect(args?.safeParse({ selector: 'a', limit: MAX_QUERY_MATCHES + 1 }).success).toBe(false)
+    expect(args?.safeParse({ selector: '' }).success).toBe(false)
+  })
+
+  it('refuses a selector the page cannot parse, and any selector on a page whose secret carries a value attribute (#141)', async () => {
+    const invalid = hostilePages({ query: { status: 'invalid', matched: 0, matches: [] } })
+    const one = await connectClient(fakeCockpit(undefined, invalid.build).mcp)
+    const bad = await one.callTool({ name: 'browser_query', arguments: { selector: 'a[' } })
+    expect(bad.isError).toBe(true)
+    expect(items(bad)[0]).toContain('Not a selector the page can match')
+
+    const masked = hostilePages({ query: { status: 'masked', matched: 0, matches: [] } })
+    const two = await connectClient(fakeCockpit(undefined, masked.build).mcp)
+    const refused = await two.callTool({
+      name: 'browser_query',
+      arguments: { selector: 'input[type=password][value^="a"]' },
+    })
+    expect(refused.isError).toBe(true)
+    expect(items(refused)).toEqual([MASKED_QUERY])
   })
 
   it('answers isError on a cockpit with no page tier', async () => {

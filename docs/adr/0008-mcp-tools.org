@@ -262,7 +262,7 @@ parity tool's schema. =ref= is a stable reference from the last snapshot
 | =browser_click=            | ={element: string, ref: string, page?}= (=ref= confirmed 2026-OCTOBER-19)         | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
 | =browser_hover=            | ={element: string, ref: string, page?}=                                         | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
 | =browser_type=             | ={element: string, ref: string, text: string, submit?: boolean, page?}= (confirmed) | ={page, origin, ref, submitted: boolean}= plus the snapshot block                       | yes per call          | parity |
-| =browser_select_option=    | ={element: string, ref: string, values: string[], page?}= (=values=: confirm)   | ={page, origin, ref, selected: number}= plus the snapshot block                           | yes per call          | parity |
+| =browser_select_option=    | ={element: string, ref: string, values: string[], page?}= (confirmed 2026-OCTOBER-19) | ={page, origin, ref, selected: number}= plus the snapshot block                           | yes per call          | parity |
 | =browser_press_key=        | ={key: string, page?}=                                                          | ={page, origin, key}=                                                                     | yes per call          | parity |
 | =browser_get_console_logs= | ={page?, limit?: number}=                                                       | ={page, origin, entries: number, truncated}= plus the entries as a wrapped block          | free                  | parity |
 | =browser_screenshot=       | ={page?, ref?: string, fullPage?: boolean}=                                     | one =image= content block, =image/png= checked, plus ={page, origin, width, height}=      | yes per call          | parity |
@@ -277,7 +277,14 @@ its =ElementSchema= is ={element: z.string(), ref: z.string()}=, which
 =text= and =submit: z.boolean()= ("Whether to submit entered text (press
 Enter after)"), required there and optional here, false when absent;
 =browser_drag= takes =startElement=, =startRef=, =endElement= and =endRef=.
-=browser_select_option='s =values= stays to confirm with #141.
+=browser_select_option='s =values= is =z.array(z.string())= in the same
+tarball, "Array of values to select in the dropdown" (#141,
+2026-OCTOBER-19); Nemesis reads each as an option's value, else its label,
+as Playwright's =selectOption= does, and requires at least one. It and
+=browser_query= are built through ADR 0009's amendment for #141: =query=
+carries the selector, and =select= is the door's one write, since input
+synthesized in main does not reach a =<select>='s native menu. A masked
+=<select>= is refused before any yes, as =browser_type= is.
 
 Thirteen rows: the twelve browsermcp registers and the one it left
 unregistered, finished here as the study suggested. Three rows differ from
