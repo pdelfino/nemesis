@@ -1,4 +1,5 @@
 import type { SessionAttentionEvent, SessionAttentionKind } from '../../shared/notify'
+import type { NotifyToggles } from '../settings'
 import { notificationText, type NotificationText } from './text'
 
 /**
@@ -104,6 +105,24 @@ export class Notifier {
       }),
     )
   }
+}
+
+/**
+ * The settings from the `notify` object of settings.json (#114). With no
+ * such object `fallback` decides, the environment's for one release; the
+ * file wins whenever it says anything.
+ */
+export function notifySettings(
+  toggles: NotifyToggles | null,
+  fallback: NotifySettings,
+): NotifySettings {
+  if (toggles === null) return fallback
+  const finished: FinishedPolicy = !toggles.finished
+    ? 'off'
+    : toggles.finishedOnlyWhenUnfocused
+      ? 'unfocused'
+      : 'always'
+  return { finished, needsYou: toggles.needsYou, error: toggles.error, sound: toggles.sound }
 }
 
 /** The environment variables the settings and the Telegram sink read at startup. */

@@ -171,8 +171,16 @@ export function createCockpit(
   })
   // Walking away (#90): a finished turn, a request or an error is a macOS
   // notification, and a Telegram push when its two variables are set, with
-  // the session's name, the elapsed time and the tool-call count only.
-  installNotifications({ window, agent, permissions, buffers, env: process.env })
+  // the session's name, the elapsed time and the tool-call count only. The
+  // toggles are the settings' `notify` key (#114).
+  installNotifications({
+    window,
+    agent,
+    permissions,
+    buffers,
+    toggles: () => config.settings.notify,
+    env: process.env,
+  })
   // The Edit and Write calls of the session, listed and opened as diff
   // buffers (#68). The collector reads the live events and a resumed
   // session's history before the bridge pushes them, so list-diffs is never

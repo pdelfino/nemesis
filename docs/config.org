@@ -54,6 +54,37 @@ a cockpit command's name: to change what a key does, bind it to a new name.
 =nemesis.hooks= arrives with ADR 0005's hook registry and =nemesis.defineMode=
 with ADR 0004's mode registry (ADR 0006, steps 2 and 3).
 
+** The notification toggles
+
+The =notify= key of =settings.json= (#114) holds the notification toggles of
+#90, each =true= or =false=; an absent toggle takes the default below.
+
+| Toggle                      | Default | What it does                                          |
+|-----------------------------+---------+-------------------------------------------------------|
+| =finished=                  | =true=  | A notification when a turn ends well                  |
+| =finishedOnlyWhenUnfocused= | =true=  | With =finished= on: only when the window has no focus |
+| =needsYou=                  | =true=  | A permission request or a question                    |
+| =error=                     | =true=  | A turn or a stream that ended in an error             |
+| =sound=                     | =false= | The system sound with the notification                |
+
+#+begin_src json
+{
+  "notify": { "finished": true, "finishedOnlyWhenUnfocused": false, "sound": true }
+}
+#+end_src
+
+The init file sets one toggle at a time with a dotted key, over the object in
+force: =nemesis.settings.set('notify.finished', false)=; =notify.loud= is an
+unknown setting, and =nemesis.settings.get('notify.finished')= is =null= while
+neither file has a =notify= key. The toggles are read at every notification, so
+a reload applies them to the next one.
+
+Without a =notify= key in =settings.json= or the init file, the
+=NEMESIS_NOTIFY_*= environment variables of CONTRIBUTING.org still decide, for
+this release only; the next one drops them. The Telegram bot token is a secret
+and is never a setting: it stays in =NEMESIS_TELEGRAM_BOT_TOKEN=, with its chat
+id beside it in =NEMESIS_TELEGRAM_CHAT_ID=.
+
 * A worked example
 
 #+begin_src typescript
@@ -95,7 +126,8 @@ previous one. On success the previous load's commands and bindings are
 dropped, the new ones registered, the palette and the menu bar follow, and
 one line in the transcript gives the counts. =theme= applies at once,
 =model= on the next session, =verify= on the next check and
-=stopGateRetries= at the next gated turn end; =sessionsDir=
+=stopGateRetries= at the next gated turn end, =notify= at the next
+notification; =sessionsDir=
 and =keyscheme= are read once at start, and the line names them when they
 need a restart. A top-level loop is stopped after two seconds.
 

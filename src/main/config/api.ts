@@ -2,8 +2,8 @@ import type { Command } from '../commands/registry'
 import { CommandError, defineCommand } from '../commands/registry'
 import type { Keymap } from '../commands/keymap'
 import { defineKeymap, KeymapError, normalizeChord } from '../commands/keymap'
-import type { Settings } from '../settings'
-import { parseSettings, SettingsError } from '../settings'
+import type { NotifyToggles, Settings } from '../settings'
+import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } from '../settings'
 
 /**
  * The surface the config file sees (#71, ADR 0006): one object, `nemesis`,
@@ -121,7 +121,18 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'theme',
   'verify',
   'stopGateRetries',
+  'notify',
 ]
+
+/** `notify.finished` and the like: one toggle of the `notify` object (#114), or null. */
+function notifyKey(key: unknown): keyof NotifyToggles | null {
+  if (typeof key !== 'string' || !key.startsWith('notify.')) return null
+  const toggle = key.slice('notify.'.length)
+  if (!(NOTIFY_KEYS as readonly string[]).includes(toggle)) {
+    throw new SettingsError(`Unknown setting "${key}"`)
+  }
+  return toggle as keyof NotifyToggles
+}
 
 function settingKey(key: unknown): keyof Settings {
   if (typeof key !== 'string' || !(SETTING_KEYS as readonly string[]).includes(key)) {
@@ -200,11 +211,23 @@ export function createConfigApi(staging: ConfigStaging, env: ConfigApiEnv): Conf
     settings: {
       set(key, value) {
         staging.open('settings.set')
+        const toggle = notifyKey(key)
+        if (toggle !== null) {
+          // One toggle over the object in force, the file's or the defaults.
+          const notify = {
+            ...(staging.settings().notify ?? DEFAULT_NOTIFY_TOGGLES),
+            [toggle]: value,
+          }
+          staging.overrides.set('notify', parseSettings({ notify }, staging.base).notify)
+          return
+        }
         const name = settingKey(key)
         // The same rules as settings.json, one key at a time.
         staging.overrides.set(name, parseSettings({ [name]: value }, staging.base)[name])
       },
       get(key) {
+        const toggle = notifyKey(key)
+        if (toggle !== null) return staging.settings().notify?.[toggle] ?? null
         return staging.settings()[settingKey(key)]
       },
     },

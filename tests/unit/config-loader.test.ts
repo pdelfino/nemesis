@@ -189,10 +189,27 @@ describe('the config loader', () => {
     expect(h.registry.has('ok-one')).toBe(false)
   })
 
+  it('overrides one notify toggle from init.ts, the others at their defaults (#114)', () => {
+    h.write(
+      "nemesis.settings.set('notify.finished', false)\nnemesis.settings.set('notify.sound', true)\nnemesis.notice(String(nemesis.settings.get('notify.finished')))\n",
+    )
+    expect(h.loader.reload(h.target)).toMatchObject({ ok: true })
+    expect(h.loader.settings.notify).toEqual({
+      finished: false,
+      finishedOnlyWhenUnfocused: true,
+      needsYou: true,
+      error: true,
+      sound: true,
+    })
+    expect(h.notices).toContain('false')
+  })
+
   it('rejects an unknown setting, a bad value, a cockpit name and a bad chord by name', () => {
     const cases: [string, RegExp][] = [
       ["nemesis.settings.set('colour', 'dark')", /Unknown setting "colour"/],
       ["nemesis.settings.set('theme', 'purple')", /"theme" is not one of/],
+      ["nemesis.settings.set('notify.loud', true)", /Unknown setting "notify.loud"/],
+      ["nemesis.settings.set('notify.error', 'off')", /"notify.error" is not true or false/],
       [
         "nemesis.defineCommand({ name: 'search-buffer', doc: 'Mine.', run() {} })",
         /is the cockpit's/,
