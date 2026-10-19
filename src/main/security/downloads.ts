@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { DownloadItem, Event, Session } from 'electron'
 import type { AgentNoticeEvent } from '../agent/events'
@@ -9,24 +9,34 @@ import { originOf, type NoticeListener } from './permissions'
 /**
  * Downloads opt-in, quarantined, never opened (#51, SECURITY.org T2).
  *
- * Nothing a page offers lands on disk without a yes. The first request is
- * refused in `will-download` the moment it arrives, after reading what it
- * was: filename, size and origin. Refusing (`event.preventDefault()`) is
- * the only way to be sure, because Chromium writes a download as the bytes
- * come and a paused item that already has every byte completes on its own;
- * for a small file that is before any prompt could be answered. The user is
- * then asked. On a yes, the policy requests the same URL again itself, and
- * that second item is recognized, pinned to a path inside the quarantine
- * folder and allowed to run; the file keeps the name the user said yes to.
- * A no is a no: nothing was ever written. A yes is good for one request
+ * Nothing a page offers reaches the downloads folder without a yes. The
+ * first request is refused in `will-download` the moment it arrives, after
+ * reading what it was: filename, size and origin. Refusing
+ * (`event.preventDefault()`) is the only way to be sure, because Chromium
+ * writes a download as the bytes come and a paused item that already has
+ * every byte completes on its own; for a small file that is before any
+ * prompt could be answered. The user is then asked. On a yes, the policy
+ * requests the same URL again itself, and that second item is recognized,
+ * pinned to a path inside the quarantine folder and allowed to run; the
+ * file keeps the name the user said yes to.
+ *
+ * Chromium buffers an offer before `will-download` fires: the first bytes,
+ * and for a small file all of them, go to a hidden temporary file in the
+ * app's downloads path (#137, traced 2026-OCTOBER-19). So the app's
+ * downloads path is not the user's: startup points it at this run's staging
+ * folder in the profile (`prepareStaging`), owner-only and removed at quit,
+ * and a dead run's folder goes at the next start. A no is a no: nothing
+ * reaches the downloads folder, and Chromium deletes the buffer of the item
+ * it refused. A yes is good for one request
  * within `APPROVAL_TTL_MS` (#100): when the re-request never arrives (a
  * network error), the approval would otherwise sit by URL until any page
  * asked for that URL again, so a late item is refused and asked about anew.
  *
  * Every file lands in `~/Downloads/nemesis-quarantine/` (`QUARANTINE_FOLDER`
- * under the downloads path) and nowhere else: the save path is set here,
- * never read from a dialog, and the session's own download path is the same
- * folder, so no fallback could put a byte elsewhere. On macOS a completed
+ * under the user's downloads folder) and nowhere else: the save path is set
+ * here, never read from a dialog, and the session's own download path is the
+ * same folder, so no fallback could put a finished file elsewhere; the only
+ * other place an offer's bytes exist is the staging folder above. On macOS a completed
  * file is checked for the `com.apple.quarantine` attribute Gatekeeper reads;
  * a file that has none is given one, and a file that cannot be marked is
  * removed. Nothing is ever opened: no `shell.openPath`, no `showItemInFolder`.
@@ -37,8 +47,11 @@ import { originOf, type NoticeListener } from './permissions'
  * `web-contents-created` and from the partitions, the way #49 does.
  */
 
-/** The folder under the downloads path. Nothing lands outside it. */
+/** The folder under the user's downloads folder. Nothing lands outside it. */
 export const QUARANTINE_FOLDER = 'nemesis-quarantine'
+
+/** The folder in the profile where Chromium buffers an offer before anyone is asked (#137). */
+export const STAGING_FOLDER = 'download-staging'
 
 /** The attribute Gatekeeper reads before a downloaded file opens. */
 export const QUARANTINE_ATTRIBUTE = 'com.apple.quarantine'
@@ -51,6 +64,45 @@ const FALLBACK_FILENAME = 'download'
 
 /** Longer names are cut, extension kept: a name is for reading, not for hiding in. */
 const MAX_FILENAME = 120
+
+/**
+ * Makes this run's staging folder, `<root>/<pid>`, owner-only, and removes
+ * every other entry of the root except the folder of a run that is still
+ * alive: two runs can share a profile, and a live run's buffer is in use.
+ * Removal never follows a link: a symlink in the root is unlinked and its
+ * target is left alone. Returns the folder to give Chromium (#137).
+ */
+export function prepareStaging(
+  root: string,
+  pid: number = process.pid,
+  alive: (pid: number) => boolean = processAlive,
+): string {
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  chmodSync(root, 0o700)
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const owner = /^[1-9][0-9]{0,9}$/.test(entry.name) ? Number(entry.name) : 0
+    if (entry.isDirectory() && owner !== 0 && owner !== pid && alive(owner)) continue
+    rmSync(join(root, entry.name), { recursive: true, force: true })
+  }
+  const dir = join(root, String(pid))
+  mkdirSync(dir, { mode: 0o700 })
+  return dir
+}
+
+/** Removes this run's staging folder at quit, with whatever Chromium still buffered in it. */
+export function removeStaging(dir: string): void {
+  rmSync(dir, { recursive: true, force: true })
+}
+
+/** A process that exists, ours or not: signal 0 checks without sending anything. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
 
 /** What the user is asked about, in words that are safe to show. */
 export interface DownloadRequest {

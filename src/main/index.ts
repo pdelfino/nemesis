@@ -42,7 +42,14 @@ import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
 import { CompletedRequests } from './pages/network'
 import type { WindowCapturer } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
-import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
+import {
+  describeDownload,
+  DownloadPolicy,
+  prepareStaging,
+  QUARANTINE_FOLDER,
+  removeStaging,
+  STAGING_FOLDER,
+} from './security/downloads'
 import { describeExternal, ExternalPolicy } from './security/external'
 import {
   COCKPIT_URL,
@@ -85,6 +92,18 @@ if (userData) app.setPath('userData', userData)
 // And at a throwaway downloads folder, so no spec leaves a file in ~/Downloads (#51).
 const downloadsPath = process.env['NEMESIS_DOWNLOADS']
 if (downloadsPath) app.setPath('downloads', downloadsPath)
+// T2 (#137): Chromium buffers an offered download in a hidden temporary file
+// in the app's downloads path as the bytes arrive, before `will-download` can
+// refuse it and before anyone is asked. The user's downloads folder is kept
+// for the quarantine folder, and the app's downloads path becomes this run's
+// staging folder in the profile, owner-only and removed at quit, so an offer
+// never touches ~/Downloads before a yes. It is set here, before any session
+// exists, because each session's download manager reads the path once, when
+// it is made; setting a session's download path later does not move it.
+const userDownloads = app.getPath('downloads')
+const stagingDir = prepareStaging(join(app.getPath('userData'), STAGING_FOLDER))
+app.setPath('downloads', stagingDir)
+app.on('will-quit', () => removeStaging(stagingDir))
 
 // T3 (#50): internal pages live on nemesis://app, a privileged scheme that
 // Electron only accepts before the app is ready. The handler that serves it
@@ -116,7 +135,7 @@ app.on('will-quit', () => permissionPolicy.clear())
 // T2 (#51): a download or an external link is a question in the prompt
 // buffer before anything lands or launches, the focused window's (#70).
 const downloads = new DownloadPolicy({
-  quarantineDir: join(app.getPath('downloads'), QUARANTINE_FOLDER),
+  quarantineDir: join(userDownloads, QUARANTINE_FOLDER),
   confirm: (request) => confirmInFocused(DOWNLOAD_SOURCE, describeDownload(request)),
 })
 const external = new ExternalPolicy({
