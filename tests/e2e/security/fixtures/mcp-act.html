@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mcp-act</title>
+    <style>
+      body {
+        font: 16px sans-serif;
+        margin: 8px;
+      }
+      p,
+      form {
+        margin: 8px 0;
+      }
+      #shot {
+        width: 120px;
+        height: 40px;
+      }
+      #box,
+      #zone {
+        position: absolute;
+        left: 420px;
+      }
+      #box {
+        top: 20px;
+        width: 40px;
+        height: 40px;
+        background: #4682b4;
+      }
+      #zone {
+        top: 120px;
+        width: 100px;
+        height: 100px;
+        background: #ddd;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      The MCP page tier's acting fixture (#140): a link to follow, a field
+      that echoes what is typed into it, a one-field form that says when it
+      was submitted, a password field, a button that says when the pointer
+      is over it, a button of a known size to capture, and a box that
+      follows the pointer while the button is held, with a zone to drop it on.
+    -->
+    <p><a id="next" href="/mcp-page.html">Next page</a></p>
+    <p>
+      <label for="name">Name</label> <input id="name" name="name" />
+      <output id="echo"></output>
+    </p>
+    <form id="search" aria-label="Search">
+      <label for="query">Query</label> <input id="query" name="query" />
+      <output id="submitted">not submitted</output>
+    </form>
+    <p><label for="secret">Password</label> <input id="secret" type="password" /></p>
+    <p>
+      <button id="hover" type="button">Hover me</button>
+      <output id="hovered">not hovered</output>
+    </p>
+    <p><button id="shot" type="button">Shot</button></p>
+    <div id="box" role="button" aria-label="Box"></div>
+    <div id="zone" role="button" aria-label="Zone"></div>
+    <script>
+      const name = document.getElementById('name')
+      name.addEventListener('input', () => {
+        document.getElementById('echo').textContent = name.value
+      })
+      document.getElementById('search').addEventListener('submit', (event) => {
+        event.preventDefault()
+        const query = document.getElementById('query').value
+        document.getElementById('submitted').textContent = `submitted ${query}`
+      })
+      document.getElementById('hover').addEventListener('mouseover', () => {
+        document.getElementById('hovered').textContent = 'hovered'
+      })
+      const box = document.getElementById('box')
+      let held = null
+      box.addEventListener('mousedown', (event) => {
+        held = { dx: event.clientX - box.offsetLeft, dy: event.clientY - box.offsetTop }
+      })
+      document.addEventListener('mousemove', (event) => {
+        if (held === null) return
+        box.style.left = `${event.clientX - held.dx}px`
+        box.style.top = `${event.clientY - held.dy}px`
+      })
+      document.addEventListener('mouseup', () => {
+        held = null
+      })
+    </script>
+  </body>
+</html>

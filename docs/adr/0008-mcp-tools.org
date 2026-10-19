@@ -259,18 +259,25 @@ parity tool's schema. =ref= is a stable reference from the last snapshot
 | =browser_go_forward=       | ={page?}=                                                                       | ={page, origin, moved: boolean}= plus the snapshot block                                   | yes per call          | parity |
 | =browser_wait=             | ={time: number, page?}= (seconds, confirmed 2026-OCTOBER-19)                    | ={waited: number}=                                                                        | free                  | parity |
 | =browser_snapshot=         | ={page?}=                                                                       | ={page, origin, refs: number, truncated}= plus the snapshot block                          | free                  | parity |
-| =browser_click=            | ={element: string, ref: string, page?}= (=ref= name: confirm)                   | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
+| =browser_click=            | ={element: string, ref: string, page?}= (=ref= confirmed 2026-OCTOBER-19)         | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
 | =browser_hover=            | ={element: string, ref: string, page?}=                                         | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
-| =browser_type=             | ={element: string, ref: string, text: string, submit?: boolean, page?}= (confirm) | ={page, origin, ref, submitted: boolean}= plus the snapshot block                       | yes per call          | parity |
+| =browser_type=             | ={element: string, ref: string, text: string, submit?: boolean, page?}= (confirmed) | ={page, origin, ref, submitted: boolean}= plus the snapshot block                       | yes per call          | parity |
 | =browser_select_option=    | ={element: string, ref: string, values: string[], page?}= (=values=: confirm)   | ={page, origin, ref, selected: number}= plus the snapshot block                           | yes per call          | parity |
 | =browser_press_key=        | ={key: string, page?}=                                                          | ={page, origin, key}=                                                                     | yes per call          | parity |
 | =browser_get_console_logs= | ={page?, limit?: number}=                                                       | ={page, origin, entries: number, truncated}= plus the entries as a wrapped block          | free                  | parity |
 | =browser_screenshot=       | ={page?, ref?: string, fullPage?: boolean}=                                     | one =image= content block, =image/png= checked, plus ={page, origin, width, height}=      | yes per call          | parity |
-| =browser_drag=             | ={startElement, startRef, endElement, endRef, page?}= (ref names: confirm)       | ={page, origin}= plus the snapshot block                                                  | yes per call          | parity |
+| =browser_drag=             | ={startElement, startRef, endElement, endRef, page?}= (confirmed 2026-OCTOBER-19) | ={page, origin}= plus the snapshot block                                                  | yes per call          | parity |
 
 =browser_wait='s =time= is confirmed against the published =@browsermcp/mcp=
 0.1.3: its tarball's tool schemas read =time: z.number()=, "The time to wait
-in seconds" (#138, 2026-OCTOBER-19, read and never installed or run).
+in seconds" (#138, 2026-OCTOBER-19, read and never installed or run). The
+acting rows are confirmed from the same tarball (#140, 2026-OCTOBER-19):
+its =ElementSchema= is ={element: z.string(), ref: z.string()}=, which
+=browser_click= and =browser_hover= take as is; =browser_type= extends it with
+=text= and =submit: z.boolean()= ("Whether to submit entered text (press
+Enter after)"), required there and optional here, false when absent;
+=browser_drag= takes =startElement=, =startRef=, =endElement= and =endRef=.
+=browser_select_option='s =values= stays to confirm with #141.
 
 Thirteen rows: the twelve browsermcp registers and the one it left
 unregistered, finished here as the study suggested. Three rows differ from

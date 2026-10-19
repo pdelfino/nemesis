@@ -11,6 +11,8 @@ import { diffText } from '../../src/main/mcp/buffer-texts'
 import type { PageTierDeps } from '../../src/main/mcp/page-tier'
 import type { BufferRegistry } from '../../src/main/buffers'
 import { helloMatches, HELLO_PREFIX, McpDoor } from '../../src/main/mcp/socket'
+import { buildTree } from '../../src/main/pages/semantic'
+import { SEMANTIC_STATES, type SemanticRole } from '../../src/shared/page-door'
 import { connectClient, fakeCockpit } from './mcp-fakes'
 
 const opened: { door: McpDoor; dir: string }[] = []
@@ -53,6 +55,114 @@ function onePage(loads: string[]): (buffers: BufferRegistry) => PageTierDeps {
         close: (id) => buffers.kill(id),
       },
       buffers,
+    }
+  }
+}
+
+/** A PNG's signature and header, enough for the tier to check and measure it. */
+function png(width: number, height: number): string {
+  const bytes = Buffer.alloc(24)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+  bytes.writeUInt32BE(13, 8)
+  bytes.write('IHDR', 12, 'latin1')
+  bytes.writeUInt32BE(width, 16)
+  bytes.writeUInt32BE(height, 20)
+  return bytes.toString('base64')
+}
+
+/**
+ * One page buffer to act on (#140), scrolled 1000 px down: a link and a
+ * search field in view, a masked password field, an image the hint read does
+ * not report, and a region far below the fold. Every string the page wrote
+ * carries a canary; what the acts did is recorded in order.
+ */
+function actingPage(acted: string[]): (buffers: BufferRegistry) => PageTierDeps {
+  return (buffers) => {
+    const page = buffers.create({ kind: 'page', title: 'NEMESIS-TITLE-CANARY', elementId: 'page' })
+    buffers.update(page.id, { url: 'https://shop.example/NEMESIS-PATH-CANARY' })
+    const masked = 1 << SEMANTIC_STATES.indexOf('masked')
+    const node = (id: number, role: SemanticRole, name: string, y: number, state = 0) => ({
+      id,
+      depth: 0,
+      role,
+      name,
+      value: '',
+      state,
+      level: 0,
+      x: 10,
+      y,
+      width: role === 'img' ? 50 : 100,
+      height: role === 'img' ? 50 : 20,
+    })
+    const tree = buildTree(4, {
+      nodes: [
+        node(1, 'link', 'NEMESIS-NAME-CANARY', 1010),
+        node(2, 'textbox', 'Search', 1050),
+        node(3, 'textbox', 'Password', 1090, masked),
+        node(4, 'img', 'NEMESIS-IMG-CANARY', 1200),
+        node(5, 'button', 'Far below', 5000),
+      ],
+    })
+    let focused = 0
+    const never = (): never => {
+      throw new Error('not read here')
+    }
+    return {
+      list: () => buffers.list().filter((buffer) => buffer.kind === 'page'),
+      committedUrl: (id) => buffers.get(id)?.url,
+      snapshot: async () => ({
+        pageId: page.id,
+        url: buffers.get(page.id)?.url ?? '',
+        origin: 'https://shop.example',
+        ...tree,
+      }),
+      resolve: (ref) => {
+        const match = /^d4e([0-9]+)$/.exec(ref)
+        return match === null ? null : { pageId: page.id, element: Number(match[1]) }
+      },
+      reader: never,
+      text: never,
+      form: async () => ({
+        document: 4,
+        answer: { version: 1, same: 0, focused, fields: [], alerts: [] },
+      }),
+      console: { read: () => ({ entries: [], truncated: false }) },
+      events: () => () => undefined,
+      moves: { load: never, create: never, step: never, close: never },
+      acts: {
+        hints: async () => ({
+          nodes: [1, 2, 3].map((id) => ({
+            id,
+            href: '',
+            x: 10,
+            y: 10 + (id - 1) * 40,
+            width: 100,
+            height: 20,
+          })),
+        }),
+        viewport: () => ({ width: 800, height: 600 }),
+        click: (_id, at) => {
+          acted.push(`click ${at.x},${at.y}`)
+          // A click at the search field's centre gives it the focus.
+          if (at.y === 60) focused = 2
+        },
+        hover: (_id, at) => acted.push(`hover ${at.x},${at.y}`),
+        drag: (_id, from, to) => acted.push(`drag ${from.x},${from.y} ${to.x},${to.y}`),
+        type: async (_id, text) => {
+          acted.push(`type ${text}`)
+        },
+        key: (_id, key) => acted.push(`key ${key}`),
+        capture: async (_id, box) => {
+          acted.push(`capture ${JSON.stringify(box ?? null)}`)
+          return png(box?.width ?? 800, box?.height ?? 600)
+        },
+        captureFull: async () => {
+          acted.push('capture full')
+          return png(800, 3000)
+        },
+      },
+      buffers,
+      sleep: async () => undefined,
     }
   }
 }
@@ -431,5 +541,161 @@ describe('the MCP door (#28, ADR 0007)', () => {
     await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
     expect((await pinned).isError).toBeFalsy()
     expect(loads.at(-1)).toBe(`${pageId} https://next.example/a?b=1`)
+  })
+  it('refuses browser_type into a masked field before any question, and acts on nothing (#140)', async () => {
+    const acted: string[] = []
+    const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted))
+    const result = await mcp.call(
+      'browser_type',
+      { element: 'Password', ref: 'd4e3', text: 'hunter2' },
+      { door: 'socket', client: 'claude-code' },
+    )
+    expect(result.isError).toBe(true)
+    expect(result.content).toEqual([{ type: 'text', text: 'masked field: the human types it' }])
+    expect(prompter.pending).toBeNull()
+    expect(acted).toEqual([])
+    // The in-app door is refused the same way, before the bridge asks.
+    await expect(
+      mcp.inAppQuestion('browser_type', { element: 'Password', ref: 'd4e3', text: 'x' }),
+    ).rejects.toThrow('masked field: the human types it')
+  })
+
+  it('answers a stale ref with isError and a word to take a new snapshot, unasked (#140)', async () => {
+    const acted: string[] = []
+    const { mcp, prompter } = fakeCockpit(undefined, actingPage(acted))
+    for (const [name, args] of [
+      ['browser_click', { element: 'Buy', ref: 'd3e1' }],
+      ['browser_hover', { element: 'Menu', ref: 'd3e1' }],
+      ['browser_type', { element: 'Search', ref: 'd3e2', text: 'a' }],
+      ['browser_drag', { startElement: 'a', startRef: 'd4e1', endElement: 'b', endRef: 'd3e2' }],
+      ['browser_screenshot', { ref: 'd3e4' }],
+    ] as const) {
+      const result = await mcp.call(name, args, { door: 'socket', client: 'claude-code' })
+      expect(result.isError, name).toBe(true)
+      expect(JSON.stringify(result.content), name).toContain('take a new snapshot')
+      expect(prompter.pending, name).toBeNull()
+    }
+    // A ref out of view is refused at the act, after the yes, with nothing done.
+    const far = mcp.call(
+      'browser_click',
+      { element: 'Far', ref: 'd4e5' },
+      { door: 'socket', client: 'c' },
+    )
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+    expect(JSON.stringify((await far).content)).toContain('out of view')
+    expect(acted).toEqual([])
+  })
+
+  it("puts the tool, the origin and the agent's element words, quoted and cut, in the line, never the page's text (#140)", async () => {
+    const acted: string[] = []
+    const { mcp, prompter, buffers } = fakeCockpit(undefined, actingPage(acted))
+    const pageId = buffers.list().find((buffer) => buffer.kind === 'page')?.id ?? ''
+    const on = 'https://shop.example'
+    const lines: [string, Record<string, unknown>, string, string[]][] = [
+      [
+        'browser_click',
+        { element: 'the Buy link', ref: 'd4e1' },
+        `browser_click on ${on}: click "the Buy link" in ${pageId}?`,
+        ['click 60,20'],
+      ],
+      [
+        'browser_hover',
+        { element: 'the Buy link', ref: 'd4e1' },
+        `browser_hover on ${on}: hover over "the Buy link" in ${pageId}?`,
+        ['hover 60,20'],
+      ],
+      [
+        'browser_type',
+        { element: 'Search box', ref: 'd4e2', text: 'shoes', submit: true },
+        `browser_type on ${on}: type 5 characters into "Search box" in ${pageId}, then press Enter to submit it?`,
+        ['click 60,60', 'type shoes', 'key Enter'],
+      ],
+      [
+        'browser_press_key',
+        { key: 'Enter' },
+        `browser_press_key on ${on}: press "Enter" in ${pageId}, which may submit a form?`,
+        ['key Enter'],
+      ],
+      [
+        'browser_drag',
+        { startElement: 'the link', startRef: 'd4e1', endElement: 'the field', endRef: 'd4e2' },
+        `browser_drag on ${on}: drag "the link" onto "the field" in ${pageId}?`,
+        ['drag 60,20 60,60'],
+      ],
+      [
+        'browser_screenshot',
+        { ref: 'd4e4' },
+        `browser_screenshot on ${on}: capture the element d4e4 of ${pageId} as an image, secret fields as the page draws them?`,
+        // The image is placed in the viewport by the scroll the link gives.
+        [`capture ${JSON.stringify({ x: 10, y: 200, width: 50, height: 50 })}`],
+      ],
+    ]
+    for (const [name, args, line, did] of lines) {
+      acted.length = 0
+      const call = mcp.call(name, args, { door: 'socket', client: 'claude-code' })
+      await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+      expect(prompter.pending?.prompt).toBe(`claude-code asks ${line}`)
+      expect(prompter.pending?.prompt).not.toContain('CANARY')
+      expect(acted, name).toEqual([])
+      await prompter.answer({ id: prompter.pending?.id ?? '', choice: 'yes' })
+      const result = await call
+      expect(result.isError, `${name} ${JSON.stringify(result.content)}`).toBeFalsy()
+      expect(acted, name).toEqual(did)
+      expect(JSON.stringify(result.structuredContent), name).not.toContain('CANARY')
+    }
+
+    // A long description is cut to the screen, on one line.
+    const long = mcp.call(
+      'browser_click',
+      { element: `a\n${'x'.repeat(300)}`, ref: 'd4e1' },
+      { door: 'socket', client: 'claude-code' },
+    )
+    await vi.waitFor(() => expect(prompter.pending).not.toBeNull())
+    expect(prompter.pending?.prompt).toContain(`click "a ${'x'.repeat(198)}..." in ${pageId}?`)
+    await prompter.answer({ id: prompter.pending?.id ?? '', choice: null })
+    expect((await long).isError).toBe(true)
+
+    // The in-app line is the same, with the cockpit session as the client.
+    const inApp = await mcp.inAppQuestion('browser_click', { element: 'Buy', ref: 'd4e1' })
+    expect(inApp).toEqual({
+      title: `the cockpit session asks browser_click on ${on}: click "Buy" in ${pageId}?`,
+      args: { element: 'Buy', ref: 'd4e1', page: pageId },
+    })
+    expect(await mcp.inAppQuestion('browser_navigate', { url: 'https://a.example' })).toBeNull()
+
+    // A key the tier does not press, and a chord, are refused unasked.
+    for (const key of ['Control+a', 'F13']) {
+      const refused = await mcp.call('browser_press_key', { key }, { door: 'socket', client: 'c' })
+      expect(refused.isError, key).toBe(true)
+      expect(prompter.pending).toBeNull()
+    }
+  })
+
+  it('returns a screenshot as one image/png item and its size, the whole page through captureFull (#140)', async () => {
+    const acted: string[] = []
+    const { mcp, buffers } = fakeCockpit(undefined, actingPage(acted))
+    const pageId = buffers.list().find((buffer) => buffer.kind === 'page')?.id ?? ''
+    const inApp = { door: 'in-app', client: 'the cockpit session' } as const
+    const full = await mcp.call('browser_screenshot', { fullPage: true }, inApp)
+    expect(full.structuredContent).toEqual({
+      page: pageId,
+      origin: 'https://shop.example',
+      width: 800,
+      height: 3000,
+    })
+    const content = full.content as readonly { type: string; mimeType?: string; data?: string }[]
+    expect(content.map((item) => item.type)).toEqual(['text', 'image'])
+    expect(content[1]?.mimeType).toBe('image/png')
+    expect(content[1]?.data).toBe(png(800, 3000))
+    const typed = await mcp.call(
+      'browser_type',
+      { element: 'Search', ref: 'd4e2', text: 'a' },
+      inApp,
+    )
+    expect(typed.structuredContent).toMatchObject({ ref: 'd4e2', submitted: false })
+    expect(acted).toEqual(['capture full', 'click 60,60', 'type a'])
+    const both = await mcp.call('browser_screenshot', { fullPage: true, ref: 'd4e4' }, inApp)
+    expect(both.isError).toBe(true)
   })
 })

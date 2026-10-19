@@ -24,6 +24,10 @@ import { fixtureServer, launchNemesis } from './_harness'
  *    injection fixture returns every canary the snapshot carries inside the
  *    block headed by the fixture's origin and nowhere else, the hidden and
  *    commented ones not at all, and no side-effect tool ran.
+ * 5. An acting page tool (#140): the cockpit session's `browser_click` waits
+ *    on a `y` while a page is open, its request line naming the tool, the
+ *    origin and the agent's element words, and is denied unasked while a
+ *    page is the current buffer.
  */
 
 interface AgentEvent {
@@ -255,6 +259,86 @@ test('browser_snapshot over the injection fixture keeps every canary inside the 
     expect(await ofType(window, 'tool-use')).toEqual([])
     expect(await ofType(window, 'permission-request')).toEqual([])
     expect(buffer.page.url()).toBe(url)
+  } finally {
+    await client.close().catch(() => undefined)
+    await nemesis.close()
+    await fixtures.close()
+  }
+})
+
+test("the cockpit session's browser_click waits on a y while a page is open, and is denied unasked while one is current (#140)", async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const { app, window } = nemesis
+  const client = new Client({ name: 'e2e-boundary-client', version: '1.0.0' })
+  try {
+    await window.evaluate(() => {
+      const w = globalThis as unknown as TestWindow
+      w.__agentEvents = []
+      w.nemesis.onAgentEvent((event) => w.__agentEvents?.push(event))
+    })
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('mcp-act.html'))
+    expect(buffer.loadError).toBeNull()
+    await expect(buffer.page).toHaveTitle('mcp-act')
+    const ids = buffer.ids
+    if (ids === undefined) throw new Error('The page buffer has no ids')
+
+    // A live ref of the page, from the free snapshot.
+    const socket = join(nemesis.userData, 'mcp.sock')
+    await expect.poll(() => existsSync(socket)).toBe(true)
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [join(process.cwd(), 'bin', 'nemesis-mcp'), '--socket', socket],
+      }),
+    )
+    const snapshot = await client.callTool({ name: 'browser_snapshot', arguments: {} })
+    const block = (snapshot.content as readonly { text?: string }[])[1]?.text ?? ''
+    const ref = /\[(d\d+e\d+)\] button "Hover me"/.exec(block)?.[1]
+    if (ref === undefined) throw new Error(`No button in the snapshot:\n${block}`)
+    const tool = 'mcp__nemesis__browser_click'
+    const call = `tool: ${tool} {"element":"the Hover me button","ref":"${ref}"}`
+
+    // The page open, the point in the prompt: the click waits on a y.
+    await run(app, ids.windowId, 'summarize-page')
+    await expect.poll(async () => (await ofType(window, 'turn-end')).length).toBe(1)
+    const request = window.locator('#request')
+    await expect(window.locator('#prompt .cm-content')).toBeFocused()
+    await window.keyboard.type(call)
+    await window.keyboard.press('Control+c')
+    await window.keyboard.press('Control+c')
+    await expect(request).toBeVisible()
+    await expect(window.locator('#request-title')).toHaveText(
+      `the cockpit session asks browser_click on ${fixtures.httpsOrigin}: click "the Hover me button" in ${ids.bufferId}?`,
+    )
+    await expect(window.locator('#request-keys')).toHaveText('y allow this one call, n deny')
+    expect(
+      (await ofType(window, 'notice')).some((event) =>
+        (event.text ?? '').includes(`Page boundary: ${tool}`),
+      ),
+    ).toBe(true)
+    expect(await ofType(window, 'tool-result')).toEqual([])
+    await window.keyboard.press('y')
+    await expect
+      .poll(async () => (await ofType(window, 'assistant-text')).at(-1)?.text)
+      .toBe(`Ran ${tool}.`)
+
+    // A page current: denied, and nobody is asked.
+    const second = await nemesis.openPageBuffer(fixtures.secureUrl('mcp-act.html'))
+    const secondIds = second.ids
+    if (secondIds === undefined) throw new Error('The page buffer has no ids')
+    const requestsBefore = (await ofType(window, 'permission-request')).length
+    void run(app, secondIds.windowId, 'ask-codebase')
+    await expect(window.locator('#palette-prompt')).toHaveText('Ask the codebase:')
+    await window.keyboard.type(call)
+    await window.keyboard.press('Enter')
+    await expect.poll(async () => (await ofType(window, 'turn-end')).length).toBe(3)
+    expect((await ofType(window, 'assistant-text')).at(-1)?.text).toBe(`Did not run ${tool}.`)
+    const denied = (await ofType(window, 'tool-result')).at(-1)
+    expect(denied).toMatchObject({ isError: true })
+    expect(denied?.text).toContain('denied without a question')
+    expect(await ofType(window, 'permission-request')).toHaveLength(requestsBefore)
+    await expect(request).toBeHidden()
   } finally {
     await client.close().catch(() => undefined)
     await nemesis.close()

@@ -345,9 +345,14 @@ class MockQuery implements AgentQueryHandle {
     }
 
     if (prompt.startsWith('tool:')) {
-      const name = prompt.slice(5).trim() || 'Read'
+      // `tool: Name {json}` gives the call that input (#140); without it, a path.
+      const [head = '', ...rest] = prompt.slice(5).trim().split(' ')
+      const name = head || 'Read'
       const toolUseId = `mock-tool-${this.turns}`
-      const input = { path: '/mock/notes.txt' }
+      const input: Record<string, unknown> =
+        rest.length > 0
+          ? (JSON.parse(rest.join(' ')) as Record<string, unknown>)
+          : { path: '/mock/notes.txt' }
       yield this.assistant([{ type: 'tool_use', id: toolUseId, name, input }])
       const decision = await this.ask(name, input)
       const allowed = decision.behavior === 'allow'

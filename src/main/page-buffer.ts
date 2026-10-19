@@ -120,6 +120,45 @@ const SCROLL_KEYS: Readonly<Record<PageScroll, string>> = {
   bottom: 'End',
 }
 
+/**
+ * The keys `browser_press_key` takes (#140), by the name the DOM's `key`
+ * gives them, as `sendInputEvent` spells each, and the character a key types
+ * when it types one: Enter's carriage return is what submits a form.
+ */
+const NAMED_KEYS: Readonly<Record<string, { readonly keyCode: string; readonly char?: string }>> = {
+  Enter: { keyCode: 'Enter', char: '\r' },
+  Tab: { keyCode: 'Tab' },
+  Escape: { keyCode: 'Escape' },
+  Backspace: { keyCode: 'Backspace' },
+  Delete: { keyCode: 'Delete' },
+  ArrowUp: { keyCode: 'Up' },
+  ArrowDown: { keyCode: 'Down' },
+  ArrowLeft: { keyCode: 'Left' },
+  ArrowRight: { keyCode: 'Right' },
+  Home: { keyCode: 'Home' },
+  End: { keyCode: 'End' },
+  PageUp: { keyCode: 'PageUp' },
+  PageDown: { keyCode: 'PageDown' },
+  Space: { keyCode: 'Space', char: ' ' },
+}
+
+/**
+ * How one key is sent (#140): a name of NAMED_KEYS, or one printable
+ * character, which types itself; null for anything else, a chord included.
+ */
+export function keyStroke(
+  key: string,
+): { readonly keyCode: string; readonly char?: string } | null {
+  const named = NAMED_KEYS[key]
+  if (named !== undefined) return named
+  const characters = [...key]
+  if (characters.length !== 1 || /[\p{C}]/u.test(key)) return null
+  return { keyCode: key, char: key }
+}
+
+/** The moves a drag makes between its two ends, so a page that follows the pointer sees it travel. */
+const DRAG_STEPS = 8
+
 /** What a redirect reports, the part of Electron's event a page buffer reads. */
 export interface RedirectDetails {
   readonly url: string
@@ -178,13 +217,21 @@ export interface PageContents {
   insertText(text: string): Promise<void>
   sendInputEvent(
     event:
-      | { readonly type: 'keyDown' | 'keyUp'; readonly keyCode: string }
+      | { readonly type: 'keyDown' | 'keyUp' | 'char'; readonly keyCode: string }
       | {
           readonly type: 'mouseDown' | 'mouseUp'
           readonly x: number
           readonly y: number
           readonly button: 'left'
           readonly clickCount: number
+        }
+      | {
+          readonly type: 'mouseMove'
+          readonly x: number
+          readonly y: number
+          /** Set while a drag holds the left button (#140). */
+          readonly button?: 'left'
+          readonly modifiers?: 'leftbuttondown'[]
         },
   ): void
   readonly navigationHistory: {
@@ -703,6 +750,67 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const at = { x: Math.round(x * factor), y: Math.round(y * factor) }
     contents.sendInputEvent({ type: 'mouseDown', ...at, button: 'left', clickCount: 1 })
     contents.sendInputEvent({ type: 'mouseUp', ...at, button: 'left', clickCount: 1 })
+  }
+
+  /**
+   * The pointer over a point of a page's viewport, in CSS pixels, with no
+   * button held (#140): what a hover is to the page.
+   */
+  hoverAt(id: string, x: number, y: number): void {
+    const contents = this.contentsOf(id)
+    contents.sendInputEvent({ type: 'mouseMove', ...this.viewPoint(contents, x, y) })
+  }
+
+  /**
+   * A drag with the left button between two points of a page's viewport, in
+   * CSS pixels (#140): down at the start, DRAG_STEPS moves with the button
+   * held, up at the end, all synthesized in main as the user's own input.
+   */
+  dragBetween(
+    id: string,
+    from: { readonly x: number; readonly y: number },
+    to: { readonly x: number; readonly y: number },
+  ): void {
+    const contents = this.contentsOf(id)
+    const start = this.viewPoint(contents, from.x, from.y)
+    const end = this.viewPoint(contents, to.x, to.y)
+    contents.sendInputEvent({ type: 'mouseMove', ...start })
+    contents.sendInputEvent({ type: 'mouseDown', ...start, button: 'left', clickCount: 1 })
+    for (let step = 1; step <= DRAG_STEPS; step += 1) {
+      contents.sendInputEvent({
+        type: 'mouseMove',
+        x: Math.round(start.x + ((end.x - start.x) * step) / DRAG_STEPS),
+        y: Math.round(start.y + ((end.y - start.y) * step) / DRAG_STEPS),
+        button: 'left',
+        modifiers: ['leftbuttondown'],
+      })
+    }
+    contents.sendInputEvent({ type: 'mouseUp', ...end, button: 'left', clickCount: 1 })
+  }
+
+  /**
+   * One key in a page (#140): down, the character it types when it types
+   * one, up, as Chromium's input. A key keyStroke does not know is refused.
+   */
+  pressKey(id: string, key: string): void {
+    const stroke = keyStroke(key)
+    if (stroke === null) throw new CommandError(`Not a key the page tier presses: ${key}`)
+    const contents = this.contentsOf(id)
+    contents.sendInputEvent({ type: 'keyDown', keyCode: stroke.keyCode })
+    if (stroke.char !== undefined) contents.sendInputEvent({ type: 'char', keyCode: stroke.char })
+    contents.sendInputEvent({ type: 'keyUp', keyCode: stroke.keyCode })
+  }
+
+  private contentsOf(id: string): PageContents {
+    const page = this.pages.get(id)
+    if (page === undefined) throw new CommandError(`No page buffer with id "${id}"`)
+    return page.view.webContents
+  }
+
+  /** A point of the viewport in CSS pixels as the view's own, through the page's zoom. */
+  private viewPoint(contents: PageContents, x: number, y: number): { x: number; y: number } {
+    const factor = ZOOM_BASE ** contents.getZoomLevel()
+    return { x: Math.round(x * factor), y: Math.round(y * factor) }
   }
 
   /** The partition of a page buffer, or undefined for an id that holds no page. */

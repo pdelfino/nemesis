@@ -16,11 +16,13 @@ import { SESSION_NAME_LENGTH } from '../transcripts'
  * row is served: the tier, which is its prefix and its milestone, and
  * `inApp`, false for the one tool the cockpit's own session must not see.
  *
- * The cockpit tier, and two slices of the `browser_` tier: the reading
- * tools (#138), which read a page buffer and never act on it, all free, and
- * the navigation tools (#139), which move a page, each asked once per call:
- * on the socket in the prompt buffer, inside the cockpit by the permission
- * bridge, which offers no `a` for a `browser_` name. Their structure holds
+ * The cockpit tier, and three slices of the `browser_` tier: the reading
+ * tools (#138), which read a page buffer and never act on it, all free, the
+ * navigation tools (#139), which move a page, and the acting tools (#140),
+ * which click, hover, type, press keys, drag and capture, the last two kinds
+ * each asked once per call: on the socket in the prompt buffer, inside the
+ * cockpit by the permission bridge, which offers no `a` for a `browser_`
+ * name. Their structure holds
  * only what Nemesis controls; the page's own strings come in one
  * `wrapUntrusted` block (page-tier.ts). No row evaluates code, for any
  * client (ADR 0008, "tools that never exist").
@@ -104,6 +106,17 @@ const UNTRUSTED =
 
 const PAGE_DEFAULT =
   '`page` is a buffer id from cockpit_list_buffers; without it, the current page buffer.'
+
+/** The text `browser_type` takes in one call, in characters. */
+export const TYPE_CHARS = 10_000
+
+/** What an acting tool's `element` describes: the agent's words for the user, cut in the question. */
+const elementArg = z.string().min(1).max(1000)
+
+const ELEMENT =
+  '`element` is your description of the element for the user, shown quoted in the question; `ref` is its ref from browser_snapshot. A stale ref, after the page navigated, comes back as an error: take a new snapshot.'
+
+const ACTING = `Asks the user once per call. Input is the user's own kind, synthesized at the element's centre; an element out of view is refused (scroll with browser_press_key). Answers once the page settles, with the page's snapshot.`
 
 const NAVIGATION = `Asks the user once per call. https: only: a plain http: URL off loopback, and javascript:, file: and data:, come back refused with the reason. Answers once the load settles, at most ${SETTLE_CAP_SECONDS} seconds, with the page's snapshot.`
 
@@ -377,6 +390,82 @@ export const CATALOG: readonly CatalogTool[] = [
     inApp: true,
     args: z.object({ page: z.string().min(1).max(32) }),
     returns: z.object({ page: z.string(), closed: z.boolean() }),
+  },
+  {
+    name: 'browser_click',
+    tier: 'browser',
+    description: `Click an element: a left click at its centre. ${ELEMENT} ${ACTING} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ element: elementArg, ref: refArg, page: pageArg }),
+    returns: z.object({ page: z.string(), origin: z.string(), ref: z.string() }),
+  },
+  {
+    name: 'browser_hover',
+    tier: 'browser',
+    description: `Move the pointer over an element's centre, as a hover opens a menu. ${ELEMENT} ${ACTING} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ element: elementArg, ref: refArg, page: pageArg }),
+    returns: z.object({ page: z.string(), origin: z.string(), ref: z.string() }),
+  },
+  {
+    name: 'browser_type',
+    tier: 'browser',
+    description: `Type text into a field, replacing what it holds: a click focuses it, then the text goes in; \`submit\` presses Enter after it. A secret field (a password, a card number) is refused before anyone is asked: the human types it. ${ELEMENT} ${ACTING} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({
+      element: elementArg,
+      ref: refArg,
+      text: z.string().max(TYPE_CHARS),
+      submit: z.boolean().optional(),
+      page: pageArg,
+    }),
+    returns: z.object({
+      page: z.string(),
+      origin: z.string(),
+      ref: z.string(),
+      submitted: z.boolean(),
+    }),
+  },
+  {
+    name: 'browser_press_key',
+    tier: 'browser',
+    description: `Press one key in the page: a character, or a key name such as \`Enter\`, \`Tab\`, \`Escape\`, \`Backspace\`, \`ArrowDown\` or \`PageDown\`. Asks the user once per call; Enter may submit a form, and the question says so. ${PAGE_DEFAULT}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ key: z.string().min(1).max(32), page: pageArg }),
+    returns: z.object({ page: z.string(), origin: z.string(), key: z.string() }),
+  },
+  {
+    name: 'browser_drag',
+    tier: 'browser',
+    description: `Drag one element onto another with the left button, from centre to centre. \`startElement\` and \`endElement\` describe them for the user, \`startRef\` and \`endRef\` are their refs from browser_snapshot, on one page. ${ACTING} ${PAGE_DEFAULT} ${UNTRUSTED}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({
+      startElement: elementArg,
+      startRef: refArg,
+      endElement: elementArg,
+      endRef: refArg,
+      page: pageArg,
+    }),
+    returns: z.object({ page: z.string(), origin: z.string() }),
+  },
+  {
+    name: 'browser_screenshot',
+    tier: 'browser',
+    description: `A PNG of the page's viewport, of one element with \`ref\`, or of the whole page with \`fullPage\`. Asks the user once per call, since pixels cannot be masked: a secret field shows as the page draws it. ${PAGE_DEFAULT}`,
+    confirmation: 'yes',
+    inApp: true,
+    args: z.object({ page: pageArg, ref: refArg.optional(), fullPage: z.boolean().optional() }),
+    returns: z.object({
+      page: z.string(),
+      origin: z.string(),
+      width: z.number(),
+      height: z.number(),
+    }),
   },
 ]
 

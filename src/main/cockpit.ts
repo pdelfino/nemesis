@@ -43,6 +43,7 @@ import { PageHints } from './pages/hints'
 import { FormGuide } from './pages/form-guide'
 import { FormGuideSession } from './agent/form-guide'
 import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
+import { capturePage, captureFullPage } from './pages/capture'
 import { ConsoleLog } from './pages/console'
 import { SemanticView, semanticText } from './pages/semantic'
 import { PAGES_FOLDER, ReaderBuffers, readerAttachment, type ReaderDocument } from './pages/reader'
@@ -202,6 +203,10 @@ export function createCockpit(
   })
   const permissions = new PermissionBridge(buffers, {
     mustAsk: (request) => boundary.mustAsk(request),
+    // An acting page tool of the session is asked in the page tier's words,
+    // and a stale ref or a masked field is refused before the question (#140).
+    pageQuestion: (toolName, input) =>
+      mcp.inAppQuestion(toolName.slice(`mcp__${IN_APP_SERVER}__`.length), input),
   })
   const recorder = new SessionRecorder({ sessionsDir: settings.sessionsDir })
   // What search-transcripts scans (#69).
@@ -551,6 +556,25 @@ export function createCockpit(
         create: () => pages.createPage().id,
         step: (pageId, by) => pages.step(pageId, by),
         close: (pageId) => pages.destroyPage(pageId),
+      },
+      // The acting tools (#140): input synthesized in main at the element's
+      // centre, as hint mode clicks, and the two capture paths.
+      acts: {
+        hints: (pageId) => askPage(pageId, 'hints'),
+        viewport: (pageId) => {
+          const view = pages.viewOf(pageId)
+          if (view === undefined || view.webContents.isDestroyed()) return null
+          const { width, height } = view.getBounds()
+          const factor = view.webContents.getZoomFactor()
+          return width > 0 && height > 0 ? { width: width / factor, height: height / factor } : null
+        },
+        click: (pageId, at) => pages.clickAt(pageId, at.x, at.y),
+        hover: (pageId, at) => pages.hoverAt(pageId, at.x, at.y),
+        drag: (pageId, from, to) => pages.dragBetween(pageId, from, to),
+        type: (pageId, text) => pages.typeIntoFocused(pageId, text),
+        key: (pageId, key) => pages.pressKey(pageId, key),
+        capture: (pageId, box) => capturePage(pages.viewOf(pageId), box),
+        captureFull: (pageId) => captureFullPage(pages.viewOf(pageId)),
       },
       buffers,
     },

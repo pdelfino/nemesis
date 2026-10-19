@@ -25,7 +25,7 @@ import {
   READ_BYTES_CAP,
   READ_LINES_CAP,
 } from './catalog'
-import { PageTier, type PageTierDeps } from './page-tier'
+import { ACTING_TOOLS, PageTier, type PageTierDeps } from './page-tier'
 
 /**
  * The cockpit's MCP server (#28, ADR 0007): the tools of catalog.ts, each a
@@ -54,6 +54,12 @@ import { PageTier, type PageTierDeps } from './page-tier'
  * question is page-tier.ts's: the tool, the origin of the page and the URL
  * the client named, quoted, never a string the page wrote; a refusal comes
  * back before anything is asked.
+ *
+ * The acting tools (#140) ask the same way at either door: the client, the
+ * tool, the page's origin and the agent's `element` words quoted; inside the
+ * cockpit the permission bridge shows that line, from `inAppQuestion`. A
+ * stale ref, and a masked field for `browser_type`, are refused before the
+ * question. A screenshot's PNG is one `image` content item after the text.
  *
  * One resource beside the tools, `nemesis://session/events` (ADR 0008): the
  * current session's `events.jsonl` as recorded, so a tool result that came
@@ -119,6 +125,7 @@ interface Answer {
   readonly structured: Record<string, unknown>
   readonly text: string
   readonly block?: string
+  readonly image?: string
 }
 
 export class McpToolError extends Error {
@@ -275,7 +282,7 @@ export class CockpitMcp {
     try {
       let given = args
       if (tool.confirmation === 'yes' && call.door === 'socket') {
-        const asked = this.question(name, args)
+        const asked = await this.question(name, args)
         await this.ask(call, asked.question)
         given = asked.args
       }
@@ -284,6 +291,9 @@ export class CockpitMcp {
         content: [
           { type: 'text', text: answer.text },
           ...(answer.block === undefined ? [] : [{ type: 'text' as const, text: answer.block }]),
+          ...(answer.image === undefined
+            ? []
+            : [{ type: 'image' as const, data: answer.image, mimeType: 'image/png' }]),
         ],
         structuredContent: answer.structured,
       }
@@ -520,10 +530,26 @@ export class CockpitMcp {
    * The question a yes-per-call tool asks on the socket, after the client's
    * name, and the arguments the yes is for: a page tool's names its page.
    */
-  private question(
+  /**
+   * The line the permission bridge shows when the cockpit's own session calls
+   * an acting page tool (#140), and the arguments pinned to the page it
+   * names; null for any other tool, which the bridge asks as before. A
+   * refusal (a stale ref, a masked field for `browser_type`) rejects, and the
+   * bridge denies the call with it before anyone is asked.
+   */
+  async inAppQuestion(
     name: string,
     args: Record<string, unknown>,
-  ): { readonly question: string; readonly args: Record<string, unknown> } {
+  ): Promise<{ readonly title: string; readonly args: Record<string, unknown> } | null> {
+    if (!ACTING_TOOLS.has(name)) return null
+    const asked = await this.question(name, args)
+    return { title: `${IN_APP_CLIENT} asks ${asked.question}`, args: asked.args }
+  }
+
+  private async question(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ readonly question: string; readonly args: Record<string, unknown> }> {
     if (!name.startsWith('browser_'))
       return { question: `${name}: ${this.detail(name, args)}?`, args }
     if (this.pages === null) throw new McpToolError('This cockpit has no page buffers')

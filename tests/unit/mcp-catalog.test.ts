@@ -56,10 +56,20 @@ const NAVIGATION_TOOLS = [
   'browser_close_page',
 ]
 
-const PAGE_TOOLS = [...READ_TOOLS, ...NAVIGATION_TOOLS]
+/** Its acting tools (#140). */
+const ACT_TOOLS = [
+  'browser_click',
+  'browser_hover',
+  'browser_type',
+  'browser_press_key',
+  'browser_drag',
+  'browser_screenshot',
+]
+
+const PAGE_TOOLS = [...READ_TOOLS, ...NAVIGATION_TOOLS, ...ACT_TOOLS]
 
 describe('the MCP catalog (#28, ADR 0008)', () => {
-  it('is the eight cockpit tools and eleven page tools, and tools/list serves exactly the table', async () => {
+  it('is the eight cockpit tools and seventeen page tools, and tools/list serves exactly the table', async () => {
     expect(CATALOG.map((tool) => tool.name)).toEqual([...COCKPIT_TOOLS, ...PAGE_TOOLS])
     const client = await connectClient(fakeCockpit().mcp)
     const { tools } = await client.listTools()
@@ -93,12 +103,12 @@ describe('the MCP catalog (#28, ADR 0008)', () => {
       // Every page row names its page, but the one that makes a new page.
       if (tool.name !== 'browser_open_page') expect(tool.args.shape).toHaveProperty('page')
     }
-    // No acting tool yet (#140), and no query or select (#141).
+    // No query or select (#141), and nothing that submits or fills in a batch.
     for (const name of [
-      'browser_click',
-      'browser_type',
       'browser_query',
       'browser_select_option',
+      'browser_submit',
+      'browser_fill_form',
     ]) {
       expect(CATALOG.map((tool) => tool.name)).not.toContain(name)
     }

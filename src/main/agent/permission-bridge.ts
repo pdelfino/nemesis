@@ -31,6 +31,13 @@ import type {
  * so a yes on a page is always for one call; `a` keeps its meaning for
  * every other tool.
  *
+ * A page tool that acts (#140) is put to the user in the MCP page tier's
+ * own words, through `pageQuestion`: the request's title is that line (the
+ * tool, the page's origin, the agent's element words quoted), and a yes
+ * runs the call on the page the line named. A call the tier refuses (a
+ * stale ref, a masked field to type into) is denied with the reason before
+ * any request is shown.
+ *
  * AskUserQuestion is a tool call like any other to the SDK, so it arrives
  * here too. Its questions are numbered; a digit picks an option and free text
  * from the prompt buffer answers in the user's own words. The answers go back
@@ -70,6 +77,8 @@ interface Entry {
   readonly bufferId: string
   readonly questions: readonly AgentQuestion[] | null
   readonly answers: string[]
+  /** The input a yes runs with, when the page tier pinned it to a page (#140). */
+  readonly pinned: Record<string, unknown> | undefined
   readonly resolve: (decision: PermissionDecision) => void
 }
 
@@ -80,6 +89,17 @@ export interface PermissionBridgeOptions {
    * answers for every tool it allowed.
    */
   readonly mustAsk?: ((request: PermissionRequest) => boolean) | undefined
+  /**
+   * The MCP page tier's question for a page tool (#140): the line to show and
+   * the input pinned to its page, or null to ask as for any other tool. A
+   * rejection is a refusal, and the call is denied with its message unasked.
+   */
+  readonly pageQuestion?:
+    | ((
+        toolName: string,
+        input: Record<string, unknown>,
+      ) => Promise<{ readonly title: string; readonly args: Record<string, unknown> } | null>)
+    | undefined
 }
 
 export class PermissionBridge implements PermissionHandler {
@@ -93,10 +113,12 @@ export class PermissionBridge implements PermissionHandler {
 
   /** True for a request `a` may not answer: the page boundary's side-effect tools (#55). */
   private readonly mustAsk: (request: PermissionRequest) => boolean
+  private readonly pageQuestion: PermissionBridgeOptions['pageQuestion']
 
   constructor(buffers: BufferRegistry, options: PermissionBridgeOptions = {}) {
     this.buffers = buffers
     this.mustAsk = options.mustAsk ?? (() => false)
+    this.pageQuestion = options.pageQuestion
     // A killed request buffer is an answer: the agent must not wait on a
     // request the user can no longer see.
     buffers.subscribe((list) => {
@@ -140,6 +162,26 @@ export class PermissionBridge implements PermissionHandler {
     ) {
       return Promise.resolve({ behavior: 'allow' })
     }
+    const pageQuestion = this.pageQuestion
+    if (pageQuestion !== undefined && askedEveryCall(request.toolName)) {
+      return pageQuestion(request.toolName, request.input).then(
+        (asked) =>
+          asked === null
+            ? this.ask(request, undefined)
+            : this.ask({ ...request, title: asked.title, input: asked.args }, asked.args),
+        (error: unknown): PermissionDecision => ({
+          behavior: 'deny',
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }
+    return this.ask(request, undefined)
+  }
+
+  private ask(
+    request: PermissionRequest,
+    pinned: Record<string, unknown> | undefined,
+  ): Promise<PermissionDecision> {
     if (request.signal.aborted) {
       return Promise.resolve({ behavior: 'deny', message: REQUEST_ABORTED })
     }
@@ -171,6 +213,7 @@ export class PermissionBridge implements PermissionHandler {
         bufferId: buffer.id,
         questions,
         answers: [],
+        pinned,
         resolve,
       }
       this.entries.push(entry)
@@ -190,7 +233,13 @@ export class PermissionBridge implements PermissionHandler {
     if (entry.questions !== null) {
       throw new CommandError('The pending request is a question: choose with a digit or reply')
     }
-    this.settle(entry, { behavior: 'allow' }, 'allow')
+    this.settle(
+      entry,
+      entry.pinned === undefined
+        ? { behavior: 'allow' }
+        : { behavior: 'allow', updatedInput: entry.pinned },
+      'allow',
+    )
   }
 
   /** `n`: the tool does not run, and the agent is told why. */

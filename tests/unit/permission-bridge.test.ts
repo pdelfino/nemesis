@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AgentEvent, PermissionRequest } from '../../src/main/agent/events'
 import {
   DENIED_BY_USER,
@@ -291,6 +291,52 @@ describe('the permission bridge (#63)', () => {
       message: 'The user killed the request buffer.',
     })
     expect(bridge.pending).toEqual([])
+  })
+
+  it("asks an acting page tool in the page tier's words, pins its page, and denies a refusal unasked (#140)", async () => {
+    const buffers = createCockpitBuffers()
+    const asked: string[] = []
+    const bridge = new PermissionBridge(buffers, {
+      pageQuestion: async (toolName, input) => {
+        asked.push(toolName)
+        if (input['ref'] === 'masked') throw new Error('masked field: the human types it')
+        return toolName.endsWith('browser_click')
+          ? {
+              title:
+                'the cockpit session asks browser_click on https://a.example: click "Buy" in b3?',
+              args: { ...input, page: 'b3' },
+            }
+          : null
+      },
+    })
+    const events: AgentEvent[] = []
+    bridge.on((event) => events.push(event))
+    const click = `${PAGE_TOOL_PREFIX}click`
+
+    const refused = await bridge.requestPermission(
+      request(`${PAGE_TOOL_PREFIX}type`, { input: { ref: 'masked' } }),
+    )
+    expect(refused).toEqual({ behavior: 'deny', message: 'masked field: the human types it' })
+    expect(events.filter((event) => event.type === 'permission-request')).toEqual([])
+    expect(bridge.pending).toEqual([])
+
+    const decision = bridge.requestPermission(
+      request(click, { input: { element: 'Buy', ref: 'd1e2' } }),
+    )
+    await vi.waitFor(() => expect(bridge.pending).toHaveLength(1))
+    expect(events.find((event) => event.type === 'permission-request')).toMatchObject({
+      title: 'the cockpit session asks browser_click on https://a.example: click "Buy" in b3?',
+    })
+    bridge.allowOnce()
+    expect(await decision).toEqual({
+      behavior: 'allow',
+      updatedInput: { element: 'Buy', ref: 'd1e2', page: 'b3' },
+    })
+    // Only page tools go to the tier.
+    const bash = bridge.requestPermission(request('Bash'))
+    bridge.allowOnce()
+    expect(await bash).toEqual({ behavior: 'allow' })
+    expect(asked).toEqual([`${PAGE_TOOL_PREFIX}type`, click])
   })
 
   it('refuses an answer when nothing is pending', () => {

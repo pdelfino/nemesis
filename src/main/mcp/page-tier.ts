@@ -1,17 +1,27 @@
 import type { BufferInfo, BufferList, PageEvent } from '../../shared/buffers'
-import { MAX_SNAPSHOT_NODES, type FormAnswer, type TextAnswer } from '../../shared/page-door'
+import {
+  FORM_FLAGS,
+  MAX_SNAPSHOT_NODES,
+  type FormAnswer,
+  type HintsAnswer,
+  type TextAnswer,
+} from '../../shared/page-door'
 import { wrapUntrusted } from '../agent/boundary'
 import { describeOrigin } from '../ipc'
 import { navigationAllowed } from '../security/navigation-policy'
 import { upgradeOf } from '../security/transport'
+import { keyStroke } from '../page-buffer'
 import { normalizeUrl } from '../url-sources'
 import type { ConsoleEntry } from '../pages/console'
 import { formReading, formText } from '../pages/form-guide'
 import { readerBody, type ReaderDocument } from '../pages/reader'
 import {
+  parseRef,
   semanticText,
   semanticTree,
   type ResolvedRef,
+  type SemanticNode,
+  type SemanticRect,
   type SemanticSnapshot,
 } from '../pages/semantic'
 import {
@@ -38,6 +48,16 @@ import {
  * `data:` are refused before anything loads. A move answers once the load
  * settles, capped at SETTLE_CAP_SECONDS, with the page's snapshot.
  *
+ * Its acting tools (#140): click, hover, type, press a key, drag and
+ * capture. A `ref` resolves through the snapshot main takes of its page at
+ * the call, so a ref of a document the page left is refused with a word to
+ * take a new snapshot. Input is synthesized in main, as hint mode clicks
+ * (#123): the element's box from the snapshot is placed in the viewport by
+ * the door's `hints` read, and the page sees the user's own kind of input,
+ * never a script (ADR 0009). The question names the tool, the page's origin
+ * and the agent's `element` words quoted, never the page's own text; a stale
+ * ref, and a masked field for `browser_type`, are refused before it.
+ *
  * The label rule of ADR 0008: what Nemesis controls (the buffer id, the
  * origin of the committed top-frame URL main holds, counts, flags, times,
  * refs) is the structure; every string the page controls (title, full URL,
@@ -52,6 +72,8 @@ export interface PageAnswer {
   readonly structured: Record<string, unknown>
   readonly text: string
   readonly block?: string
+  /** A screenshot (#140): a PNG, base64, checked by its signature. */
+  readonly image?: string
 }
 
 export interface PageTierDeps {
@@ -80,6 +102,8 @@ export interface PageTierDeps {
   readonly events: (listener: (event: PageEvent) => void) => () => void
   /** The moves of the navigation tools (#139), the page buffers' own paths. */
   readonly moves: PageMoves
+  /** The acting tools' input and captures (#140); absent, every acting call is an error. */
+  readonly acts?: PageActs | undefined
   readonly buffers: {
     readonly current: BufferInfo | null
     subscribe(listener: (list: BufferList) => void): unknown
@@ -100,6 +124,54 @@ export interface PageMoves {
   /** Kills the page buffer. */
   close(pageId: string): void
 }
+
+/** A point of a page's viewport, in CSS pixels. */
+export interface ViewportPoint {
+  readonly x: number
+  readonly y: number
+}
+
+/**
+ * What the acting tools ask of the page buffers (#140). Input is synthesized
+ * in main, never by a page script; a capture is a PNG, base64.
+ */
+export interface PageActs {
+  /** The door's `hints` read: the interactive elements in view, their boxes in the viewport. */
+  hints(pageId: string): Promise<HintsAnswer>
+  /** The page's viewport in CSS pixels; null for a page never laid out. */
+  viewport(pageId: string): { readonly width: number; readonly height: number } | null
+  click(pageId: string, at: ViewportPoint): void
+  hover(pageId: string, at: ViewportPoint): void
+  drag(pageId: string, from: ViewportPoint, to: ViewportPoint): void
+  /** Replaces the focused field's text, as the form guide types it (#94). */
+  type(pageId: string, text: string): Promise<void>
+  /** One key keyStroke knows. */
+  key(pageId: string, key: string): void
+  /** The viewport, or a box of it in CSS pixels, as `capturePage` takes it. */
+  capture(pageId: string, box?: SemanticRect): Promise<string>
+  /** The whole page, through the DevTools protocol's one method, attached for the call. */
+  captureFull(pageId: string): Promise<string>
+}
+
+/** The tools that act on a page (#140), each asked once per call. */
+export const ACTING_TOOLS: ReadonlySet<string> = new Set([
+  'browser_click',
+  'browser_hover',
+  'browser_type',
+  'browser_press_key',
+  'browser_drag',
+  'browser_screenshot',
+])
+
+/** What `browser_type` answers for a secret field, before anyone is asked (ADR 0008). */
+export const MASKED_TYPE = 'masked field: the human types it'
+
+/** How long an act waits for the page to start a navigation it caused. */
+export const ACT_SETTLE_MS = 300
+
+/** How many times `browser_type` looks for the focus its click gave, and how far apart. */
+const FOCUS_LOOKS = 10
+const FOCUS_LOOK_MS = 50
 
 /**
  * The URL a navigation tool loads for `raw`, the open-url normalization of
@@ -197,6 +269,24 @@ export class PageTier {
         return this.openPage(String(args['url']), signal)
       case 'browser_close_page':
         return this.closePage(String(args['page']))
+      case 'browser_click':
+        return this.pointAt(page, String(args['ref']), 'click', signal)
+      case 'browser_hover':
+        return this.pointAt(page, String(args['ref']), 'hover', signal)
+      case 'browser_type':
+        return this.type(
+          page,
+          String(args['ref']),
+          String(args['text']),
+          args['submit'] === true,
+          signal,
+        )
+      case 'browser_press_key':
+        return this.pressKey(page, String(args['key']), signal)
+      case 'browser_drag':
+        return this.drag(page, String(args['startRef']), String(args['endRef']), signal)
+      case 'browser_screenshot':
+        return this.screenshot(page, optionalString(args['ref']), args['fullPage'] === true)
       default:
         throw new Error(`No relay for ${name}`)
     }
@@ -210,11 +300,12 @@ export class PageTier {
    * the user answers never moves another page. A refusal throws here, before
    * anyone is asked.
    */
-  question(
+  async question(
     name: string,
     args: Record<string, unknown>,
     quote: (text: string) => string,
-  ): { readonly question: string; readonly args: Record<string, unknown> } {
+  ): Promise<{ readonly question: string; readonly args: Record<string, unknown> }> {
+    if (ACTING_TOOLS.has(name)) return this.actQuestion(name, args, quote)
     if (name === 'browser_open_page') {
       const url = navigationTarget(String(args['url']))
       return {
@@ -238,6 +329,78 @@ export class PageTier {
         return { question: `${on}: close ${pageId}?`, args: pinned }
       default:
         throw new Error(`No question for ${name}`)
+    }
+  }
+
+  /**
+   * The question of an acting tool (#140): the tool, the page's origin, then
+   * what it does in the agent's own words for the element, quoted and cut by
+   * `quote`. Every ref is resolved first, through a fresh snapshot, so a stale
+   * ref, and a masked field for `browser_type`, are refused before anyone is
+   * asked. The page the refs are on is pinned in the arguments.
+   */
+  private async actQuestion(
+    name: string,
+    args: Record<string, unknown>,
+    quote: (text: string) => string,
+  ): Promise<{ readonly question: string; readonly args: Record<string, unknown> }> {
+    const given = optionalString(args['page'])
+    const refs = (
+      name === 'browser_drag' ? [args['startRef'], args['endRef']] : [args['ref']]
+    ).filter((ref): ref is string => typeof ref === 'string')
+    let pageId = refs.length === 0 ? this.pageOf(given) : undefined
+    for (const ref of refs) {
+      const { page, node } = await this.element(given, ref)
+      if (pageId !== undefined && page.pageId !== pageId) {
+        throw new Error(`The refs ${refs.join(' and ')} are on different pages`)
+      }
+      pageId = page.pageId
+      if (name === 'browser_type' && isMasked(node)) throw new Error(MASKED_TYPE)
+    }
+    if (pageId === undefined) throw new Error('No page to act on')
+    const element = quote(String(args['element']))
+    let does: string
+    switch (name) {
+      case 'browser_click':
+        does = `click ${element} in ${pageId}`
+        break
+      case 'browser_hover':
+        does = `hover over ${element} in ${pageId}`
+        break
+      case 'browser_type': {
+        const count = [...String(args['text'])].length
+        const then = args['submit'] === true ? ', then press Enter to submit it' : ''
+        does = `type ${count} character${count === 1 ? '' : 's'} into ${element} in ${pageId}${then}`
+        break
+      }
+      case 'browser_press_key': {
+        const key = String(args['key'])
+        if (keyStroke(key) === null)
+          throw new Error(`Not a key the page tier presses: ${quote(key)}`)
+        const submits = key === 'Enter' ? ', which may submit a form' : ''
+        does = `press ${quote(key)} in ${pageId}${submits}`
+        break
+      }
+      case 'browser_drag':
+        does = `drag ${quote(String(args['startElement']))} onto ${quote(String(args['endElement']))} in ${pageId}`
+        break
+      default: {
+        const ref = optionalString(args['ref'])
+        if (ref !== undefined && args['fullPage'] === true) {
+          throw new Error('Pass ref or fullPage, not both')
+        }
+        const what =
+          ref !== undefined
+            ? `the element ${ref}`
+            : args['fullPage'] === true
+              ? 'the whole page'
+              : 'the viewport'
+        does = `capture ${what} of ${pageId} as an image, secret fields as the page draws them`
+      }
+    }
+    return {
+      question: `${name} on ${this.originOf(pageId)}: ${does}?`,
+      args: { ...args, page: pageId },
     }
   }
 
@@ -594,6 +757,250 @@ export class PageTier {
     }
   }
 
+  private acts(): PageActs {
+    if (this.deps.acts === undefined) throw new Error('This cockpit does not act on pages')
+    return this.deps.acts
+  }
+
+  /**
+   * A ref's element, from a fresh snapshot of its page: refused when its
+   * document is gone (the page navigated), when it is on another page than
+   * `given`, and when the element left the page.
+   */
+  private async element(
+    given: string | undefined,
+    ref: string,
+  ): Promise<{ page: Resolved; snapshot: SemanticSnapshot; node: SemanticNode }> {
+    const resolved = this.deps.resolve(ref)
+    if (resolved === null) throw new Error(`The ref ${ref} is not live: take a new snapshot`)
+    if (given !== undefined && resolved.pageId !== this.pageOf(given)) {
+      throw new Error(`The ref ${ref} is not on the page ${given}`)
+    }
+    const page = this.resolve(resolved.pageId)
+    const snapshot = await this.deps.snapshot(page.pageId)
+    const node = findNode(snapshot.nodes, ref)
+    if (node === undefined) {
+      throw new Error(`The element of ${ref} is no longer on the page: take a new snapshot`)
+    }
+    return { page, snapshot, node }
+  }
+
+  /**
+   * Where an element is in the viewport now, in CSS pixels. The door's
+   * `hints` read gives the box of an interactive element in view; any other
+   * element is placed by the snapshot's page box less the scroll, which an
+   * element both reads hold gives. An element whose centre is out of view
+   * is refused: input at it would land on something else.
+   */
+  private async box(
+    pageId: string,
+    snapshot: SemanticSnapshot,
+    node: SemanticNode,
+  ): Promise<SemanticRect> {
+    const acts = this.acts()
+    const viewport = acts.viewport(pageId)
+    if (viewport === null || viewport.width <= 0 || viewport.height <= 0) {
+      throw new Error(`The page ${pageId} has not been shown yet, so it has no viewport to act in`)
+    }
+    const { nodes } = await acts.hints(pageId)
+    const id = parseRef(node.ref)?.element
+    let box: SemanticRect | undefined = nodes.find((one) => one.id === id)
+    if (box === undefined) {
+      const placed = new Map<number, SemanticRect>()
+      for (const one of flatten(snapshot.nodes)) {
+        const element = parseRef(one.ref)?.element
+        if (element !== undefined) placed.set(element, one.rect)
+      }
+      const anchor = nodes.find((one) => placed.has(one.id))
+      const at = anchor === undefined ? undefined : placed.get(anchor.id)
+      if (anchor !== undefined && at !== undefined) {
+        box = {
+          x: node.rect.x - (at.x - anchor.x),
+          y: node.rect.y - (at.y - anchor.y),
+          width: node.rect.width,
+          height: node.rect.height,
+        }
+      }
+    }
+    const centre = box === undefined ? undefined : centreOf(box)
+    if (
+      box === undefined ||
+      centre === undefined ||
+      centre.x < 0 ||
+      centre.y < 0 ||
+      centre.x >= viewport.width ||
+      centre.y >= viewport.height
+    ) {
+      throw new Error(
+        `The element of ${node.ref} is out of view: scroll it in with browser_press_key (PageDown, PageUp), then call again`,
+      )
+    }
+    return box
+  }
+
+  /** A click or a hover at a ref's centre, then the page as it settled. */
+  private async pointAt(
+    given: string | undefined,
+    ref: string,
+    how: 'click' | 'hover',
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    const { page, snapshot, node } = await this.element(given, ref)
+    const at = centreOf(await this.box(page.pageId, snapshot, node))
+    const settled = this.settle(page.pageId, signal)
+    if (how === 'click') this.acts().click(page.pageId, at)
+    else this.acts().hover(page.pageId, at)
+    await settled
+    return this.landed(
+      page.pageId,
+      { ref },
+      how === 'click' ? `Clicked ${ref}:` : `Hovered over ${ref}:`,
+    )
+  }
+
+  /**
+   * Types into a field: refused when it is masked, focused by a click at its
+   * centre, and typed into only once the door says the focus is on that very
+   * field, so the text never lands anywhere else; Enter after it on `submit`.
+   */
+  private async type(
+    given: string | undefined,
+    ref: string,
+    text: string,
+    submit: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    const { page, snapshot, node } = await this.element(given, ref)
+    if (isMasked(node)) throw new Error(MASKED_TYPE)
+    const target = parseRef(ref)
+    const acts = this.acts()
+    acts.click(page.pageId, centreOf(await this.box(page.pageId, snapshot, node)))
+    let focused = false
+    for (let look = 0; look < FOCUS_LOOKS && !focused; look += 1) {
+      if (look > 0) await this.sleep(FOCUS_LOOK_MS, signal).catch(() => undefined)
+      const { answer, document } = await this.deps.form(page.pageId)
+      if (document !== target?.document)
+        throw new Error(`The ref ${ref} is not live: take a new snapshot`)
+      const field = answer.fields.find((one) => one.id === answer.focused)
+      if (field !== undefined && (field.flags & MASKED_FLAG) !== 0) throw new Error(MASKED_TYPE)
+      focused = answer.focused === target.element
+    }
+    if (!focused) throw new Error(`The element of ${ref} did not take the focus: nothing was typed`)
+    const settled = this.settle(page.pageId, signal)
+    await acts.type(page.pageId, text)
+    if (submit) acts.key(page.pageId, 'Enter')
+    await settled
+    return this.landed(
+      page.pageId,
+      { ref, submitted: submit },
+      `Typed into ${ref}${submit ? ' and pressed Enter' : ''}:`,
+    )
+  }
+
+  private async pressKey(
+    given: string | undefined,
+    key: string,
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    if (keyStroke(key) === null) throw new Error(`Not a key the page tier presses: ${key}`)
+    const { pageId } = this.resolve(given)
+    const settled = this.settle(pageId, signal)
+    this.acts().key(pageId, key)
+    await settled
+    const origin = this.originOf(pageId)
+    return {
+      structured: { page: pageId, origin, key },
+      text: `Pressed a key in ${pageId} on ${origin}.`,
+    }
+  }
+
+  private async drag(
+    given: string | undefined,
+    startRef: string,
+    endRef: string,
+    signal: AbortSignal | undefined,
+  ): Promise<PageAnswer> {
+    const start = await this.element(given, startRef)
+    const end = await this.element(given, endRef)
+    if (start.page.pageId !== end.page.pageId) {
+      throw new Error(`The refs ${startRef} and ${endRef} are on different pages`)
+    }
+    const pageId = start.page.pageId
+    const from = centreOf(await this.box(pageId, start.snapshot, start.node))
+    const to = centreOf(await this.box(pageId, end.snapshot, end.node))
+    const settled = this.settle(pageId, signal)
+    this.acts().drag(pageId, from, to)
+    await settled
+    return this.landed(pageId, {}, `Dragged ${startRef} onto ${endRef}:`)
+  }
+
+  /**
+   * A PNG of the viewport, of one element's box cut to the viewport, or of
+   * the whole page. The bytes are checked as a PNG and measured here; a page
+   * that navigated while it was captured is refused.
+   */
+  private async screenshot(
+    given: string | undefined,
+    ref: string | undefined,
+    fullPage: boolean,
+  ): Promise<PageAnswer> {
+    if (ref !== undefined && fullPage) throw new Error('Pass ref or fullPage, not both')
+    const acts = this.acts()
+    let page: Resolved
+    let data: string
+    if (ref !== undefined) {
+      const found = await this.element(given, ref)
+      page = found.page
+      const box = await this.box(page.pageId, found.snapshot, found.node)
+      const viewport = acts.viewport(page.pageId) ?? { width: 0, height: 0 }
+      const x = Math.max(box.x, 0)
+      const y = Math.max(box.y, 0)
+      data = await acts.capture(page.pageId, {
+        x,
+        y,
+        width: Math.min(box.x + box.width, viewport.width) - x,
+        height: Math.min(box.y + box.height, viewport.height) - y,
+      })
+    } else {
+      page = this.resolve(given)
+      data = fullPage ? await acts.captureFull(page.pageId) : await acts.capture(page.pageId)
+    }
+    if (this.deps.committedUrl(page.pageId) !== page.url) {
+      throw new Error('The page navigated while it was captured')
+    }
+    const { width, height } = pngSize(data)
+    const what = ref !== undefined ? ref : fullPage ? 'the whole page' : 'the viewport'
+    return {
+      structured: { page: page.pageId, origin: page.origin, width, height },
+      text: `A ${width} by ${height} PNG of ${what} of ${page.pageId} on ${page.origin}.`,
+      image: data,
+    }
+  }
+
+  /**
+   * Resolves once an act's effect has settled: ACT_SETTLE_MS for the page
+   * to start a navigation, and when it did, the end of that load, capped.
+   * Listening starts before the act, so a quick load is not missed.
+   */
+  private async settle(pageId: string, signal: AbortSignal | undefined): Promise<void> {
+    let started = false
+    let stop = (): void => undefined
+    const stopped = new Promise<'stopped'>((resolve) => {
+      stop = () => resolve('stopped')
+    })
+    const off = this.deps.events((event) => {
+      if (event.pageId !== pageId) return
+      if (event.type === 'loading-started') started = true
+      else if (started && (event.type === 'stopped' || event.type === 'failed')) stop()
+    })
+    try {
+      await this.sleep(ACT_SETTLE_MS, signal).catch(() => undefined)
+      if (started) await this.within(stopped, signal)
+    } finally {
+      off()
+    }
+  }
+
   private consoleLogs(given: string | undefined, limit: number): PageAnswer {
     const { pageId, origin } = this.resolve(given)
     const { entries, truncated } = this.deps.console.read(pageId, limit)
@@ -615,6 +1022,37 @@ function schemeOf(url: string): string {
   } catch {
     return 'not a URL'
   }
+}
+
+const MASKED_STATE = 'masked'
+const MASKED_FLAG = 1 << FORM_FLAGS.indexOf('masked')
+
+/** A secret field by the one list of #94, as the snapshot marks it. */
+function isMasked(node: SemanticNode): boolean {
+  return node.state.includes(MASKED_STATE)
+}
+
+function flatten(nodes: readonly SemanticNode[]): SemanticNode[] {
+  return nodes.flatMap((node) => [node, ...flatten(node.children)])
+}
+
+function findNode(nodes: readonly SemanticNode[], ref: string): SemanticNode | undefined {
+  return flatten(nodes).find((node) => node.ref === ref)
+}
+
+function centreOf(box: SemanticRect): ViewportPoint {
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+/** A PNG's size from its header, or an error when the bytes are no PNG. */
+export function pngSize(base64: string): { width: number; height: number } {
+  const bytes = Buffer.from(base64, 'base64')
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    throw new Error('The capture is not a PNG')
+  }
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }
 }
 
 function hasRef(snapshot: SemanticSnapshot, ref: string): boolean {

@@ -53,6 +53,12 @@ test('a client reads a page buffer through the page tier: structure apart, page 
       'browser_go_forward',
       'browser_open_page',
       'browser_close_page',
+      'browser_click',
+      'browser_hover',
+      'browser_type',
+      'browser_press_key',
+      'browser_drag',
+      'browser_screenshot',
     ])
 
     const origin = fixtures.httpsOrigin

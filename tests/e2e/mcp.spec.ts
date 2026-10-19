@@ -50,9 +50,9 @@ test('a client through bin/nemesis-mcp lists, reads, and sends a prompt after th
       new StdioClientTransport({ command: process.execPath, args: [SHIM, '--socket', socket] }),
     )
     const { tools } = await client.listTools()
-    expect(tools).toHaveLength(19)
+    expect(tools).toHaveLength(25)
     expect(tools.filter((tool) => tool.name.startsWith('cockpit_'))).toHaveLength(8)
-    expect(tools.filter((tool) => tool.name.startsWith('browser_'))).toHaveLength(11)
+    expect(tools.filter((tool) => tool.name.startsWith('browser_'))).toHaveLength(17)
     // The one resource of the tier, the session's event log (#117).
     const { resources } = await client.listResources()
     expect(resources.map((resource) => resource.uri)).toEqual(['nemesis://session/events'])

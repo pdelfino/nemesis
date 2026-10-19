@@ -14,6 +14,7 @@ import {
   type PageInput,
   type PageView,
   type RedirectDetails,
+  keyStroke,
 } from '../../src/main/page-buffer'
 import type { KeyPress } from '../../src/shared/keys'
 import type { BlockedPage, PageBlocker } from '../../src/main/pages/blocker'
@@ -756,6 +757,38 @@ describe('keys typed in a page (#120)', () => {
     }
     expect(pressFromInput({ ...base, key: '' })).toBeNull()
     expect(pressFromInput({ ...base, key: 'x'.repeat(33) })).toBeNull()
+  })
+})
+
+describe("the acting tools' input (#140)", () => {
+  it('hovers, drags and presses keys as synthesized input, at the page zoom, refusing an unknown key', () => {
+    const { pages, views } = rig()
+    const buffer = pages.createPage()
+    const contents = only(views).webContents
+    contents.zoomLevel = Math.log(2) / Math.log(1.2)
+    pages.hoverAt(buffer.id, 5, 10)
+    pages.dragBetween(buffer.id, { x: 0, y: 0 }, { x: 8, y: 16 })
+    pages.pressKey(buffer.id, 'Enter')
+    pages.pressKey(buffer.id, 'a')
+    pages.pressKey(buffer.id, 'ArrowDown')
+    expect(() => pages.pressKey(buffer.id, 'Control+a')).toThrow('Not a key')
+    expect(contents.sent).toEqual([
+      'mouseMove 10,20',
+      'mouseMove 0,0',
+      'mouseDown 0,0',
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map((step) => `mouseMove ${2 * step},${4 * step}`),
+      'mouseUp 16,32',
+      'keyDown Enter',
+      'char \r',
+      'keyUp Enter',
+      'keyDown a',
+      'char a',
+      'keyUp a',
+      'keyDown Down',
+      'keyUp Down',
+    ])
+    expect(keyStroke('Tab')).toEqual({ keyCode: 'Tab' })
+    expect(keyStroke('\u0007')).toBeNull()
   })
 })
 
