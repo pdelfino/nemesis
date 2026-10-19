@@ -6,6 +6,7 @@ import { installEnvironmentBuffer } from './environment-buffer'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
 import { installModeline } from './modeline'
+import { installPageBuffer } from './page-buffer'
 import { installPalette } from './palette'
 import { installPlanBuffer } from './plan-buffer'
 import { installPromptBuffer } from './prompt-buffer'
@@ -44,6 +45,8 @@ const review = installReviewBuffer()
 const environment = installEnvironmentBuffer()
 // And the *repl* buffer: forms evaluated in the config scope show there (#72).
 const repl = installReplBuffer()
+// The page section reports where the current page's view goes (#119).
+installPageBuffer()
 // The palette opens when the main process reads a choice (#65).
 const palette = installPalette()
 

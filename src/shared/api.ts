@@ -6,7 +6,7 @@ import type {
   PromptState,
   TranscriptGoto,
 } from './agent'
-import type { BufferInfo, BufferList, BufferSpec } from './buffers'
+import type { BufferInfo, BufferList, BufferSpec, PageBounds } from './buffers'
 import type { DiffContent } from './diff'
 import type { EnvironmentContent } from './environment'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
@@ -68,6 +68,12 @@ export interface NemesisApi {
   onReplShown(listener: (content: ReplContent) => void): void
   /** The eval journal changed, or the page loaded: the count for the mode line (#72). */
   onJournalChanged(listener: (state: JournalState) => void): void
+  /**
+   * Where the current page buffer's view goes: the content area's rectangle,
+   * or null to hide it (#119). The one call of the page buffers; nothing a
+   * page could reach, since no page buffer carries this preload.
+   */
+  setPageBounds(bounds: PageBounds | null): Promise<void>
   /** Test-only: the commands the keys dispatched. Exposed when NODE_ENV=test (#59). */
   readonly dispatchLog?: () => Promise<readonly DispatchRecord[]>
   /** Test-only: opens a buffer. Exposed when NODE_ENV=test (#60). */

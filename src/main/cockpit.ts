@@ -1,11 +1,11 @@
-import { app, shell, type BrowserWindow } from 'electron'
+import { app, shell, WebContentsView, type BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import type { ClipboardReader } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
 import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import { SessionManager } from './agent/session-manager'
-import { installBufferBridge } from './buffer-bridge'
+import { installBufferBridge, installPageBridge } from './buffer-bridge'
 import { createCockpitBuffers, type BufferRegistry } from './buffers'
 import { confirm, CONFIRM_SOURCES, OPEN_FILE_SOURCE, VERIFY_SOURCE } from './commands/confirm'
 import type { KeyDispatcher } from './commands/dispatcher'
@@ -30,6 +30,7 @@ import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { CockpitMcp } from './mcp/server'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
+import { PageBuffers, type PagePolicies } from './page-buffer'
 import { Repl } from './repl'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -73,6 +74,8 @@ export interface Cockpit {
   readonly cwd: string
   /** The worktrees this window made, and the notices of their removal (#87). */
   readonly worktrees: Worktrees
+  /** The window's page buffers, one WebContentsView each (#119). */
+  readonly pages: PageBuffers<WebContentsView>
 }
 
 export interface CockpitShared {
@@ -95,6 +98,8 @@ export interface CockpitShared {
   readonly windows: CockpitWindows
   /** The commands the cockpit registers beside its own (`reload-config`), given its help buffers. */
   readonly commands: (help: HelpBuffers) => readonly Command[]
+  /** The baseline every page buffer runs under before its first load (#119). */
+  readonly pagePolicies: PagePolicies<WebContentsView>
 }
 
 /** One stream of notices out of several sources. */
@@ -236,6 +241,27 @@ export function createCockpit(
   // Eval in the config scope (#72): the app's evaluator and journal, this
   // window's `*repl*` buffer.
   const repl = new Repl(buffers, { journal, evaluate: shared.evaluate })
+  // The page buffers (#119): a WebContentsView each, built hardened and
+  // without a preload, attached over the renderer's page section while its
+  // buffer is current. They go with the window.
+  const pages = new PageBuffers<WebContentsView>({
+    buffers,
+    createView: (webPreferences) => new WebContentsView({ webPreferences }),
+    host: {
+      addChildView: (view) => {
+        if (!window.isDestroyed()) window.contentView.addChildView(view)
+      },
+      removeChildView: (view) => {
+        if (!window.isDestroyed()) window.contentView.removeChildView(view)
+      },
+      focusCockpit: () => {
+        if (!window.isDestroyed()) contents.focus()
+      },
+    },
+    policies: shared.pagePolicies,
+  })
+  installPageBridge(pages, contents)
+  window.on('closed', () => pages.destroyAll())
   const notices = mergeNotices(
     shared.notices,
     diffs,
@@ -249,6 +275,7 @@ export function createCockpit(
     repl,
     reviews,
     worktrees,
+    pages,
   )
   // The MCP server over this window's command table (#28, ADR 0007 and
   // 0008): a thin relay to the registry, the buffers, the prompter, the
@@ -310,6 +337,7 @@ export function createCockpit(
     cwd,
     reviews,
     worktrees,
+    pages,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   installPaletteBridge({
@@ -342,5 +370,6 @@ export function createCockpit(
     prompts,
     cwd,
     worktrees,
+    pages,
   }
 }

@@ -23,6 +23,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'review',
   'environment',
   'repl',
+  'page',
 ]
 
 const MAX_TITLE = 200
@@ -83,6 +84,27 @@ export class BufferRegistry {
       this.announce()
     }
     return buffer
+  }
+
+  /**
+   * Gives a buffer a new title or URL, as a page buffer's events do (#119).
+   * A title past the limit is cut, not refused: it is the page's to choose.
+   */
+  update(id: string, patch: { readonly title?: string; readonly url?: string }): BufferInfo {
+    const index = this.buffers.findIndex((buffer) => buffer.id === id)
+    const buffer = this.buffers[index]
+    if (buffer === undefined) throw new BufferError(`No buffer with id "${id}"`)
+    const title = patch.title?.trim().slice(0, MAX_TITLE) || buffer.title
+    const url = patch.url ?? buffer.url
+    if (title === buffer.title && url === buffer.url) return buffer
+    const next: BufferInfo = Object.freeze({
+      ...buffer,
+      title,
+      ...(url === undefined ? {} : { url }),
+    })
+    this.buffers[index] = next
+    this.announce()
+    return next
   }
 
   /**
@@ -147,6 +169,9 @@ export function parseBufferSpec(payload: unknown): BufferSpec {
   if (typeof kind !== 'string' || !BUFFER_TYPES.includes(kind as BufferType)) {
     throw new TypeError(`Unknown buffer kind "${String(kind)}"`)
   }
+  // A page buffer is a view the page buffers build under the baseline (#119);
+  // a spec over IPC would name a page with no view and no policy behind it.
+  if (kind === 'page') throw new TypeError('A page buffer is not opened over IPC')
   if (typeof title !== 'string' || title.trim().length === 0 || title.length > MAX_TITLE) {
     throw new TypeError('Buffer spec has no usable title')
   }

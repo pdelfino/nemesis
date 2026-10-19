@@ -6,6 +6,7 @@ import {
   nativeImage,
   nativeTheme,
   session,
+  type WebContentsView,
 } from 'electron'
 import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
@@ -29,6 +30,7 @@ import { Journal, journalPath } from './config/journal'
 import { ConfigLoader, configPath, renderProblem, type ConfigTarget } from './config/loader'
 import type { HelpBuffers } from './help'
 import { McpDoor } from './mcp/socket'
+import type { PagePolicies } from './page-buffer'
 import { installMenu } from './menu'
 import type { WindowCapturer } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
@@ -210,6 +212,39 @@ const REQUEST_LOG = '__nemesisRequests'
 /** The URLs handed to the system, for the downloads spec (#51). Main process only, under test only. */
 const EXTERNAL_LOG = '__nemesisExternal'
 
+/**
+ * How the security harness opens a real page buffer in the focused window
+ * and closes it again (#119), through `app.evaluate`. Main process only,
+ * under test only.
+ */
+const PAGE_DOOR = '__nemesisPages'
+
+/** What the page door answers: the buffer, its contents and Chromium's refusal, if any. */
+interface OpenedPage {
+  readonly windowId: number
+  readonly bufferId: string
+  readonly contentsId: number
+  readonly loadError: string | null
+}
+
+/**
+ * The baseline a page buffer runs under before its first load (#119):
+ * `web-contents-created` applied it already, and each call is a no-op on a
+ * WebContents that has it; the page buffer applies it again so its own
+ * creation site is correct whatever the hook does.
+ */
+const pagePolicies: PagePolicies<WebContentsView> = {
+  navigation: (contents) => applyNavigationPolicy(contents, 'page'),
+  transport: (contents) => {
+    transport.watch(contents, 'page')
+    transport.apply(contents.session)
+  },
+  permissions: (contents) => {
+    permissionPolicy.apply(contents.session)
+    permissionPolicy.watch(contents)
+  },
+}
+
 /** A window screenshot is scaled to fit this (#81): enough to read a UI, small enough to send. */
 const SCREENSHOT_SIZE = { width: 1920, height: 1200 }
 
@@ -332,6 +367,20 @@ void app.whenReady().then(() => {
     })
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
     ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
+    ;(globalThis as { [PAGE_DOOR]?: unknown })[PAGE_DOOR] = {
+      open: async (url: string): Promise<OpenedPage> => {
+        const cockpit = focusedCockpit()
+        if (cockpit === undefined) throw new Error('No cockpit to open a page buffer in')
+        const buffer = cockpit.pages.createPage()
+        cockpit.buffers.switchTo(buffer.id)
+        const contentsId = cockpit.pages.viewOf(buffer.id)?.webContents.id ?? -1
+        const loadError = await cockpit.pages.load(buffer.id, url)
+        return { windowId: cockpit.id, bufferId: buffer.id, contentsId, loadError }
+      },
+      close: (windowId: number, bufferId: string): void => {
+        cockpits.get(windowId)?.pages.destroyPage(bufferId)
+      },
+    }
   }
   // app.dock exists on macOS only.
   if (iconPath && app.dock) app.dock.setIcon(iconPath)
@@ -578,6 +627,7 @@ void app.whenReady().then(() => {
         notices: noticesFor(id),
         windows: windowsFor(id),
         commands: (help) => [reloadConfig(help)],
+        pagePolicies,
       },
       place.cwd,
     )

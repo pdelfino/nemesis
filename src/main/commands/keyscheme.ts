@@ -25,6 +25,7 @@ import { WorkingFiles } from '../files'
 import { HelpBuffers } from '../help'
 import { IssueAttachment } from '../issues'
 import { PlanBuffers } from '../plans'
+import { NO_PAGES, type PageCommands } from '../page-buffer'
 import { Repl } from '../repl'
 import { reviewApplyPrompt } from '../review-prompt'
 import { ReviewBuffers } from '../reviews'
@@ -182,6 +183,8 @@ export interface CockpitDeps {
   readonly reviews: ReviewBuffers
   /** The git worktrees new-window-in-worktree makes (#87). */
   readonly worktrees: Worktrees
+  /** The window's page buffers, as open-url opens one (#119). */
+  readonly pages: PageCommands
 }
 
 /** A buffer of another window, as the palette's `buffers` source lists it (#70). */
@@ -326,6 +329,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     cwd: partial.cwd ?? process.cwd(),
     reviews: partial.reviews ?? new ReviewBuffers(buffers),
     worktrees: partial.worktrees ?? new Worktrees(),
+    pages: partial.pages ?? NO_PAGES,
   }
 }
 
@@ -364,6 +368,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     cwd,
     reviews,
     worktrees,
+    pages,
   } = deps
   /** A command that composed text for the prompt gives it the point, so the text is seen. */
   const switchToPrompt = (): void => {
@@ -1011,6 +1016,41 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'open-url',
+      // An outside client opens no page in the user's window (ADR 0008).
+      mcp: 'never',
+      doc: 'Read a URL and open it in a new page buffer, made current; http: and https: only, plain http: off loopback upgraded.',
+      run: () => {
+        prompter.read({ source: 'page-url', prompt: 'Open URL:', freeText: true }, (url) =>
+          pages.open(url),
+        )
+      },
+    }),
+    defineCommand({
+      name: 'reload-page',
+      mcp: 'never',
+      doc: 'Reload the page in the current page buffer.',
+      run: () => {
+        pages.reload()
+      },
+    }),
+    defineCommand({
+      name: 'go-back',
+      mcp: 'never',
+      doc: "Go back one page in the current page buffer's history.",
+      run: () => {
+        pages.back()
+      },
+    }),
+    defineCommand({
+      name: 'go-forward',
+      mcp: 'never',
+      doc: "Go forward one page in the current page buffer's history.",
+      run: () => {
+        pages.forward()
+      },
+    }),
+    defineCommand({
       name: 'kill-buffer',
       doc: 'Kill the current buffer.',
       run: () => {
@@ -1080,7 +1120,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * for a free-text read that takes any other; and the files the environment
  * panel lists (#86), in the panel's order, for `RET` there; and the two
  * reads of eval (#72): a form, over nothing, and the journal's entries in
- * file order; and the task name of a worktree window (#87), over nothing.
+ * file order; and the task name of a worktree window (#87), over nothing;
+ * and the URL open-url reads (#119), over nothing.
  */
 export function cockpitSources(
   registry: CommandRegistry,
@@ -1243,6 +1284,11 @@ export function cockpitSources(
       name: 'worktree-name',
       candidates: () => [],
     },
+    // The URL open-url reads (#119), over nothing until history lands (M4.7).
+    {
+      name: 'page-url',
+      candidates: () => [],
+    },
     {
       name: 'journal',
       candidates: () =>
@@ -1317,6 +1363,14 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     ...Object.fromEntries(
       QUESTION_OPTIONS.map((number) => [`${number}`, `choose-option-${number}`]),
     ),
+  }),
+  // C-x C-f opens a URL in a page buffer (#119), from a page or the
+  // transcript; `o` stays free for the sources of #124.
+  transcript: defineKeymap('transcript', {
+    'C-x C-f': 'open-url',
+  }),
+  page: defineKeymap('page', {
+    'C-x C-f': 'open-url',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {

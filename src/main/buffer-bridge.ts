@@ -3,11 +3,14 @@ import {
   BUFFER_CREATE_CHANNEL,
   BUFFERS_CHANGED_CHANNEL,
   BUFFERS_CHANNEL,
+  PAGE_BOUNDS_CHANNEL,
   type BufferList,
+  type PageBounds,
 } from '../shared/buffers'
 import type { BufferRegistry } from './buffers'
 import { parseBufferSpec } from './buffers'
 import { handleIn, parseNothing } from './ipc'
+import { parsePageBounds } from './page-buffer'
 
 /**
  * The buffer list crosses to the renderer here (#60). The main process owns
@@ -35,4 +38,15 @@ export function installBufferBridge(
   }
 
   return buffers
+}
+
+/**
+ * The page buffers' one call (#119): the renderer's content area, or null,
+ * checked by `parsePageBounds` before the current page's view moves.
+ */
+export function installPageBridge(
+  pages: { setBounds(bounds: PageBounds | null): void },
+  contents: WebContents,
+): void {
+  handleIn(contents, PAGE_BOUNDS_CHANNEL, parsePageBounds, (bounds) => pages.setBounds(bounds))
 }

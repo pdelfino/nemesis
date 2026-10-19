@@ -25,6 +25,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'review',
   'environment',
   'repl',
+  'page',
 ]
 
 /** How many dispatches are kept in memory for describe and for the tests. */

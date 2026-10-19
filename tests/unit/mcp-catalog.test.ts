@@ -39,7 +39,7 @@ describe('the MCP catalog (#28, ADR 0008)', () => {
     }
   })
 
-  it('has no page tool before the page buffer kind exists, and no eval tool at all', () => {
+  it('has no page tool, no page buffer opened over IPC, and no eval tool at all', () => {
     expect(() => parseBufferSpec({ kind: 'page', title: 'A page' })).toThrow()
     expect(CATALOG.filter((tool) => tool.tier === 'browser')).toEqual([])
     expect(CATALOG.filter((tool) => tool.name.startsWith('browser_'))).toEqual([])

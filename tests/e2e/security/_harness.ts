@@ -179,12 +179,25 @@ export async function fixtureServer(): Promise<FixtureServer> {
   }
 }
 
-/** A web page opened by the app, the way a buffer will hold one. */
+/** The test-only door src/main/index.ts installs for the page buffers (#119). */
+interface PageDoor {
+  open(url: string): Promise<{
+    readonly windowId: number
+    readonly bufferId: string
+    readonly contentsId: number
+    readonly loadError: string | null
+  }>
+  close(windowId: number, bufferId: string): void
+}
+
+/** A web page opened by the app in a page buffer (#119), or, with the preload, in a bare window. */
 export interface PageBuffer {
   /** Playwright's handle on the page, for `evaluate` and locators. */
   readonly page: Page
   /** Chromium's reason for refusing to load, or null when the load committed. */
   readonly loadError: string | null
+  /** The id of the page's WebContents, as the main process's log lines name it. */
+  readonly contentsId: number
   close(): Promise<void>
 }
 
@@ -210,10 +223,11 @@ export interface Nemesis {
   /** The downloads path of this launch, inside the profile; the quarantine folder is under it (#51). */
   readonly downloadsDir: string
   /**
-   * Opens a URL in a hardened, preload-free WebContents, as a page buffer.
-   * `withPreload` attaches the cockpit's preload to the hostile page instead,
-   * which no page buffer ever gets: it is how the IPC spec reaches a
-   * privileged channel from a web origin (#53).
+   * Opens a URL in a real page buffer of the focused window (#119): the
+   * app's hardened, preload-free WebContentsView, made current.
+   * `withPreload` attaches the cockpit's preload to the hostile page in a
+   * bare window instead, which no page buffer ever gets: it is how the IPC
+   * spec reaches a privileged channel from a web origin (#53).
    */
   openPageBuffer(url: string, options?: PageBufferOptions): Promise<PageBuffer>
   close(): Promise<void>
@@ -257,6 +271,35 @@ export async function launchNemesis(options: LaunchOptions = {}): Promise<Nemesi
     options: PageBufferOptions = {},
   ): Promise<PageBuffer> => {
     const opened = app.waitForEvent('window')
+    if (options.withPreload !== true) {
+      // A real page buffer (#119): the app's own WebContentsView, built by
+      // src/main/page-buffer.ts under the baseline, opened in the focused
+      // window and made current, through the test-only door in index.ts.
+      const real = await app.evaluate(async (_main, target) => {
+        const door = (globalThis as { __nemesisPages?: PageDoor }).__nemesisPages
+        if (door === undefined) throw new Error('The app has no page door: is NODE_ENV=test?')
+        return door.open(target)
+      }, url)
+      const page = await opened
+      const buffer: PageBuffer = {
+        page,
+        loadError: real.loadError,
+        contentsId: real.contentsId,
+        close: async () => {
+          await app.evaluate(
+            (_main, { windowId, bufferId }) => {
+              ;(globalThis as { __nemesisPages?: PageDoor }).__nemesisPages?.close(
+                windowId,
+                bufferId,
+              )
+            },
+            { windowId: real.windowId, bufferId: real.bufferId },
+          )
+        },
+      }
+      buffers.push(buffer)
+      return buffer
+    }
     const created = await app.evaluate(
       async ({ app: main, BrowserWindow }, options) => {
         // A web page gets the hardened defaults and no preload: the bridge
@@ -274,9 +317,13 @@ export async function launchNemesis(options: LaunchOptions = {}): Promise<Nemesi
         })
         try {
           await view.loadURL(options.url)
-          return { id: view.id, loadError: null as string | null }
+          return { id: view.id, contentsId: view.webContents.id, loadError: null as string | null }
         } catch (error) {
-          return { id: view.id, loadError: error instanceof Error ? error.message : String(error) }
+          return {
+            id: view.id,
+            contentsId: view.webContents.id,
+            loadError: error instanceof Error ? error.message : String(error),
+          }
         }
       },
       {
@@ -290,6 +337,7 @@ export async function launchNemesis(options: LaunchOptions = {}): Promise<Nemesi
     const buffer: PageBuffer = {
       page,
       loadError: created.loadError,
+      contentsId: created.contentsId,
       close: async () => {
         await app.evaluate(({ BrowserWindow }, id) => {
           BrowserWindow.fromId(id)?.destroy()

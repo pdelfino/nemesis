@@ -65,13 +65,8 @@ test('plain http off loopback is upgraded or refused, loopback http commits, and
     expect(buffer.loadError).toBeNull()
     await expect(buffer.page).toHaveTitle('node probe')
     const windowsBefore = nemesis.app.windows().length
-    const id = await nemesis.app.evaluate(
-      ({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()
-          .map((one) => one.webContents.id)
-          .sort()
-          .at(-1) ?? -1,
-    )
+    // The page buffer's own contents (#119), as the transport's log names it.
+    const id = buffer.contentsId
 
     // 1. Upgraded, and the upgrade lands: the https URL commits, the http one never did.
     const upgradable = fixtures.upgradableUrl('permissions.html')

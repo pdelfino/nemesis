@@ -23,9 +23,12 @@ the same ground:
   fatal. It also maps =nemesis.test= to loopback through
   =--host-resolver-rules=, port kept, so a spec has a plain =http= URL off
   loopback for the upgrade of #52 to act on.
-- =openPageBuffer(url)= loads a URL in its own hardened, preload-free
-  =WebContents=, the way a page buffer will hold one, and reports Chromium's
-  refusal in =loadError= when the load never commits. =openPageBuffer(url,
+- =openPageBuffer(url)= opens a URL in a real page buffer of the focused
+  window (#119): the app's own hardened, preload-free =WebContentsView=, built
+  by =src/main/page-buffer.ts= and made current, through a door the main
+  process installs under =NODE_ENV=test= only. It reports Chromium's refusal
+  in =loadError= when the load never commits, and the page's =contentsId= as
+  the main process's log lines name it. =openPageBuffer(url,
   { withPreload: true })= attaches the cockpit's preload to that hostile page
   instead, which is how =ipc-sender-validated.spec.ts= reaches a privileged
   channel from a web origin; no page buffer in the app ever gets it.
