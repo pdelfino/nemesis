@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The entitlements Nemesis.app is signed with under the hardened runtime (#36,
+  SECURITY.org T1). One entry, each further one needs a reason here and in T1:
+  - allow-jit: V8 compiles JavaScript to machine code at run time, which the
+    hardened runtime refuses without it.
+  The Agent SDK's CLI binary is not signed with these: it keeps Anthropic's
+  own Developer ID signature and entitlements (signIgnore in
+  electron-builder.yml).
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+</dict>
+</plist>

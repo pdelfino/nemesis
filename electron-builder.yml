@@ -21,3 +21,19 @@ asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk-*/claude.exe
 mac:
   target: dir
+  # Signing (#36). `npm run package` signs nothing (CSC_IDENTITY_AUTO_DISCOVERY
+  # is off), so these apply only to `npm run package:signed`, a Developer ID
+  # build that is then notarized, and `npm run package:hardened`, an ad hoc
+  # local check. The hardened runtime with one entitlement, allow-jit.
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # The Agent SDK's CLI binary already carries Anthropic's Developer ID
+  # signature, hardened, with a secure timestamp and the entitlements it runs
+  # with (JIT, unsigned executable memory, library validation off, microphone,
+  # Apple Events). Re-signing it with ours would strip those, so it keeps its own.
+  signIgnore:
+    - 'claude-agent-sdk-darwin-[^/]+/claude$'
+  # Turned on by `npm run package:signed` only, with the App Store Connect API
+  # key from the environment (APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER).
+  notarize: false

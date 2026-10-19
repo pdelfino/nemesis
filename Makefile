@@ -3,7 +3,7 @@
 # what dev and gate mean.
 
 .DEFAULT_GOAL := help
-.PHONY: help node-version setup dev gate app ci
+.PHONY: help node-version setup dev gate app app-hardened app-signed verify-app ci
 
 # Make runs /bin/sh, where nvm is a shell function and not a command, so a
 # fresh terminal has no `nvm use` in effect. Source nvm.sh here and put the
@@ -53,6 +53,20 @@ ci: ## Run the CI workflow's gate job locally with act, before a push
 
 app: node-version node_modules/electron/dist ## Build the unsigned release/mac-arm64/Nemesis.app (#35)
 	$(NPM) run package
+
+app-hardened: node-version node_modules/electron/dist ## Build Nemesis.app ad hoc under the hardened runtime and check it (#36; no Apple account needed)
+	$(NPM) run package:hardened
+	node scripts/release-check.mjs --hardened
+
+app-signed: node-version node_modules/electron/dist ## Build, sign with the Developer ID, notarize and staple Nemesis.app, then check it (#36)
+	@test -n "$$APPLE_API_KEY" && test -n "$$APPLE_API_KEY_ID" && test -n "$$APPLE_API_ISSUER" || { echo "make app-signed needs APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER in the environment (#36); it never builds unsigned instead"; exit 1; }
+	@test -f "$$APPLE_API_KEY" || { echo "APPLE_API_KEY must be the path of the .p8 key file, kept outside every repository (#36)"; exit 1; }
+	@security find-identity -v -p codesigning | grep -q '"Developer ID Application:' || { echo "make app-signed needs a Developer ID Application certificate in the login keychain (#36)"; exit 1; }
+	$(NPM) run package:signed
+	@$(MAKE) --no-print-directory verify-app
+
+verify-app: ## Check a signed Nemesis.app as a release: Developer ID, hardened runtime, entitlements, notarized, stapled (#36)
+	node scripts/release-check.mjs --distribution
 
 node_modules/electron/dist:
 	@$(MAKE) --no-print-directory setup
