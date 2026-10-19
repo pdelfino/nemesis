@@ -257,7 +257,7 @@ parity tool's schema. =ref= is a stable reference from the last snapshot
 | =browser_navigate=         | ={url: string, page?}=                                                          | ={page, origin, status}= plus the snapshot block                                           | yes per call          | parity |
 | =browser_go_back=          | ={page?}=                                                                       | ={page, origin, moved: boolean}= plus the snapshot block                                   | yes per call          | parity |
 | =browser_go_forward=       | ={page?}=                                                                       | ={page, origin, moved: boolean}= plus the snapshot block                                   | yes per call          | parity |
-| =browser_wait=             | ={time: number, page?}= (seconds, confirm)                                      | ={waited: number}=                                                                        | free                  | parity |
+| =browser_wait=             | ={time: number, page?}= (seconds, confirmed 2026-OCTOBER-19)                    | ={waited: number}=                                                                        | free                  | parity |
 | =browser_snapshot=         | ={page?}=                                                                       | ={page, origin, refs: number, truncated}= plus the snapshot block                          | free                  | parity |
 | =browser_click=            | ={element: string, ref: string, page?}= (=ref= name: confirm)                   | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
 | =browser_hover=            | ={element: string, ref: string, page?}=                                         | ={page, origin, ref}= plus the snapshot block                                             | yes per call          | parity |
@@ -267,6 +267,10 @@ parity tool's schema. =ref= is a stable reference from the last snapshot
 | =browser_get_console_logs= | ={page?, limit?: number}=                                                       | ={page, origin, entries: number, truncated}= plus the entries as a wrapped block          | free                  | parity |
 | =browser_screenshot=       | ={page?, ref?: string, fullPage?: boolean}=                                     | one =image= content block, =image/png= checked, plus ={page, origin, width, height}=      | yes per call          | parity |
 | =browser_drag=             | ={startElement, startRef, endElement, endRef, page?}= (ref names: confirm)       | ={page, origin}= plus the snapshot block                                                  | yes per call          | parity |
+
+=browser_wait='s =time= is confirmed against the published =@browsermcp/mcp=
+0.1.3: its tarball's tool schemas read =time: z.number()=, "The time to wait
+in seconds" (#138, 2026-OCTOBER-19, read and never installed or run).
 
 Thirteen rows: the twelve browsermcp registers and the one it left
 unregistered, finished here as the study suggested. Three rows differ from

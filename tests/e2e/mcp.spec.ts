@@ -32,8 +32,8 @@ function text(result: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 // ADR 0007's positive half: a client outside the app spawns the shim against
-// the launched profile's socket, lists the eight cockpit tools and the
-// events resource, reads the buffers without a question, and sends a prompt
+// the launched profile's socket, lists the eight cockpit tools, the six
+// page-reading tools (#138) and the events resource, reads the buffers without a question, and sends a prompt
 // that waits for the user's yes in the palette before the mock session gets
 // it.
 test('a client through bin/nemesis-mcp lists, reads, and sends a prompt after the yes', async () => {
@@ -50,8 +50,9 @@ test('a client through bin/nemesis-mcp lists, reads, and sends a prompt after th
       new StdioClientTransport({ command: process.execPath, args: [SHIM, '--socket', socket] }),
     )
     const { tools } = await client.listTools()
-    expect(tools).toHaveLength(8)
-    expect(tools.every((tool) => tool.name.startsWith('cockpit_'))).toBe(true)
+    expect(tools).toHaveLength(14)
+    expect(tools.filter((tool) => tool.name.startsWith('cockpit_'))).toHaveLength(8)
+    expect(tools.filter((tool) => tool.name.startsWith('browser_'))).toHaveLength(6)
     // The one resource of the tier, the session's event log (#117).
     const { resources } = await client.listResources()
     expect(resources.map((resource) => resource.uri)).toEqual(['nemesis://session/events'])

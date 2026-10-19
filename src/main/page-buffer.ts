@@ -151,6 +151,11 @@ export interface PageContents {
     event: 'before-input-event',
     listener: (event: { preventDefault(): void }, input: PageInput) => void,
   ): unknown
+  /** A console call or an uncaught error of the page, as Chromium reports it (#138). */
+  on(
+    event: 'console-message',
+    listener: (details: { readonly level: string; readonly message: string }) => void,
+  ): unknown
   off(event: string, listener: (...args: never[]) => void): unknown
   loadURL(url: string): Promise<void>
   reload(): void
@@ -227,6 +232,8 @@ export interface PageBuffersOptions<V extends PageView> {
   readonly keys?: (press: KeyPress, modes: readonly string[]) => boolean
   /** The blocker every page is attached to (#126). Absent, no page has blocker mode. */
   readonly blocker?: PageBlocker
+  /** Hears each page's `console-message` events (#138), kept in main; absent, none is kept. */
+  readonly console?: (pageId: string, level: string, message: string) => void
 }
 
 /** The current page as bookmark-page reads it (#125). */
@@ -878,6 +885,18 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     }
     contents.on('before-input-event', typed)
     add('before-input-event', typed)
+
+    // The page's console (#138): heard on its WebContents, so nothing is
+    // hooked into the page; the text is page content and stays in main.
+    const sink = this.options.console
+    if (sink !== undefined) {
+      const logged = (details: { readonly level: string; readonly message: string }): void => {
+        if (typeof details.message !== 'string') return
+        sink(pageId, typeof details.level === 'string' ? details.level : 'info', details.message)
+      }
+      contents.on('console-message', logged)
+      add('console-message', logged)
+    }
   }
 
   /** The registry follows the stream: the committed URL and the title; a failure is a notice. */

@@ -1,4 +1,8 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { expect, test } from '../_test'
 import { fixtureServer, launchNemesis } from './_harness'
 
@@ -16,6 +20,10 @@ import { fixtureServer, launchNemesis } from './_harness'
  *    the same way (#132).
  * 3. The hook denies without a user decision while a page is the current
  *    buffer: the same call is refused, no request is ever shown.
+ * 4. The MCP page tier (#138, ADR 0008's case): `browser_snapshot` over the
+ *    injection fixture returns every canary the snapshot carries inside the
+ *    block headed by the fixture's origin and nowhere else, the hidden and
+ *    commented ones not at all, and no side-effect tool ran.
  */
 
 interface AgentEvent {
@@ -178,6 +186,77 @@ test('page text reaches the agent wrapped, and a side-effect tool asks while a p
     expect(await ofType(window, 'permission-request')).toHaveLength(requestsBefore)
     await expect(request).toBeHidden()
   } finally {
+    await nemesis.close()
+    await fixtures.close()
+  }
+})
+
+test('browser_snapshot over the injection fixture keeps every canary inside the block, and nothing runs (#138)', async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const { app, window } = nemesis
+  const client = new Client({ name: 'e2e-boundary-client', version: '1.0.0' })
+  try {
+    await window.evaluate(() => {
+      const w = globalThis as unknown as TestWindow
+      w.__agentEvents = []
+      w.nemesis.onAgentEvent((event) => w.__agentEvents?.push(event))
+    })
+    const url = fixtures.secureUrl('injection.html')
+    const buffer = await nemesis.openPageBuffer(url)
+    expect(buffer.loadError).toBeNull()
+    await expect(buffer.page).toHaveTitle('injection')
+
+    const socket = join(nemesis.userData, 'mcp.sock')
+    await expect.poll(() => existsSync(socket)).toBe(true)
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [join(process.cwd(), 'bin', 'nemesis-mcp'), '--socket', socket],
+      }),
+    )
+    const header = `--- untrusted content from ${fixtures.httpsOrigin} ---`
+    const footer = `--- end of untrusted content from ${fixtures.httpsOrigin} ---`
+    const result = await client.callTool({ name: 'browser_snapshot', arguments: {} })
+    expect(result.isError).toBeFalsy()
+    const content = (result.content as readonly { type: string; text?: string }[]).map(
+      (item) => item.text ?? '',
+    )
+    expect(content).toHaveLength(2)
+    const [line = '', block = ''] = content
+    expect(block.startsWith(header)).toBe(true)
+    expect(block.endsWith(footer)).toBe(true)
+    const body = block.slice(header.length, block.length - footer.length)
+    for (const canary of ['NEMESIS-INJECTION-CANARY-BUTTON', 'Ignore all previous instructions']) {
+      expect(body, canary).toContain(canary)
+      expect(line, canary).not.toContain(canary)
+      expect(JSON.stringify(result.structuredContent), canary).not.toContain(canary)
+    }
+    // The block closes once, at its end, and nothing hidden or commented is read.
+    expect(block.indexOf(footer)).toBe(block.length - footer.length)
+    expect(JSON.stringify(result)).not.toContain('NEMESIS-INJECTION-CANARY-HIDDEN')
+    expect(JSON.stringify(result)).not.toContain('NEMESIS-INJECTION-CANARY-COMMENT')
+    expect(result.structuredContent).toMatchObject({
+      page: buffer.ids?.bufferId,
+      origin: fixtures.httpsOrigin,
+      truncated: false,
+    })
+
+    // No side-effect tool ran: the agent was sent nothing and called nothing,
+    // nobody was asked, and the page is where it was.
+    await expect
+      .poll(async () =>
+        (await ofType(window, 'notice')).some((event) =>
+          (event.text ?? '').includes('MCP: e2e-boundary-client called browser_snapshot'),
+        ),
+      )
+      .toBe(true)
+    expect(await received(app)).toEqual([])
+    expect(await ofType(window, 'tool-use')).toEqual([])
+    expect(await ofType(window, 'permission-request')).toEqual([])
+    expect(buffer.page.url()).toBe(url)
+  } finally {
+    await client.close().catch(() => undefined)
     await nemesis.close()
     await fixtures.close()
   }

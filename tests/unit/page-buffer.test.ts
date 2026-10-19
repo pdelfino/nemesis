@@ -209,6 +209,7 @@ interface Rig {
 function rig(
   keys?: (press: KeyPress, modes: readonly string[]) => boolean,
   blocker?: PageBlocker,
+  console?: (pageId: string, level: string, message: string) => void,
 ): Rig {
   const buffers = new BufferRegistry()
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
@@ -234,6 +235,7 @@ function rig(
     },
     ...(keys === undefined ? {} : { keys }),
     ...(blocker === undefined ? {} : { blocker }),
+    ...(console === undefined ? {} : { console }),
   })
   const notices: string[] = []
   pages.on((event: AgentEvent) => {
@@ -816,6 +818,22 @@ describe('destroying a page buffer (#119)', () => {
     expect(view.webContents.listenerCount()).toBe(0)
     expect(attached.size).toBe(0)
     expect(pages.list()).toEqual([])
+  })
+
+  it("hands the page's console messages to main's sink, and stops on kill (#138)", () => {
+    const heard: string[] = []
+    const { pages, buffers, views } = rig(undefined, undefined, (pageId, level, message) =>
+      heard.push(`${pageId} ${level} ${message}`),
+    )
+    const buffer = pages.createPage()
+    const view = only(views)
+    view.webContents.emit('console-message', { level: 'error', message: 'Uncaught boom' })
+    view.webContents.emit('console-message', { level: 'info' })
+    expect(heard).toEqual([`${buffer.id} error Uncaught boom`])
+    buffers.kill(buffer.id)
+    view.webContents.emit('console-message', { level: 'info', message: 'after the kill' })
+    expect(heard).toHaveLength(1)
+    expect(view.webContents.listenerCount()).toBe(0)
   })
 
   it('takes the buffer out of the list when destroyed directly, and every page when the window goes', () => {

@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_PAGE_TITLE,
+  MAX_TEXT_CHARS,
   PAGE_DOOR_REPLY_CHANNEL,
   PAGE_DOOR_REQUEST_CHANNEL,
   parsePageAnswer,
@@ -127,6 +128,27 @@ function rig(): Rig {
 }
 
 const ANSWER = { url: 'https://example.com/', title: 'Example' }
+
+describe('the text answer (#138)', () => {
+  it('takes a status, a length and a bounded slice, and nothing else', () => {
+    expect(parsePageAnswer('text', { status: 'ok', total: 12, text: 'Hello world.' })).toEqual({
+      status: 'ok',
+      total: 12,
+      text: 'Hello world.',
+    })
+    expect(parsePageAnswer('text', { status: 'masked', total: 0, text: '' }).status).toBe('masked')
+    for (const bad of [
+      { status: 'shown', total: 0, text: '' },
+      { status: 'ok', total: -1, text: '' },
+      { status: 'ok', total: 1.5, text: '' },
+      { status: 'ok', total: 0, text: 'x'.repeat(MAX_TEXT_CHARS + 1) },
+      { status: 'ok', total: 0, text: '', value: 'hunter2' },
+      { status: 'ok', total: 0 },
+    ]) {
+      expect(() => parsePageAnswer('text', bad)).toThrow()
+    }
+  })
+})
 
 describe('the reply check', () => {
   beforeEach(() => {

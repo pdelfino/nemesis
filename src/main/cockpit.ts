@@ -43,6 +43,7 @@ import { PageHints } from './pages/hints'
 import { FormGuide } from './pages/form-guide'
 import { FormGuideSession } from './agent/form-guide'
 import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
+import { ConsoleLog } from './pages/console'
 import { SemanticView, semanticText } from './pages/semantic'
 import { PAGES_FOLDER, ReaderBuffers, readerAttachment, type ReaderDocument } from './pages/reader'
 import { Repl } from './repl'
@@ -321,6 +322,8 @@ export function createCockpit(
   // Eval in the config scope (#72): the app's evaluator and journal, this
   // window's `*repl*` buffer.
   const repl = new Repl(buffers, { journal, evaluate: shared.evaluate })
+  // Each page's console, the last messages in memory, for the MCP page tier (#138).
+  const consoleLog = new ConsoleLog(buffers)
   // The page buffers (#119): a WebContentsView each, built hardened with
   // only the page-script door's preload (#130), attached over the renderer's page section while its
   // buffer is current. They go with the window.
@@ -343,6 +346,7 @@ export function createCockpit(
     // (#120): bound in the page's modes, it is the cockpit's; else the page's.
     keys: (press, modes) => dispatcher.take(press, modes).consumed,
     ...(shared.blocker === undefined ? {} : { blocker: shared.blocker }),
+    console: (pageId, level, message) => consoleLog.record(pageId, level, message),
   })
   installPageBridge(pages, contents)
   // The semantic view (#122): each page's snapshot through the door, its
@@ -512,6 +516,35 @@ export function createCockpit(
     cwd,
     version: app.getVersion(),
     texts,
+    // The page tier's reading tools (#138), through the same door and views
+    // the cockpit's own page commands read.
+    pages: {
+      list: () => pages.list(),
+      committedUrl: (pageId) =>
+        pages.viewOf(pageId) === undefined ? undefined : buffers.get(pageId)?.url,
+      snapshot: (pageId) => semantic.snapshot(pageId),
+      resolve: (ref) => semantic.resolve(ref),
+      reader: (pageId) => readers.read(pageId),
+      text: (pageId, element, from, chars) => {
+        const view = pages.viewOf(pageId)
+        if (view === undefined) return Promise.reject(new Error('The page is gone'))
+        return shared.pageDoor.request(view.webContents, 'text', [element, from, chars])
+      },
+      form: async (pageId) => {
+        const view = pages.viewOf(pageId)
+        if (view === undefined) throw new Error('The page is gone')
+        const document = semantic.currentDocument(pageId)
+        // 0 is a change count the page never had, so the answer is always whole.
+        const answer = await shared.pageDoor.request(view.webContents, 'form', [0])
+        if (semantic.currentDocument(pageId) !== document) {
+          throw new Error('The page navigated while its form was read')
+        }
+        return { answer, document }
+      },
+      console: consoleLog,
+      events: (listener) => pages.onPageEvent(listener),
+      buffers,
+    },
     // A yes-per-call question wants its window on screen.
     showWindow: () => {
       if (!window.isDestroyed()) {

@@ -16,6 +16,7 @@ import {
   parsePageRequestArgs,
   MAX_FORM_ALERTS,
   MAX_FORM_FIELDS,
+  MAX_TEXT_CHARS,
   type DrawnLabel,
   type FormAlert,
   type FormAnswer,
@@ -30,6 +31,7 @@ import {
   type SemanticState,
   type SnapshotAnswer,
   type SnapshotNode,
+  type TextAnswer,
 } from '../shared/page-door'
 import { formField, isSecretField, type FormControl } from '../shared/form-snapshot'
 import { extractReader, type ReaderNode } from '../shared/reader'
@@ -70,6 +72,7 @@ interface PageElement {
   readonly selectedOptions?: ArrayLike<PageElement>
   getAttribute(name: string): string | null
   hasAttribute(name: string): boolean
+  querySelectorAll?(selector: string): ArrayLike<PageElement>
   readonly href?: unknown
   getBoundingClientRect(): PageRect
   checkVisibility?(): boolean
@@ -707,7 +710,67 @@ function form(args: readonly number[]): FormAnswer {
   return { version, same: 0, focused, fields, alerts: formAlerts() }
 }
 
-/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94). */
+// One element's text for the MCP page tier (#138): `browser_read_text` by
+// ref. The element is one a snapshot numbered; the mask is decided before
+// any value is read, by the masking list of #94, on the element and on every
+// field inside it, so a secret's value never leaves this world. It reads; it
+// writes nothing to the page.
+
+/** The element this document numbered `id`, or null: never numbered, or gone from the document. */
+function elementById(id: number): PageElement | null {
+  const all = world.document.querySelectorAll('*')
+  for (let index = 0; index < all.length; index += 1) {
+    const element = all[index]
+    if (element !== undefined && elementIds.get(element) === id) return element
+  }
+  return null
+}
+
+const FIELD_TAGS: ReadonlySet<string> = new Set(['INPUT', 'SELECT', 'TEXTAREA'])
+
+/**
+ * Whether the element is a secret field, or holds one: the snapshot's own
+ * mask (a valued role the masking list matches), on the element and on every
+ * field and editable inside it, read by attributes and labels, never by value.
+ */
+function holdsSecret(element: PageElement): boolean {
+  const inside = element.querySelectorAll?.('input, select, textarea, [contenteditable]') ?? []
+  return [element, ...Array.from(inside)].some((field) => {
+    const role = roleOf(field, false)
+    return role !== null && VALUED.has(role) && isSecret(field, role)
+  })
+}
+
+/** A field's value, or any other element's rendered text. */
+function wholeText(element: PageElement): string {
+  if (element.tagName === 'SELECT') {
+    const chosen = element.selectedOptions?.[0]
+    return chosen === undefined ? '' : textOf(chosen)
+  }
+  if (FIELD_TAGS.has(element.tagName)) return typeof element.value === 'string' ? element.value : ''
+  const raw = typeof element.innerText === 'string' ? element.innerText : element.textContent
+  return (raw ?? '').replace(/\r\n?/g, '\n').trim()
+}
+
+/** `text`: args are the element's number, the first character, and how many. */
+function text(args: readonly number[]): TextAnswer {
+  const [id, from, chars] = args
+  if (args.length !== 3 || id === undefined || from === undefined || chars === undefined) {
+    throw new TypeError('text takes an element, a start and a length')
+  }
+  if (id < 1 || from < 0 || chars < 1) throw new TypeError('text has an arg out of range')
+  const element = elementById(id)
+  if (element === null) return { status: 'gone', total: 0, text: '' }
+  if (holdsSecret(element)) return { status: 'masked', total: 0, text: '' }
+  const whole = wholeText(element)
+  return {
+    status: 'ok',
+    total: whole.length,
+    text: whole.slice(from, from + Math.min(chars, MAX_TEXT_CHARS)),
+  }
+}
+
+/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
 } = Object.freeze({
@@ -720,6 +783,7 @@ const HANDLERS: {
   'hints-show': hintsShow,
   reader,
   form,
+  text,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

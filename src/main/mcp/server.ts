@@ -25,6 +25,7 @@ import {
   READ_BYTES_CAP,
   READ_LINES_CAP,
 } from './catalog'
+import { PageTier, type PageTierDeps } from './page-tier'
 
 /**
  * The cockpit's MCP server (#28, ADR 0007): the tools of catalog.ts, each a
@@ -45,6 +46,11 @@ import {
  * whose class is `never` is refused on both doors. A socket client that
  * goes away before the user answered its question has the question
  * withdrawn, with a notice naming it (#117).
+ *
+ * The page tier's reading tools (#138) relay to page-tier.ts. Their result
+ * is the structure, a line of it as text, and the page's own strings as one
+ * more text item, the `wrapUntrusted` block, so a client that reads only the
+ * structure never sees a word the page wrote.
  *
  * One resource beside the tools, `nemesis://session/events` (ADR 0008): the
  * current session's `events.jsonl` as recorded, so a tool result that came
@@ -92,6 +98,8 @@ export interface CockpitMcpDeps {
   readonly showWindow?: (() => void) | undefined
   /** The text of the buffer kinds the window is pushed (#117); see buffer-texts.ts. */
   readonly texts?: { text(buffer: BufferInfo): string | undefined } | undefined
+  /** The page buffers the page tier reads (#138); absent, every `browser_` call is an error. */
+  readonly pages?: PageTierDeps | undefined
 }
 
 interface Call {
@@ -100,10 +108,14 @@ interface Call {
   readonly signal?: AbortSignal | undefined
 }
 
-/** What a relay returns: the structure the return schema describes, and its text. */
+/**
+ * What a relay returns: the structure the return schema describes, and its
+ * text; a page tool adds the page's own strings as one wrapped block.
+ */
 interface Answer {
   readonly structured: Record<string, unknown>
   readonly text: string
+  readonly block?: string
 }
 
 export class McpToolError extends Error {
@@ -114,6 +126,7 @@ export type NoticeListener = (event: AgentNoticeEvent) => void
 
 export class CockpitMcp {
   private readonly deps: CockpitMcpDeps
+  private readonly pages: PageTier | null
   private readonly servers = new Set<McpServer>()
   /** The servers whose client subscribed to the events resource. */
   private readonly subscribed = new Set<McpServer>()
@@ -132,6 +145,7 @@ export class CockpitMcp {
 
   constructor(deps: CockpitMcpDeps) {
     this.deps = deps
+    this.pages = deps.pages === undefined ? null : new PageTier(deps.pages)
     deps.agent.on((event) => {
       this.track(event)
       this.eventsChanged()
@@ -261,7 +275,10 @@ export class CockpitMcp {
       }
       const answer = await this.relay(name, args, call)
       return {
-        content: [{ type: 'text', text: answer.text }],
+        content: [
+          { type: 'text', text: answer.text },
+          ...(answer.block === undefined ? [] : [{ type: 'text' as const, text: answer.block }]),
+        ],
         structuredContent: answer.structured,
       }
     } catch (error) {
@@ -270,6 +287,10 @@ export class CockpitMcp {
   }
 
   private async relay(name: string, args: Record<string, unknown>, call: Call): Promise<Answer> {
+    if (name.startsWith('browser_')) {
+      if (this.pages === null) throw new McpToolError('This cockpit has no page buffers')
+      return this.pages.call(name, args, call.signal)
+    }
     switch (name) {
       case 'cockpit_list_commands':
         return this.listCommands(optionalString(args['filter']), call)

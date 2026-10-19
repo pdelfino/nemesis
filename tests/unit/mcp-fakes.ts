@@ -2,11 +2,12 @@ import { vi, type Mock } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { AgentEvent } from '../../src/main/agent/events'
-import { createCockpitBuffers } from '../../src/main/buffers'
+import { createCockpitBuffers, type BufferRegistry } from '../../src/main/buffers'
 import { CONFIRM_SOURCES } from '../../src/main/commands/confirm'
 import { Prompter } from '../../src/main/commands/prompter'
 import { CommandRegistry } from '../../src/main/commands/registry'
 import { BufferTexts } from '../../src/main/mcp/buffer-texts'
+import type { PageTierDeps } from '../../src/main/mcp/page-tier'
 import { CockpitMcp, type CockpitMcpDeps, type McpDoorKind } from '../../src/main/mcp/server'
 
 export interface FakeCockpit {
@@ -18,14 +19,22 @@ export interface FakeCockpit {
   readonly nameSession: Mock<(name: string) => void>
   /** What the window was pushed of the other buffer kinds (#117). */
   readonly texts: BufferTexts
+  readonly buffers: BufferRegistry
   /** Sends an event down the fake session's stream. */
   emit(event: AgentEvent): void
   /** Points the server at a session folder, as the recorder would once it had one. */
   setFolder(folder: string | null): void
 }
 
-/** The MCP specs' cockpit (#28): the real registry, buffers and prompter, a fake session and queue. */
-export function fakeCockpit(registry = new CommandRegistry()): FakeCockpit {
+/**
+ * The MCP specs' cockpit (#28): the real registry, buffers and prompter, a
+ * fake session and queue; `pages` builds the page tier's reads (#138) over
+ * the cockpit's buffers.
+ */
+export function fakeCockpit(
+  registry = new CommandRegistry(),
+  pages?: (buffers: BufferRegistry) => PageTierDeps,
+): FakeCockpit {
   const prompter = new Prompter()
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   prompter.addSource({
@@ -66,6 +75,7 @@ export function fakeCockpit(registry = new CommandRegistry()): FakeCockpit {
     cwd: '/work',
     version: '0.0.1',
     texts,
+    ...(pages === undefined ? {} : { pages: pages(buffers) }),
   }
   return {
     mcp: new CockpitMcp(deps),
@@ -75,6 +85,7 @@ export function fakeCockpit(registry = new CommandRegistry()): FakeCockpit {
     submit,
     nameSession,
     texts,
+    buffers,
     emit: (event) => {
       for (const listener of [...listeners]) listener(event)
     },

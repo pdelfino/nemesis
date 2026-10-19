@@ -10,12 +10,14 @@
  * channel. Version 1 shipped one name, `ping`, so the door was testable
  * before a consumer existed; the semantic view (#122) adds `snapshot`, and
  * hint mode (#123) adds `hints` and `hints-show`, reader mode (#128)
- * adds `reader`, and the form guide (#94) adds `form`.
+ * adds `reader`, the form guide (#94) adds `form`, and the MCP page tier
+ * (#138) adds `text`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
- * text a page wrote. `hints-show` takes labels as code points, and `form`
- * takes one number, the change count main last saw.
+ * text a page wrote. `hints-show` takes labels as code points, `form`
+ * takes one number, the change count main last saw, and `text` takes three:
+ * the element's number, the first character and how many.
  */
 
 /** Main to the page preload: `{ id, name }`, no code and no free text. */
@@ -326,6 +328,28 @@ export interface FormAnswer {
   readonly alerts: readonly FormAlert[]
 }
 
+/** The most characters one `text` answer carries; a longer text is read in pieces. */
+export const MAX_TEXT_CHARS = 50_000
+
+/**
+ * What a `text` read found: the element's text, a secret it refused before
+ * reading any value, or no element under that number in this document.
+ */
+export const TEXT_STATUSES = ['ok', 'masked', 'gone'] as const
+
+export type TextStatus = (typeof TEXT_STATUSES)[number]
+
+/**
+ * `text` (#138): one element's text, as `browser_read_text` reads it by ref.
+ * `total` is the whole text's length, so main knows whether more follows;
+ * `text` is the slice asked for. Both are empty and 0 unless `status` is `ok`.
+ */
+export interface TextAnswer {
+  readonly status: TextStatus
+  readonly total: number
+  readonly text: string
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
@@ -334,6 +358,7 @@ export interface PageAnswers {
   readonly 'hints-show': HintsShowAnswer
   readonly reader: ReaderAnswer
   readonly form: FormAnswer
+  readonly text: TextAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -447,6 +472,11 @@ export const PAGE_ANSWERS: {
         text: { kind: 'string', max: MAX_NODE_TEXT } as const,
       }),
     } as const,
+  }),
+  text: Object.freeze({
+    status: { kind: 'enum', values: TEXT_STATUSES } as const,
+    total: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    text: { kind: 'string', max: MAX_TEXT_CHARS } as const,
   }),
 })
 
