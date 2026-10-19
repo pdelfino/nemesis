@@ -42,6 +42,16 @@ The phone push needs both Telegram variables; with one of them missing nothing i
 
 The Garmin watch needs no Garmin API: Garmin Connect mirrors the iPhone's notifications. In the Garmin Connect app, open the watch's settings, then Notifications and Alerts, then Smart Notifications, and allow Telegram (Apps, Telegram on). The iPhone's own Settings, Notifications, Telegram must allow notifications too, or there is nothing to mirror.
 
+* Signing a release
+
+Releases are signed with a Developer ID under the hardened runtime, notarized by Apple and stapled (#36). The maintainer sets up three things once: the Apple Developer Program, a "Developer ID Application" certificate in the login keychain, and an App Store Connect API key. The key's =.p8= file lives outside every repository, and three variables point at it from the maintainer's own shell profile: =APPLE_API_KEY= (the file's path), =APPLE_API_KEY_ID= and =APPLE_API_ISSUER=. None of them is ever written to the repository, a log or a transcript.
+
+- =make app-signed= builds, signs, notarizes and staples =release/mac-arm64/Nemesis.app=, then runs =make verify-app=. Without the variables or the certificate it stops with the reason; it never builds unsigned instead.
+- =make verify-app= checks the result as the release checklist does: the Developer ID and team, the hardened runtime, exactly the entitlements of =build/entitlements.mac.plist=, =spctl= accepting it as notarized, the stapled ticket, and the Agent SDK's CLI binary still signed by Anthropic.
+- =make app-hardened= needs no Apple account: an ad hoc signature under the hardened runtime, with the one extra entitlement ad hoc code needs (=build/entitlements.adhoc.plist=), so =npm run test:package= can prove the app runs hardened before a Developer ID exists.
+
+Every entitlement has a reason in its plist and in =SECURITY.org= T1; adding one is a reviewed change, pinned by =tests/unit/release-check.test.ts=.
+
 * The form guide
 
 Watch me fill this form (#94): =C-c C-w= (=form-guide-mode=) in a page buffer watches its form, and the guide's reply shows in a pane beside the page. The pieces, and the lines each holds:

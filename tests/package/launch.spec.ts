@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { chromium, expect, test } from '@playwright/test'
@@ -94,4 +94,15 @@ test('the Agent SDK CLI binary is unpacked from the asar and executable', () => 
     'claude',
   )
   expect(() => accessSync(claude, constants.X_OK)).not.toThrow()
+})
+
+test("the bundle's icon is the mark of #91, not Electron's (#148)", () => {
+  const named = execFileSync(
+    'plutil',
+    ['-extract', 'CFBundleIconFile', 'raw', join(APP, 'Contents', 'Info.plist')],
+    { encoding: 'utf8' },
+  ).trim()
+  expect(named).not.toBe('electron.icns')
+  const icon = readFileSync(join(APP, 'Contents', 'Resources', named))
+  expect(icon.equals(readFileSync(join(process.cwd(), 'resources', 'icon.icns')))).toBe(true)
 })

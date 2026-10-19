@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Local check only, never a release (#36): `make app-hardened` signs the app
+  ad hoc under the hardened runtime to prove it runs there before a Developer
+  ID exists. Ad hoc code has no team, so library validation would refuse
+  Electron's own frameworks; disable-library-validation is the one entry
+  added to entitlements.mac.plist for that, as electron-builder documents.
+  A Developer ID build signs every framework with the same team and needs
+  no such exception.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

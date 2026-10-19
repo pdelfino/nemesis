@@ -16,6 +16,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir",
+    "package:hardened": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir -c.mac.identity=- -c.mac.entitlements=build/entitlements.adhoc.plist -c.mac.entitlementsInherit=build/entitlements.adhoc.plist",
+    "package:signed": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=true electron-builder --mac --dir -c.mac.notarize=true",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",

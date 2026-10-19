@@ -1,8 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync, watch, type FSWatcher } from 'node:fs'
 import { join, relative } from 'node:path'
 import { expect, test, type Page } from '../_test'
-import { QUARANTINE_ATTRIBUTE, QUARANTINE_FOLDER } from '../../../src/main/security/downloads'
+import {
+  QUARANTINE_ATTRIBUTE,
+  QUARANTINE_FOLDER,
+  STAGING_FOLDER,
+} from '../../../src/main/security/downloads'
 import { fixtureServer, launchNemesis } from './_harness'
 
 /**
@@ -14,7 +18,10 @@ import { fixtureServer, launchNemesis } from './_harness'
  * The download fixture offers one kilobyte three ways. The first two are
  * refused, once with `C-g` and once with `RET` on the highlighted candidate,
  * and nothing is written anywhere under the launch's downloads path: not a
- * file, not a `.crdownload`. The third is accepted, and exactly one file
+ * file, not a `.crdownload`, and, by a watcher from before the first offer,
+ * not even the temporary file Chromium buffers an offer in before it can be
+ * refused, which lives in the staging folder in the profile and is gone once
+ * the item is refused (#137). The third is accepted, and exactly one file
  * appears, in the quarantine folder, whole, carrying `com.apple.quarantine`
  * as `xattr -p` reads it. The `mailto:` link opens the same prompt and `C-g`
  * leaves the system untouched; the custom-scheme link is refused without a
@@ -59,8 +66,16 @@ function candidates(page: Page): Promise<string[]> {
 test('a download lands only after a yes, in the quarantine folder, with the attribute; a mailto link only asks', async () => {
   const fixtures = await fixtureServer()
   const nemesis = await launchNemesis()
+  let watcher: FSWatcher | undefined
   try {
     const quarantine = join(nemesis.downloadsDir, QUARANTINE_FOLDER)
+    // Every file event under the downloads path from here on (#137). A
+    // listing after a refusal cannot see a file Chromium writes and deletes
+    // within milliseconds; the watcher does.
+    const touched: string[] = []
+    watcher = watch(nemesis.downloadsDir, { recursive: true }, (_type, name) => {
+      touched.push(String(name))
+    })
     const origin = fixtures.httpsOrigin
     const palette = nemesis.window.locator('#palette')
     const promptLabel = nemesis.window.locator('#palette-prompt')
@@ -122,6 +137,13 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
       .toBe(2)
     await nemesis.window.waitForTimeout(500)
     expect(filesUnder(nemesis.downloadsDir)).toEqual([])
+    // Neither refusal touched the downloads path at all, not even for the
+    // milliseconds Chromium buffers an offer before it can be refused, and
+    // the buffers in the staging folder went with the refused items.
+    expect(touched).toEqual([])
+    await expect
+      .poll(() => filesUnder(join(nemesis.userData, STAGING_FOLDER)), { timeout: 5_000 })
+      .toEqual([])
 
     // The navigation, and a yes typed out.
     await buffer.page.click('#download-navigate')
@@ -202,6 +224,7 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
 
     await buffer.close()
   } finally {
+    watcher?.close()
     await nemesis.close()
     await fixtures.close()
   }

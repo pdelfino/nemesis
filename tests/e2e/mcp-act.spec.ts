@@ -118,7 +118,7 @@ test('a client clicks, types, submits, hovers, drags and captures, each after it
     const typed = await allowed(
       'browser_type',
       { element: 'the name field', ref: refs.name, text: 'Ada Lovelace' },
-      `type 12 characters into "the name field" in ${pageId}?`,
+      `type "Ada Lovelace" (12 characters) into "the name field" in ${pageId}?`,
     )
     expect(typed.structuredContent).toEqual({
       page: pageId,
@@ -130,7 +130,7 @@ test('a client clicks, types, submits, hovers, drags and captures, each after it
     await expect(page.locator('#echo')).toHaveText('Ada Lovelace')
 
     // Submitting: a no submits nothing; the yes does.
-    const submitLine = `type 5 characters into "the query" in ${pageId}, then press Enter to submit it?`
+    const submitLine = `type "shoes" (5 characters) into "the query" in ${pageId}, then press Enter to submit it?`
     const submit = { element: 'the query', ref: refs.query, text: 'shoes', submit: true }
     const refused = client.callTool({ name: 'browser_type', arguments: submit })
     await expect(prompt).toHaveText(`e2e-act-client asks browser_type ${on}: ${submitLine}`)
