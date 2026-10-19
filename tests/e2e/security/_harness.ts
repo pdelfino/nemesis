@@ -190,6 +190,12 @@ interface PageDoor {
   close(windowId: number, bufferId: string): void
 }
 
+/** What the page door tells of one page buffer (#126): the buffer list's entry for it. */
+export interface PageBufferState {
+  readonly blocker?: boolean
+  readonly blocked?: number
+}
+
 /** A web page opened by the app in a page buffer (#119), or, with the preload, in a bare window. */
 export interface PageBuffer {
   /** Playwright's handle on the page, for `evaluate` and locators. */
@@ -198,6 +204,8 @@ export interface PageBuffer {
   readonly loadError: string | null
   /** The id of the page's WebContents, as the main process's log lines name it. */
   readonly contentsId: number
+  /** A real page buffer's window and buffer ids (#126); absent on the bare window `withPreload` opens. */
+  readonly ids?: { readonly windowId: number; readonly bufferId: string }
   close(): Promise<void>
 }
 
@@ -212,6 +220,12 @@ export interface LaunchOptions {
    * off to watch the certificate error be fatal.
    */
   readonly trustFixtures?: boolean
+  /**
+   * More environment for the main process: the blocker spec (#126) names
+   * its hosts file and seed list through NEMESIS_HOSTS_FILE and
+   * NEMESIS_BLOCKER_LIST, read under `NODE_ENV=test` only.
+   */
+  readonly env?: Readonly<Record<string, string>>
 }
 
 export interface Nemesis {
@@ -243,7 +257,10 @@ export async function launchNemesis(options: LaunchOptions = {}): Promise<Nemesi
   const anchorDir = mkdtempSync(join(tmpdir(), 'nemesis-security-ca-'))
   const anchorPath = join(anchorDir, 'fixtures-ca.pem')
   writeFileSync(anchorPath, runCertificate().certificate)
-  const env = options.trustFixtures === false ? {} : { NEMESIS_TEST_CA: anchorPath }
+  const env = {
+    ...(options.trustFixtures === false ? {} : { NEMESIS_TEST_CA: anchorPath }),
+    ...options.env,
+  }
   // Fake camera and microphone devices (#49): with the real ones, a
   // microphone request from a page buffer sat in Chromium's audio capture
   // on macOS and never reached the app's permission handler, whatever the
@@ -285,6 +302,7 @@ export async function launchNemesis(options: LaunchOptions = {}): Promise<Nemesi
         page,
         loadError: real.loadError,
         contentsId: real.contentsId,
+        ids: { windowId: real.windowId, bufferId: real.bufferId },
         close: async () => {
           await app.evaluate(
             (_main, { windowId, bufferId }) => {

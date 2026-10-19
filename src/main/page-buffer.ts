@@ -4,6 +4,7 @@ import type { BufferInfo, PageBounds, PageEvent, PageSpec } from '../shared/buff
 import type { KeyPress } from '../shared/keys'
 import type { BufferRegistry } from './buffers'
 import { CommandError } from './commands/registry'
+import type { PageBlocker } from './pages/blocker'
 import { navigationAllowed } from './security/navigation-policy'
 import { hostOf, upgradeOf } from './security/transport'
 import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
@@ -39,6 +40,11 @@ import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
  * - Focus follows the current buffer: a page shown takes the keyboard, and
  *   a page hidden (a switch away, or the palette's null rectangle) gives it
  *   back to the cockpit.
+ * - Blocker mode (#126): every page is attached to the blocker of
+ *   pages/blocker.ts with the mode on, `toggle-blocker` turns it off and on,
+ *   and the buffer carries the mode and the count of requests cancelled
+ *   since the page last committed a URL, for the mode line. The first page
+ *   starts the blocker's update schedule, so launch fetches nothing.
  *
  * The module holds no Electron value: the view, the window's content view and
  * the policies come in through `PageBuffersOptions`, so the unit tests drive
@@ -192,6 +198,8 @@ export interface PageBuffersOptions<V extends PageView> {
    * page should have it. Absent, every key is the page's.
    */
   readonly keys?: (press: KeyPress, modes: readonly string[]) => boolean
+  /** The blocker every page is attached to (#126). Absent, no page has blocker mode. */
+  readonly blocker?: PageBlocker
 }
 
 /** The current page as bookmark-page reads it (#125). */
@@ -223,6 +231,8 @@ export interface PageCommands {
   copy(): void
   /** Puts `passthrough` in front of `document`, or takes it off. */
   togglePassthrough(): void
+  /** Blocker mode off or on for the current page buffer (#126). */
+  toggleBlocker(): void
   /** The current page buffer's committed URL, its title and its partition (#125). */
   currentPage(): CurrentPage
 }
@@ -242,6 +252,7 @@ export const NO_PAGES: PageCommands = {
   zoom: noPages,
   copy: noPages,
   togglePassthrough: noPages,
+  toggleBlocker: noPages,
   currentPage: noPages,
 }
 
@@ -259,6 +270,10 @@ interface Page<V extends PageView> {
   found: string
   /** The partition of #54 the page lives in; the history never records `ephemeral` (#125). */
   readonly partition: NonNullable<PageSpec['partition']>
+  /** Blocker mode, on from creation when the window has a blocker (#126). */
+  blocker: boolean
+  /** Requests the blocker cancelled since the page last committed a URL. */
+  blocked: number
 }
 
 /** A zoom level as the percentage the mode line shows. */
@@ -405,12 +420,23 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       modes: [DOCUMENT_MODE],
       found: '',
       partition: partitionName,
+      blocker: this.options.blocker !== undefined,
+      blocked: 0,
     }
     this.pages.set(buffer.id, page)
     this.options.buffers.update(buffer.id, {
       modes: page.modes,
       zoom: zoomPercent(contents.getZoomLevel()),
+      ...(page.blocker ? { blocker: true, blocked: 0 } : {}),
     })
+    const blocker = this.options.blocker
+    if (blocker !== undefined) {
+      blocker.attach(contents.id, {
+        url: () => (contents.isDestroyed() ? '' : contents.getURL()),
+        blocked: () => this.countBlocked(page),
+      })
+      blocker.start()
+    }
     this.listen(page)
     if (spec.url !== undefined) void this.load(buffer.id, spec.url)
     return buffer
@@ -424,6 +450,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const contents = page.view.webContents
     for (const [event, listener] of page.listeners) contents.off(event, listener)
     page.listeners.length = 0
+    this.options.blocker?.detach(contents.id)
     if (page.attached) {
       this.options.host.removeChildView(page.view)
       page.attached = false
@@ -532,6 +559,15 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     this.options.buffers.update(page.id, { modes: page.modes })
   }
 
+  toggleBlocker(): void {
+    const blocker = this.options.blocker
+    if (blocker === undefined) throw new CommandError('This window has no blocker')
+    const page = this.current()
+    page.blocker = !page.blocker
+    blocker.enable(page.view.webContents.id, page.blocker)
+    this.options.buffers.update(page.id, { blocker: page.blocker })
+  }
+
   /** The partition of a page buffer, or undefined for an id that holds no page. */
   partitionOf(id: string): NonNullable<PageSpec['partition']> | undefined {
     return this.pages.get(id)?.partition
@@ -548,6 +584,13 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   /** The modes of a page buffer, first wins; empty for an id that holds no page. */
   modesOf(id: string): readonly string[] {
     return this.pages.get(id)?.modes ?? []
+  }
+
+  /** One more request the blocker cancelled for the page, into the buffer list. */
+  private countBlocked(page: Page<V>): void {
+    if (!this.pages.has(page.id)) return
+    page.blocked += 1
+    this.options.buffers.update(page.id, { blocked: page.blocked })
   }
 
   /** Every page's zoom into the buffer list, as Chromium holds it per origin now. */
@@ -714,10 +757,17 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const buffers = this.options.buffers
     if (!this.pages.has(event.pageId) || buffers.get(event.pageId) === undefined) return
     switch (event.type) {
-      case 'committed':
+      case 'committed': {
         // Chromium keeps the zoom per origin: a new origin may bring its own.
         this.readZoom()
+        // The count is the page's: a new document starts at none.
+        const page = this.pages.get(event.pageId)
+        if (page !== undefined && this.options.blocker !== undefined) {
+          page.blocked = 0
+          buffers.update(event.pageId, { blocked: 0 })
+        }
         break
+      }
       case 'url-changed': {
         const before = buffers.get(event.pageId)
         // A page with no title of its own is named by its host.

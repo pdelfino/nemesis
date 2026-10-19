@@ -38,6 +38,14 @@ export interface BufferInfo {
   readonly modes?: readonly string[]
   /** A page buffer's zoom as a percentage, Chromium's per origin (#120). Absent on every other kind. */
   readonly zoom?: number
+  /**
+   * A page buffer's blocker mode (#126): on by default, off after
+   * `toggle-blocker`. Absent on every other kind, and on a page built without
+   * a blocker.
+   */
+  readonly blocker?: boolean
+  /** How many requests the blocker cancelled for the page since it last committed a URL (#126). */
+  readonly blocked?: number
 }
 
 /** The whole buffer list in creation order, plus which buffer is current. */

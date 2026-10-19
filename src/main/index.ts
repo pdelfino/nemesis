@@ -5,6 +5,7 @@ import {
   desktopCapturer,
   nativeImage,
   nativeTheme,
+  net,
   session,
   type WebContentsView,
 } from 'electron'
@@ -32,6 +33,7 @@ import type { HelpBuffers } from './help'
 import { McpDoor } from './mcp/socket'
 import type { PagePolicies } from './page-buffer'
 import { installMenu } from './menu'
+import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
 import type { WindowCapturer } from './screenshots'
 import { assertWebContentsHardened } from './security/assert-web-preferences'
 import { describeDownload, DownloadPolicy, QUARANTINE_FOLDER } from './security/downloads'
@@ -360,13 +362,32 @@ void app.whenReady().then(() => {
     downloads.apply(one)
     transport.apply(one)
   }
-  if (process.env['NODE_ENV'] === 'test') {
+  // T7 (#126): blocker mode on both partitions, the hosts file and the lists
+  // on disk read now, nothing downloaded until a page buffer opens. Under
+  // test nothing is ever downloaded: the hosts file and a seed list are the
+  // spec's own, named by NEMESIS_HOSTS_FILE and NEMESIS_BLOCKER_LIST.
+  const underTest = process.env['NODE_ENV'] === 'test'
+  const blocker = new Blocker({
+    dir: join(app.getPath('userData'), 'blocker'),
+    hostsFile: underTest ? process.env['NEMESIS_HOSTS_FILE'] || null : SYSTEM_HOSTS,
+    updates: () => config.settings.blockerUpdates,
+    fetch: underTest ? null : (url) => net.fetch(url),
+    seedList: underTest ? process.env['NEMESIS_BLOCKER_LIST'] || undefined : undefined,
+  })
+  blocker.load()
+  app.on('will-quit', () => blocker.stop())
+  const blocked = {
+    persistent: blocker.install(partitions.persistent),
+    ephemeral: blocker.install(partitions.ephemeral),
+  }
+  if (underTest) {
     // Installed before the cockpit window loads, so the first request the
-    // app makes is already in the log the spec reads.
+    // app makes is already in the log the spec reads. On the partitions the
+    // log observes through the blocker, which holds their one listener.
     const log = recordRequests({
       default: session.defaultSession,
-      [PERSISTENT_PARTITION]: partitions.persistent,
-      [EPHEMERAL_PARTITION]: partitions.ephemeral,
+      [PERSISTENT_PARTITION]: blocked.persistent,
+      [EPHEMERAL_PARTITION]: blocked.ephemeral,
     })
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
     ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
@@ -386,6 +407,12 @@ void app.whenReady().then(() => {
       close: (windowId: number, bufferId: string): void => {
         cockpits.get(windowId)?.pages.destroyPage(bufferId)
       },
+      // What the mode line reads of a page buffer, and a command run as M-x
+      // runs it, for the blocker spec (#126).
+      buffer: (windowId: number, bufferId: string) => cockpits.get(windowId)?.buffers.get(bufferId),
+      run: (windowId: number, name: string): Promise<void> =>
+        cockpits.get(windowId)?.registry.run(name, { source: 'test' }) ??
+        Promise.reject(new Error(`No window ${windowId}`)),
     }
   }
   // app.dock exists on macOS only.
@@ -496,7 +523,7 @@ void app.whenReady().then(() => {
   // The app's own notices, a refused site permission or download, a
   // certificate error, a config load, go to the focused window's session
   // (#70), shown and recorded like any event there.
-  const appNotices = mergeNotices(permissionPolicy, downloads, external, transport, config)
+  const appNotices = mergeNotices(permissionPolicy, downloads, external, transport, config, blocker)
   const noticesFor = (id: number): EventSource => ({
     on: (listener) =>
       appNotices.on((event) => {
@@ -650,6 +677,7 @@ void app.whenReady().then(() => {
         commands: (help) => [reloadConfig(help)],
         pagePolicies,
         stores,
+        blocker,
       },
       place.cwd,
     )

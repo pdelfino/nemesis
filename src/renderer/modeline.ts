@@ -59,7 +59,9 @@ export function installModeline(): void {
 /**
  * What the mode line says of the current page buffer (#120): `passthrough`
  * while every key but C-z goes to the page, and the zoom when it is not
- * 100%. Blank for every other buffer, and for a page in plain `document`.
+ * 100%. Blocker mode (#126): `blocker off` while it is off, else the count
+ * of requests it cancelled on this page, once there is one. Blank for every
+ * other buffer, and for a page in plain `document` with nothing blocked.
  */
 export function pageState(list: BufferList): string {
   const current = list.buffers.find((buffer) => buffer.id === list.currentId)
@@ -67,6 +69,10 @@ export function pageState(list: BufferList): string {
   const parts: string[] = []
   if (current.modes?.includes('passthrough') === true) parts.push('passthrough')
   if (current.zoom !== undefined && current.zoom !== 100) parts.push(`${current.zoom}%`)
+  if (current.blocker === false) parts.push('blocker off')
+  else if (current.blocked !== undefined && current.blocked > 0) {
+    parts.push(`${current.blocked} blocked`)
+  }
   return parts.join(' ')
 }
 

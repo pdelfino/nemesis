@@ -14,6 +14,7 @@ import {
   type RedirectDetails,
 } from '../../src/main/page-buffer'
 import type { KeyPress } from '../../src/shared/keys'
+import type { BlockedPage, PageBlocker } from '../../src/main/pages/blocker'
 import { HARDENED_WEB_PREFERENCES } from '../../src/main/security/web-preferences'
 import type { PageBounds, PageEvent } from '../../src/shared/buffers'
 
@@ -188,7 +189,10 @@ interface Rig {
   readonly events: PageEvent[]
 }
 
-function rig(keys?: (press: KeyPress, modes: readonly string[]) => boolean): Rig {
+function rig(
+  keys?: (press: KeyPress, modes: readonly string[]) => boolean,
+  blocker?: PageBlocker,
+): Rig {
   const buffers = new BufferRegistry()
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
   const views: FakeView[] = []
@@ -212,6 +216,7 @@ function rig(keys?: (press: KeyPress, modes: readonly string[]) => boolean): Rig
       permissions: (contents) => log.push(`permissions ${contents.id}`),
     },
     ...(keys === undefined ? {} : { keys }),
+    ...(blocker === undefined ? {} : { blocker }),
   })
   const notices: string[] = []
   pages.on((event: AgentEvent) => {
@@ -713,6 +718,80 @@ describe('destroying a page buffer (#119)', () => {
     expect(
       views.every((view) => view.webContents.closed && view.webContents.listenerCount() === 0),
     ).toBe(true)
+  })
+})
+
+/** A blocker that records what the page buffers ask of it. */
+class FakeBlocker implements PageBlocker {
+  readonly pages = new Map<number, { page: BlockedPage; on: boolean }>()
+  starts = 0
+  start(): void {
+    this.starts += 1
+  }
+  attach(contentsId: number, page: BlockedPage): void {
+    this.pages.set(contentsId, { page, on: true })
+  }
+  enable(contentsId: number, on: boolean): void {
+    const one = this.pages.get(contentsId)
+    if (one !== undefined) one.on = on
+  }
+  detach(contentsId: number): void {
+    this.pages.delete(contentsId)
+  }
+}
+
+describe('blocker mode on a page (#126)', () => {
+  it('attaches every page with the mode on, starts the schedule, and detaches on destroy', () => {
+    const blocker = new FakeBlocker()
+    const { pages, buffers, views } = rig(undefined, blocker)
+    expect(blocker.starts).toBe(0)
+    const buffer = pages.createPage()
+    const contents = only(views).webContents
+    expect(blocker.starts).toBe(1)
+    expect(blocker.pages.get(contents.id)?.on).toBe(true)
+    expect(buffers.get(buffer.id)).toMatchObject({ blocker: true, blocked: 0 })
+    pages.destroyPage(buffer.id)
+    expect(blocker.pages.has(contents.id)).toBe(false)
+  })
+
+  it('counts what was blocked until the page commits a new URL', () => {
+    const blocker = new FakeBlocker()
+    const { pages, buffers, views } = rig(undefined, blocker)
+    const buffer = pages.createPage()
+    const contents = only(views).webContents
+    const attached = blocker.pages.get(contents.id)
+    attached?.page.blocked()
+    attached?.page.blocked()
+    expect(buffers.get(buffer.id)?.blocked).toBe(2)
+    contents.emit('did-navigate', {}, 'https://news.example/')
+    expect(buffers.get(buffer.id)?.blocked).toBe(0)
+    contents.url = 'https://news.example/'
+    expect(attached?.page.url()).toBe('https://news.example/')
+  })
+
+  it('turns the mode off and on for the current page only, and says so in the buffer list', () => {
+    const blocker = new FakeBlocker()
+    const { pages, buffers, views } = rig(undefined, blocker)
+    const one = pages.createPage()
+    const two = pages.createPage()
+    buffers.switchTo(one.id)
+    pages.toggleBlocker()
+    const [first, second] = views
+    expect(blocker.pages.get(first?.webContents.id ?? -1)?.on).toBe(false)
+    expect(blocker.pages.get(second?.webContents.id ?? -1)?.on).toBe(true)
+    expect(buffers.get(one.id)?.blocker).toBe(false)
+    expect(buffers.get(two.id)?.blocker).toBe(true)
+    pages.toggleBlocker()
+    expect(blocker.pages.get(first?.webContents.id ?? -1)?.on).toBe(true)
+    expect(buffers.get(one.id)?.blocker).toBe(true)
+  })
+
+  it('has no blocker fields and refuses the toggle in a window without a blocker', () => {
+    const { pages, buffers } = rig()
+    const buffer = pages.createPage()
+    buffers.switchTo(buffer.id)
+    expect(buffers.get(buffer.id)?.blocker).toBeUndefined()
+    expect(() => pages.toggleBlocker()).toThrow(/no blocker/)
   })
 })
 

@@ -97,6 +97,8 @@ export class BufferRegistry {
       readonly url?: string
       readonly modes?: readonly string[]
       readonly zoom?: number
+      readonly blocker?: boolean
+      readonly blocked?: number
     },
   ): BufferInfo {
     const index = this.buffers.findIndex((buffer) => buffer.id === id)
@@ -106,8 +108,17 @@ export class BufferRegistry {
     const url = patch.url ?? buffer.url
     const modes = patch.modes === undefined ? buffer.modes : Object.freeze([...patch.modes])
     const zoom = patch.zoom ?? buffer.zoom
+    const blocker = patch.blocker ?? buffer.blocker
+    const blocked = patch.blocked ?? buffer.blocked
     const sameModes = modes?.join(' ') === buffer.modes?.join(' ')
-    if (title === buffer.title && url === buffer.url && sameModes && zoom === buffer.zoom) {
+    if (
+      title === buffer.title &&
+      url === buffer.url &&
+      sameModes &&
+      zoom === buffer.zoom &&
+      blocker === buffer.blocker &&
+      blocked === buffer.blocked
+    ) {
       return buffer
     }
     const next: BufferInfo = Object.freeze({
@@ -116,6 +127,8 @@ export class BufferRegistry {
       ...(url === undefined ? {} : { url }),
       ...(modes === undefined ? {} : { modes }),
       ...(zoom === undefined ? {} : { zoom }),
+      ...(blocker === undefined ? {} : { blocker }),
+      ...(blocked === undefined ? {} : { blocked }),
     })
     this.buffers[index] = next
     this.announce()

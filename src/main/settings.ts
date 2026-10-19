@@ -50,6 +50,13 @@ export interface Settings {
    * read instead. The Telegram token is a secret and never a setting.
    */
   readonly notify: NotifyToggles | null
+  /**
+   * How often the blocker's lists, EasyList and EasyPrivacy, are downloaded
+   * again (#126): `daily`, `weekly` or `monthly`, the first time once a page
+   * buffer opens, never at launch; `off` downloads nothing and keeps the
+   * lists already on disk.
+   */
+  readonly blockerUpdates: BlockerUpdates
 }
 
 /** The `notify` object of settings.json: every event on or off, and the sound. */
@@ -81,6 +88,11 @@ export const NOTIFY_KEYS: readonly (keyof NotifyToggles)[] = [
 
 export type Theme = 'system' | 'light' | 'dark'
 
+/** How often the blocker's lists are downloaded again (#126), or never. */
+export type BlockerUpdates = 'daily' | 'weekly' | 'monthly' | 'off'
+
+export const BLOCKER_UPDATES: readonly BlockerUpdates[] = ['daily', 'weekly', 'monthly', 'off']
+
 export const SETTINGS_FILE = 'settings.json'
 
 /** The keyschemes the cockpit knows. A name outside this list is a typo, not a choice. */
@@ -97,6 +109,7 @@ const KNOWN_KEYS: readonly string[] = [
   'searchEngines',
   'stopGateRetries',
   'notify',
+  'blockerUpdates',
 ]
 
 /** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
@@ -117,6 +130,7 @@ export function defaultSettings(documentsDir: string): Settings {
     searchEngines: DEFAULT_SEARCH_ENGINES,
     stopGateRetries: 3,
     notify: null,
+    blockerUpdates: 'weekly',
   }
 }
 
@@ -187,6 +201,14 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
 
   const notify = parseNotify(value['notify'] ?? defaults.notify)
 
+  const blockerUpdates = value['blockerUpdates'] ?? defaults.blockerUpdates
+  if (
+    typeof blockerUpdates !== 'string' ||
+    !(BLOCKER_UPDATES as readonly string[]).includes(blockerUpdates)
+  ) {
+    throw new SettingsError(`Setting "blockerUpdates" is not one of ${BLOCKER_UPDATES.join(', ')}`)
+  }
+
   return {
     sessionsDir: expanded,
     model,
@@ -196,6 +218,7 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     searchEngines,
     stopGateRetries,
     notify,
+    blockerUpdates: blockerUpdates as BlockerUpdates,
   }
 }
 
@@ -261,6 +284,7 @@ export function serializeSettings(settings: Settings): string {
     verify: settings.verify,
     searchEngines: settings.searchEngines,
     stopGateRetries: settings.stopGateRetries,
+    blockerUpdates: settings.blockerUpdates,
     ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`

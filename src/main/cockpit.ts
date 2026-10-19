@@ -32,6 +32,7 @@ import { CockpitMcp } from './mcp/server'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
 import { PageBuffers, type PagePolicies } from './page-buffer'
+import type { PageBlocker } from './pages/blocker'
 import { Repl } from './repl'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -106,6 +107,8 @@ export interface CockpitShared {
   readonly pagePolicies: PagePolicies<WebContentsView>
   /** The profile's history and bookmarks (#125), null when the database did not open. */
   readonly stores: { readonly history: History; readonly bookmarks: Bookmarks } | null
+  /** The app's blocker (#126): every page buffer is attached to it in blocker mode. */
+  readonly blocker?: PageBlocker
 }
 
 /** One stream of notices out of several sources. */
@@ -284,6 +287,7 @@ export function createCockpit(
     // A key typed in a page goes through this window's dispatcher first
     // (#120): bound in the page's modes, it is the cockpit's; else the page's.
     keys: (press, modes) => dispatcher.take(press, modes).consumed,
+    ...(shared.blocker === undefined ? {} : { blocker: shared.blocker }),
   })
   installPageBridge(pages, contents)
   // Every committed top-frame navigation of a persistent page is a visit in

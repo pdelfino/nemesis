@@ -1264,6 +1264,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'toggle-blocker',
+      mcp: 'never',
+      doc: 'Turn blocker mode off for the current page buffer, so requests to listed hosts go through, or back on; reload to fetch what was blocked.',
+      run: () => {
+        pages.toggleBlocker()
+      },
+    }),
+    defineCommand({
       name: 'kill-buffer',
       doc: 'Kill the current buffer.',
       run: () => {

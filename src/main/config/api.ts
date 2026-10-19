@@ -123,6 +123,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'searchEngines',
   'stopGateRetries',
   'notify',
+  'blockerUpdates',
 ]
 
 /** `notify.finished` and the like: one toggle of the `notify` object (#114), or null. */
