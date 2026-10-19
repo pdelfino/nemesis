@@ -1,5 +1,7 @@
 import type { HookCallback, Options } from '@anthropic-ai/claude-agent-sdk'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { FREE_IN_APP_TOOLS, IN_APP_SERVER } from '../mcp/catalog'
 import type { AgentEvent, AgentEventListener, PermissionRequest } from './events'
 
 /**
@@ -8,9 +10,11 @@ import type { AgentEvent, AgentEventListener, PermissionRequest } from './events
  * a page buffer open, a tool that acts on the world needs the user's yes,
  * every call, and while a page is the current buffer it is denied outright.
  *
- * - A side-effect tool is Bash, WebFetch, Write, Edit or NotebookEdit on a
- *   path outside the session folder, and an MCP tool whose name says it
- *   sends, submits, posts, purchases, pays, uploads or downloads.
+ * - A side-effect tool is Bash, WebFetch or WebSearch, Write, Edit, MultiEdit
+ *   or NotebookEdit on a path outside the session folder, and every MCP tool
+ *   but the cockpit's own whose ADR 0008 class is `free` (#132). The folder
+ *   check follows symlinks, so a link inside the folder that points out of
+ *   it is outside.
  * - The `PreToolUse` hook of `hooks()` answers `ask` for such a tool while
  *   any page buffer is open, so the SDK goes to `canUseTool` even when the
  *   CLI's own rules would have allowed it, and the permission bridge asks
@@ -36,18 +40,19 @@ export interface PageState {
   currentOrigin(): string | null
 }
 
-/** Tools that act whatever their arguments. */
-const ALWAYS_SIDE_EFFECT = new Set(['Bash', 'WebFetch'])
+/** Tools that act whatever their arguments; a search query can carry page text out. */
+const ALWAYS_SIDE_EFFECT = new Set(['Bash', 'WebFetch', 'WebSearch'])
 
 /** Tools that write the file their input names, and the input field that names it. */
 const FILE_TOOLS: Readonly<Record<string, string>> = {
   Write: 'file_path',
   Edit: 'file_path',
+  MultiEdit: 'file_path',
   NotebookEdit: 'notebook_path',
 }
 
-/** An MCP tool whose name reads as one of these verbs leaves the machine or brings something onto it. */
-const MCP_SIDE_EFFECT = /send|submit|post|publish|purchase|buy|order|pay|checkout|upload|download/i
+/** The prefix of the cockpit's own tools as the in-app session sees them. */
+const IN_APP_PREFIX = `mcp__${IN_APP_SERVER}__`
 
 /**
  * Whether a call of `toolName` with `input` has a side effect in the sense of
@@ -66,15 +71,36 @@ export function isSideEffectTool(
     return typeof path !== 'string' || !insideFolder(path, folder)
   }
   if (toolName.startsWith('mcp__')) {
-    return MCP_SIDE_EFFECT.test(toolName.slice(toolName.lastIndexOf('__') + 2))
+    if (!toolName.startsWith(IN_APP_PREFIX)) return true
+    return !FREE_IN_APP_TOOLS.has(toolName.slice(IN_APP_PREFIX.length))
   }
   return false
 }
 
-/** True when `path`, taken from `folder`, does not step out of it. */
+/**
+ * `path` absolute with every symlink followed: the nearest ancestor that
+ * exists goes through realpath, the part below it, not yet on disk, is
+ * appended as written (as #97 does for the open door).
+ */
+function realResolve(path: string): string {
+  let existing = resolve(path)
+  const rest: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync.native(existing), ...rest)
+    } catch {
+      const parent = dirname(existing)
+      if (parent === existing) return resolve(path)
+      rest.unshift(basename(existing))
+      existing = parent
+    }
+  }
+}
+
+/** True when `path`, taken from `folder`, does not step out of it, symlinks followed. */
 export function insideFolder(path: string, folder: string): boolean {
-  const base = resolve(folder)
-  const step = relative(base, resolve(base, path))
+  const base = realResolve(folder)
+  const step = relative(base, realResolve(resolve(folder, path)))
   return step === '' || (!step.startsWith('..') && !isAbsolute(step))
 }
 

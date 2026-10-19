@@ -77,6 +77,19 @@ export function installPalette(): Palette {
 
   window.nemesis.onPaletteOpen(open)
 
+  // While a read is open the palette keeps the keyboard. Every buffer module
+  // focuses its element when the buffer list changes and its buffer is
+  // current, and a page buffer pushes the list on its own events (a new
+  // title, a load), so without this guard a page renaming itself moved the
+  // focus to the page section mid-word and the rest of what was typed was
+  // lost (found by the full-screen spec, 2026-OCTOBER-19). The read keeps the
+  // point until it is answered or cancelled; close() gives it back.
+  document.addEventListener('focusin', (event) => {
+    if (request === null) return
+    if (event.target instanceof Node && host.contains(event.target)) return
+    view.focus()
+  })
+
   const palette: Palette = {
     get isOpen() {
       return request !== null

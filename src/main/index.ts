@@ -8,6 +8,7 @@ import {
   nativeTheme,
   net,
   session,
+  ShareMenu,
   type WebContentsView,
 } from 'electron'
 import { existsSync, writeFileSync } from 'node:fs'
@@ -228,6 +229,18 @@ const REQUEST_LOG = '__nemesisRequests'
 
 /** The URLs handed to the system, for the downloads spec (#51). Main process only, under test only. */
 const EXTERNAL_LOG = '__nemesisExternal'
+
+/**
+ * What share-page handed the share menu (#34), in place of the native menu,
+ * which a spec cannot pick from. Main process only, under test only.
+ */
+const SHARE_LOG = '__nemesisShares'
+
+/** One share-page call as the share log records it. */
+interface ShareRecord {
+  readonly urls: readonly string[]
+  readonly title: string
+}
 
 /**
  * How the security harness opens a real page buffer in the focused window
@@ -466,6 +479,7 @@ void app.whenReady().then(() => {
     })
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
     ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
+    ;(globalThis as { [SHARE_LOG]?: ShareRecord[] })[SHARE_LOG] = []
     ;(globalThis as { [PAGE_DOOR]?: unknown })[PAGE_DOOR] = {
       open: async (
         url: string,
@@ -797,6 +811,26 @@ void app.whenReady().then(() => {
     },
     openWorktree: (worktree) => {
       openCockpit({ cwd: worktree.path, worktree: { worktree, opener: id } })
+    },
+    // The renderer reports the page section's new rectangle on the window's
+    // resize, so the page view follows full-screen in and out (#32).
+    toggleFullScreen: () => {
+      const window = cockpits.get(id)?.window
+      if (window === undefined) throw new CommandError('That window is closed')
+      window.setFullScreen(!window.isFullScreen())
+    },
+    // The share is the user's act (#34): the menu opens at the pointer over
+    // this window, and only the target picked there receives the URL.
+    openShareMenu: (urls, title) => {
+      const window = cockpits.get(id)?.window
+      if (window === undefined) throw new CommandError('That window is closed')
+      const log = (globalThis as { [SHARE_LOG]?: ShareRecord[] })[SHARE_LOG]
+      if (log !== undefined) {
+        log.push({ urls: [...urls], title })
+        return
+      }
+      if (process.platform !== 'darwin') throw new CommandError('The share menu is macOS only')
+      new ShareMenu({ urls: [...urls], texts: [title] }).popup({ window })
     },
   })
   /**

@@ -1,8 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { pagePrompt, untrustedFooter, untrustedHeader } from '../../src/main/agent/boundary'
 import type { AgentEvent, PermissionRequest } from '../../src/main/agent/events'
 import { mockDriver } from '../../src/main/agent/mock'
 import { insideFolder, isSideEffectTool, PagePolicy } from '../../src/main/agent/page-policy'
+import { FREE_IN_APP_TOOLS, IN_APP_SERVER } from '../../src/main/mcp/catalog'
 import { PermissionBridge } from '../../src/main/agent/permission-bridge'
 import { createAgentSession } from '../../src/main/agent/session'
 import { createCockpitBuffers } from '../../src/main/buffers'
@@ -24,9 +28,10 @@ function pageState() {
 }
 
 describe('the side-effect tool list', () => {
-  it('counts Bash and WebFetch whatever their arguments', () => {
+  it('counts Bash, WebFetch and WebSearch whatever their arguments', () => {
     expect(isSideEffectTool('Bash', { command: 'ls' }, FOLDER)).toBe(true)
     expect(isSideEffectTool('WebFetch', { url: ORIGIN }, FOLDER)).toBe(true)
+    expect(isSideEffectTool('WebSearch', { query: 'x' }, FOLDER)).toBe(true)
   })
 
   it('counts a write or an edit outside the session folder, not inside it', () => {
@@ -35,17 +40,26 @@ describe('the side-effect tool list', () => {
     expect(isSideEffectTool('Write', { file_path: '/Users/me/.zshrc' }, FOLDER)).toBe(true)
     expect(isSideEffectTool('Edit', { file_path: '../other/a.ts' }, FOLDER)).toBe(true)
     expect(isSideEffectTool('Write', { file_path: '/work/project-2/a.ts' }, FOLDER)).toBe(true)
+    expect(isSideEffectTool('MultiEdit', { file_path: 'src/a.ts' }, FOLDER)).toBe(false)
+    expect(isSideEffectTool('MultiEdit', { file_path: '/etc/hosts' }, FOLDER)).toBe(true)
+    expect(isSideEffectTool('MultiEdit', {}, FOLDER)).toBe(true)
     expect(isSideEffectTool('NotebookEdit', { notebook_path: '/tmp/n.ipynb' }, FOLDER)).toBe(true)
     // No path named: not guessed to be inside.
     expect(isSideEffectTool('Write', {}, FOLDER)).toBe(true)
   })
 
-  it('counts an MCP tool that sends, submits, purchases or downloads', () => {
-    expect(isSideEffectTool('mcp__mail__send_message', {}, FOLDER)).toBe(true)
-    expect(isSideEffectTool('mcp__shop__purchase', {}, FOLDER)).toBe(true)
-    expect(isSideEffectTool('mcp__forms__submit_form', {}, FOLDER)).toBe(true)
-    expect(isSideEffectTool('mcp__files__download_file', {}, FOLDER)).toBe(true)
-    expect(isSideEffectTool('mcp__docs__search', {}, FOLDER)).toBe(false)
+  it("counts every MCP tool but the cockpit's own free ones (#132)", () => {
+    expect(isSideEffectTool('mcp__github__create_issue', {}, FOLDER)).toBe(true)
+    expect(isSideEffectTool('mcp__shell__run_command', {}, FOLDER)).toBe(true)
+    expect(isSideEffectTool('mcp__docs__search', {}, FOLDER)).toBe(true)
+    // Another server's tool with a free cockpit name is still another server's.
+    expect(isSideEffectTool('mcp__other__cockpit_list_buffers', {}, FOLDER)).toBe(true)
+    for (const name of FREE_IN_APP_TOOLS) {
+      expect(isSideEffectTool(`mcp__${IN_APP_SERVER}__${name}`, {}, FOLDER), name).toBe(false)
+    }
+    expect(FREE_IN_APP_TOOLS.has('cockpit_read_buffer')).toBe(true)
+    expect(isSideEffectTool(`mcp__${IN_APP_SERVER}__cockpit_run_command`, {}, FOLDER)).toBe(true)
+    expect(isSideEffectTool(`mcp__${IN_APP_SERVER}__cockpit_name_session`, {}, FOLDER)).toBe(true)
   })
 
   it('leaves reading tools alone', () => {
@@ -57,6 +71,28 @@ describe('the side-effect tool list', () => {
   it('resolves a path against the folder before it decides', () => {
     expect(insideFolder('.', FOLDER)).toBe(true)
     expect(insideFolder('a/../../b', FOLDER)).toBe(false)
+  })
+
+  it('follows a symlink inside the folder that points out of it (#132)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'nemesis-page-policy-'))
+    try {
+      const folder = join(root, 'session')
+      const outside = join(root, 'outside')
+      mkdirSync(folder)
+      mkdirSync(outside)
+      symlinkSync(outside, join(folder, 'out'))
+      mkdirSync(join(folder, 'real'))
+      expect(insideFolder('out/a.txt', folder)).toBe(false)
+      expect(insideFolder(join(folder, 'out', 'new', 'b.txt'), folder)).toBe(false)
+      expect(isSideEffectTool('Write', { file_path: join(folder, 'out/a.txt') }, folder)).toBe(true)
+      expect(insideFolder('real/a.txt', folder)).toBe(true)
+      expect(insideFolder('not-yet/a.txt', folder)).toBe(true)
+      // The folder itself through a link still counts as the folder.
+      symlinkSync(folder, join(root, 'alias'))
+      expect(insideFolder(join(root, 'alias', 'a.txt'), folder)).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
@@ -142,6 +178,20 @@ describe('the PreToolUse hook and the bridge (#55)', () => {
     expect(notices.at(-1)).toMatchObject({
       text: expect.stringContaining('needs a yes while a page buffer is open'),
     })
+    await session.stop()
+  })
+
+  it('asks for an MCP tool that is not a free cockpit tool while a page is open (#132)', async () => {
+    const { state, bridge, session, policy } = setup()
+    state.open = true
+    const free = `mcp__${IN_APP_SERVER}__cockpit_list_buffers`
+    expect(policy.mustAsk({ toolName: free, input: {} })).toBe(false)
+    const turn = session.waitForTurn()
+    await session.send('tool: mcp__github__create_issue')
+    await expect.poll(() => bridge.pending.length).toBe(1)
+    expect(bridge.pending[0]?.toolName).toBe('mcp__github__create_issue')
+    bridge.deny()
+    expect((await turn).result).toBe('Did not run mcp__github__create_issue.')
     await session.stop()
   })
 

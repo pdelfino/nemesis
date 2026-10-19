@@ -31,10 +31,11 @@ import { WorkingFiles } from './files'
 import type { HelpBuffers, HelpListener } from './help'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { BufferTexts, diffText } from './mcp/buffer-texts'
+import { IN_APP_SERVER } from './mcp/catalog'
 import { CockpitMcp } from './mcp/server'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
-import { PageBuffers, type PagePolicies } from './page-buffer'
+import { installSwipe, PageBuffers, type PagePolicies } from './page-buffer'
 import type { PageScriptDoor } from './page-door'
 import type { PageAnswers } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
@@ -216,7 +217,7 @@ export function createCockpit(
     // The cockpit's own MCP server, in process (#28): the agent inside sees
     // the catalog an outside client does, minus the rows that would loop.
     mcpServers: () => ({
-      nemesis: { type: 'sdk', name: 'nemesis', instance: mcp.serve('in-app') },
+      [IN_APP_SERVER]: { type: 'sdk', name: IN_APP_SERVER, instance: mcp.serve('in-app') },
     }),
     // The stop gate (#113): the verify key's check at a gated turn's end,
     // the red evidence back through the prompt queue. Both exist below and
@@ -440,6 +441,8 @@ export function createCockpit(
       }
     },
   }
+  // A two-finger swipe goes back or forward in a page buffer (#31).
+  installSwipe(window, pages)
   // Every committed top-frame navigation of a persistent page is a visit in
   // the profile's history (#125); an ephemeral page is never recorded.
   const stopHistory =

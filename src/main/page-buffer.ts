@@ -283,6 +283,21 @@ export const NO_PAGES: PageCommands = {
   currentPage: noPages,
 }
 
+/** The window's `swipe` event (macOS), as `installSwipe` reads it. */
+export interface SwipeWindow {
+  on(event: 'swipe', listener: (event: unknown, direction: string) => void): unknown
+}
+
+/**
+ * Wires the window's `swipe` to the page buffers (#31). macOS emits it for
+ * the page swipe when Trackpad, More Gestures, Swipe between pages allows
+ * it. Chromium's own overscroll navigation stays off: one path for keys and
+ * gestures.
+ */
+export function installSwipe(window: SwipeWindow, pages: { swipe(direction: string): void }): void {
+  window.on('swipe', (_event, direction) => pages.swipe(direction))
+}
+
 export type PageEventListener = (event: PageEvent) => void
 
 interface Page<V extends PageView> {
@@ -564,6 +579,18 @@ export class PageBuffers<V extends PageView> implements PageCommands {
 
   forward(): void {
     this.step(1)
+  }
+
+  /**
+   * A trackpad swipe (#31): `left` goes back and `right` goes forward through
+   * `back` and `forward`, so the navigation and transport policies decide as
+   * they do for the keys. On a buffer that holds no page it does nothing.
+   */
+  swipe(direction: string): void {
+    const current = this.options.buffers.current
+    if (current === null || !this.pages.has(current.id)) return
+    if (direction === 'left') this.back()
+    else if (direction === 'right') this.forward()
   }
 
   scroll(how: PageScroll): void {

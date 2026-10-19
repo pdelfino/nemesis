@@ -3,6 +3,7 @@ import type { WebPreferences } from 'electron'
 import type { AgentEvent } from '../../src/main/agent/events'
 import { BufferRegistry } from '../../src/main/buffers'
 import {
+  installSwipe,
   nextZoomLevel,
   PAGE_PRELOAD,
   PageBuffers,
@@ -412,6 +413,70 @@ describe('loading, and what is refused (#119, SECURITY.org T3)', () => {
     const { pages } = rig()
     expect(() => pages.reload()).toThrow(/not a page/)
     expect(() => pages.back()).toThrow(/not a page/)
+  })
+})
+
+describe('a trackpad swipe (#31)', () => {
+  /** A window that holds its `swipe` listeners, as BrowserWindow would. */
+  function fakeWindow(): {
+    on(event: 'swipe', listener: (event: unknown, direction: string) => void): void
+    swipe(direction: string): void
+  } {
+    const listeners: ((event: unknown, direction: string) => void)[] = []
+    return {
+      on: (_event, listener) => listeners.push(listener),
+      swipe: (direction) => {
+        for (const listener of listeners) listener({}, direction)
+      },
+    }
+  }
+
+  it('goes back on left and forward on right, through the same checks as the keys', async () => {
+    const { pages, views, log, notices } = rig()
+    const window = fakeWindow()
+    installSwipe(window, pages)
+    await pages.open('https://example.test/one')
+    const contents = only(views).webContents
+    contents.entries.push('https://example.test/one', 'https://example.test/two')
+    contents.index = 1
+    contents.url = 'https://example.test/two'
+
+    window.swipe('left')
+    expect(log.at(-1)).toBe('back https://example.test/one')
+    window.swipe('left')
+    expect(notices.at(-1)).toBe('No page to go back to')
+    window.swipe('right')
+    expect(log.at(-1)).toBe('forward https://example.test/two')
+    // Up and down are not history.
+    window.swipe('up')
+    window.swipe('down')
+    expect(log.at(-1)).toBe('forward https://example.test/two')
+
+    // An entry the policy would refuse is refused on a swipe too.
+    contents.entries.push('file:///etc/hosts')
+    window.swipe('right')
+    expect(notices.at(-1)).toMatch(/^Not opened: file: is not a page URL/)
+    expect(log.at(-1)).toBe('forward https://example.test/two')
+  })
+
+  it('does nothing, and throws nothing, on a buffer that holds no page', async () => {
+    const { buffers, pages, views, log, notices } = rig()
+    const window = fakeWindow()
+    installSwipe(window, pages)
+    expect(() => window.swipe('left')).not.toThrow()
+    await pages.open('https://example.test/one')
+    const contents = only(views).webContents
+    contents.entries.push('https://example.test/one', 'https://example.test/two')
+    contents.index = 1
+    const transcript = buffers.list().find((buffer) => buffer.kind === 'transcript')
+    if (transcript === undefined) throw new Error('no transcript buffer')
+    buffers.switchTo(transcript.id)
+    const before = [...log]
+    expect(() => window.swipe('left')).not.toThrow()
+    expect(() => window.swipe('right')).not.toThrow()
+    expect(log).toEqual(before)
+    expect(contents.index).toBe(1)
+    expect(notices).toEqual([])
   })
 })
 

@@ -103,6 +103,8 @@ test('a bound chord stays the cockpit, an unbound key reaches the page, C-z pass
     await window.keyboard.press('Control+x')
     await window.keyboard.press('Control+f')
     await expect(window.locator('#palette-prompt')).toHaveText('Open URL:')
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await window.keyboard.type(url)
     await window.keyboard.press('Enter')
     await expect.poll(() => app.windows().map((one) => one.url())).toContain(url)
@@ -149,6 +151,8 @@ test('a bound chord stays the cockpit, an unbound key reaches the page, C-z pass
     // A cockpit chord typed in the page: M-x opens the palette, which takes the keyboard.
     await type(app, url, 'x', ['alt'])
     await expect(window.locator('#palette')).toBeVisible()
+    // The palette input has the keyboard before anything is typed into it.
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
     await window.keyboard.press('Control+g')
     await expect(window.locator('#palette')).toBeHidden()
     expect(await recorded(view)).toEqual(['a', 'q', 'C-v', 'C-g', 'g', 'b'])

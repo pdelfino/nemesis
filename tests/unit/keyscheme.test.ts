@@ -23,6 +23,7 @@ import {
   resolveCockpitDeps,
 } from '../../src/main/commands/keyscheme'
 import { parseStroke } from '../../src/main/commands/keymap'
+import { NO_PAGES } from '../../src/main/page-buffer'
 
 function press(key: string, options: Partial<KeyPress> = {}): KeyPress {
   return {
@@ -524,5 +525,51 @@ describe('name-session (#104)', () => {
     expect(events).toHaveLength(1)
     expect(shown).toHaveBeenCalledTimes(1)
     expect((shown.mock.calls[0]?.[0] as { text: string }).text).toMatch(/not named/)
+  })
+})
+
+// Sharing a page (#34): the command hands the page's committed URL and title
+// to the window's share menu, a seam here, and sends nothing itself; any
+// other buffer gets a notice.
+describe('share-page (#34)', () => {
+  const page = { url: 'https://example.com/a', title: 'Example', partition: 'persistent' } as const
+
+  function harness() {
+    const openShareMenu = vi.fn()
+    const windows = {
+      open: vi.fn(),
+      others: () => [],
+      switchTo: vi.fn(),
+      review: vi.fn(),
+      openWorktree: vi.fn(),
+      toggleFullScreen: vi.fn(),
+      openShareMenu,
+    }
+    const pages = { ...NO_PAGES, currentPage: () => page }
+    const deps = resolveCockpitDeps({ windows, pages })
+    return { deps, registry: createCockpitRegistry(deps), openShareMenu }
+  }
+
+  it('is C-c S in a page buffer, a chord that was free', () => {
+    expect(BUFFER_KEYMAPS.page?.commandFor('C-c S')).toBe('share-page')
+    expect(GLOBAL_KEYMAP.commandFor('C-c S')).toBeUndefined()
+  })
+
+  it("passes a page buffer's committed URL and title to the share menu", async () => {
+    const h = harness()
+    const buffer = h.deps.buffers.create({ kind: 'page', title: 'Example', elementId: 'page' })
+    h.deps.buffers.switchTo(buffer.id)
+    await h.registry.run('share-page', { source: 'test' })
+    expect(h.openShareMenu).toHaveBeenCalledWith(['https://example.com/a'], 'Example')
+  })
+
+  it('is a notice on any other buffer, and opens no menu', async () => {
+    const h = harness()
+    const shown = vi.fn()
+    h.deps.help.on(shown)
+    expect(h.deps.buffers.current?.kind).not.toBe('page')
+    await h.registry.run('share-page', { source: 'test' })
+    expect(h.openShareMenu).not.toHaveBeenCalled()
+    expect((shown.mock.calls[0]?.[0] as { text: string }).text).toMatch(/only a page buffer/)
   })
 })
