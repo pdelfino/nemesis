@@ -65,3 +65,4 @@ fields as a plain list. Dates in prose use the month name, for example
 | [[file:0006-config.org][0006]]   | Configuration as a TypeScript init file with live reload | accepted | #24, #71 |
 | [[file:0007-mcp-architecture.org][0007]]   | The MCP server as state in main behind a stdio shim over a loopback socket | accepted | #26, #28 |
 | [[file:0008-mcp-tools.org][0008]]   | The MCP tool catalog: cockpit tools first, browser parity in M4 | accepted | #27, #28 |
+| [[file:0009-page-script-door.org][0009]]   | The page-script door: an isolated-world preload with one typed bridge | proposed | #121 |
