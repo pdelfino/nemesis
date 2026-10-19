@@ -81,6 +81,11 @@ function recorded(view: Page): Promise<string[]> {
   return view.evaluate(() => [...((globalThis as { __keys?: string[] }).__keys ?? [])])
 }
 
+/** The named keys the fixture page saw (PageDown, Home, ...), apart from the typed ones. */
+function named(view: Page): Promise<string[]> {
+  return view.evaluate(() => [...((globalThis as { __named?: string[] }).__named ?? [])])
+}
+
 test('a bound chord stays the cockpit, an unbound key reaches the page, C-z passes through', async () => {
   const fixtures = await fixtureServer()
   const app = await launchNemesis()
@@ -114,10 +119,12 @@ test('a bound chord stays the cockpit, an unbound key reaches the page, C-z pass
     await expect
       .poll(() => dispatched(window))
       .toEqual(expect.arrayContaining(['C-v scroll-page-down', 'C-g keyboard-quit']))
-    // C-v scrolled the page, through Chromium and no script of the cockpit's.
-    await expect
-      .poll(() => view.evaluate(() => (globalThis as unknown as { scrollY: number }).scrollY))
-      .toBeGreaterThan(0)
+    // C-v became a PageDown in the page: the cockpit's scroll is a key it
+    // sends, never a script it runs (#120). The scroll that follows is
+    // Chromium's, animated over a dozen frames on macOS, and a CI machine
+    // whose window draws no frames leaves it at 0 (PR #131, 2026-OCTOBER-19),
+    // so the spec asserts the key the page received, which needs no frame.
+    await expect.poll(() => named(view)).toContain('PageDown')
 
     // C-z: passthrough, in the mode line; every key but C-z reaches the page.
     await type(app, url, 'z', ['control'])

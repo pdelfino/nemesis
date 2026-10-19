@@ -8,20 +8,28 @@
     <h1>Key recorder</h1>
     <p>
       Every key that reaches this page is written down, so a spec can tell a key the cockpit took
-      from one it forwarded (#120). Named keys are left out. A tall page, so scrolling has somewhere
-      to go.
+      from one it forwarded (#120). Named keys go in a list of their own, so the PageDown the
+      cockpit's scroll sends is seen without a frame being drawn. A tall page, so scrolling has
+      somewhere to go.
     </p>
     <pre id="keys"></pre>
     <div style="height: 6000px"></div>
     <script>
       var keys = []
+      var named = []
       globalThis.__keys = keys
+      globalThis.__named = named
       document.addEventListener(
         'keydown',
         function (event) {
           // Characters and chords on them only: a bare modifier, and the
           // PageDown or Home the cockpit's scroll sends, are not typed keys.
-          if (event.key.length !== 1) return
+          // Those go to the named list, which a keydown fills at once,
+          // without the frames a scroll animation needs.
+          if (event.key.length !== 1) {
+            named.push(event.key)
+            return
+          }
           var parts = []
           if (event.ctrlKey) parts.push('C-')
           if (event.altKey) parts.push('M-')
