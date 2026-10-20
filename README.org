@@ -36,6 +36,86 @@ In Greek mythology, *Nemesis is the daughter of Nyx*. So this is not a fork. It 
 
 5. *Best practices are the defaults.* Anthropic's [[https://code.claude.com/docs/en/best-practices][Claude Code best-practices guide]] is a list of things to remember: verify your work, plan before coding, be specific, keep context clean, course-correct early, review in a fresh context. Nemesis turns each one into a key, a buffer or a visible meter, so the recommended way is the easy way. The map from guideline to affordance to issue lives in [[./docs/guidelines-map.org][docs/guidelines-map.org]].
 
+* Nemesis against the neighbors, honestly
+
+Every mark below comes from the other projects' own READMEs and docs, read on 2026-OCTOBER-17; the long version with every column is [[file:docs/comparison.org][docs/comparison.org]]. Where Nemesis loses, the table says so. Hiding the bad rows is how a project earns a nemesis.
+
+✅ yes, 🟡 partly, ❌ no.
+
+** vs Nyxt, the parent
+
+Nemesis is Nyxt's daughter, so this is less a rivalry than a family dinner.
+
+|                                             | [[https://github.com/atlas-engineer/nyxt][Nyxt]]                         | Nemesis                                      |
+|---------------------------------------------+-------------------------------+----------------------------------------------|
+| Every action is a command bound to a key    | ✅ Emacs, vi or CUA           | ✅ Emacs                                     |
+| The prompt buffer (fuzzy M-x for everything) | ✅ invented it                | ✅ borrowed it, with thanks                  |
+| Hints, history, bookmarks, a blocker        | ✅                            | ✅                                           |
+| Change the app while it runs                | ✅ a Common Lisp REPL         | ✅ =init.ts=, live reload, eval              |
+| A coding agent inside                       | ❌                            | ✅ Claude Code, through the Agent SDK        |
+| An MCP server, so other agents can drive it | ❌                            | ✅ its whole command table                   |
+| Runs on Linux                               | ✅                            | ❌ macOS for now                             |
+| Years of daily use by strangers             | ✅ 11,000 stars               | ❌ one user, 0 stars                         |
+| Parentheses                                 | ✅ all of them                | ❌ we are sorry                              |
+
+** vs Emacs with agent-shell
+
+[[https://github.com/xenodium/agent-shell][agent-shell]] is the best Claude cockpit inside Emacs, and it is where the M0 week (#44) is lived. Nemesis exists for the part Emacs fights: a browser and a GUI that is not a terminal. Its cousin [[https://github.com/manzaltu/claude-code-ide.el][claude-code-ide.el]] runs the Claude CLI in a terminal inside Emacs, which is the flicker Nemesis was built to avoid.
+
+|                                       | Emacs + agent-shell            | Nemesis                                       |
+|---------------------------------------+--------------------------------+-----------------------------------------------|
+| Emacs keys                            | ✅ the real ones               | 🟡 a good impression (CodeMirror's keymap)    |
+| The transcript is a searchable buffer | ✅                             | ✅                                            |
+| Which agents                          | ✅ 23, over ACP                | 🟡 Claude only                                |
+| A web browser next to the session     | 🟡 eww, text only              | ✅ Chromium page buffers                      |
+| Org-mode                              | ✅ it is home                  | 🟡 transcripts are saved as Org, that is all  |
+| Your configuration                    | ✅ Elisp, decades of it        | 🟡 TypeScript, days of it                     |
+| An MCP server over its commands       | ❌                             | ✅                                            |
+
+** vs the Claude desktop app
+
+Anthropic's own app. Nemesis is that idea rebuilt by someone who refuses to touch the mouse.
+
+|                                                  | Claude desktop app                     | Nemesis                                      |
+|--------------------------------------------------+----------------------------------------+----------------------------------------------|
+| Made by the people who make Claude               | ✅                                     | ❌ made by one user and Claude Code          |
+| Signed, notarized, updates itself                | ✅                                     | ❌ built from source; signing is #36         |
+| A browser inside                                 | ✅ sandboxed, its own profile          | ✅ page buffers, their own profile           |
+| Every action a named command you can rebind      | 🟡 shortcuts                           | ✅                                           |
+| The transcript is text you can search and edit   | 🟡                                     | ✅                                           |
+| Change the app at runtime                        | 🟡 CLAUDE.md, hooks, skills, plugins   | ✅ =init.ts=, live reload, eval              |
+| Other agents can drive it over MCP               | ❌ it is a client                      | ✅                                           |
+| A stated safety posture with tests behind it     | ✅ sandbox and classifiers             | ✅ one spec per promise in [[./SECURITY.org][SECURITY.org]]   |
+
+** vs Zed
+
+|                              | [[https://zed.dev][Zed]]                      | Nemesis                                 |
+|------------------------------+---------------------------+-----------------------------------------|
+| A real code editor           | ✅ a fast one, in Rust    | ❌ it is a cockpit; keep your editor    |
+| Which agents                 | ✅ many, over ACP         | 🟡 Claude only                          |
+| A key model                  | ✅ vim mode and keymaps   | ✅ Emacs, every action a command        |
+| A browser                    | ❌                        | ✅                                      |
+| MCP                          | 🟡 a client               | ✅ a server over its command table      |
+| Memory                       | ✅ light                  | ❌ Electron; it eats what Electron eats |
+| Stars                        | ✅ 91,864                 | ❌ 0                                    |
+
+** vs the agentic browsers
+
+[[https://github.com/browseros-ai/BrowserOS][BrowserOS]] and Claude in Chrome start from autonomy: give the agent your tabs and let it click. Nemesis starts from the other end: page text is untrusted data, and every click, keystroke or navigation an agent asks for waits for your yes, one call at a time.
+
+|                                          | BrowserOS                       | Claude in Chrome         | Nemesis                                             |
+|------------------------------------------+---------------------------------+--------------------------+-----------------------------------------------------|
+| A full browser                           | ✅ a Chromium fork              | ✅ your own Chrome       | 🟡 page buffers: no extensions, no password manager |
+| An agent built in                        | ✅ several, local or your keys  | ✅ Claude                | ✅ Claude Code                                      |
+| The agent clicks in your logged-in tabs  | ✅                              | ✅ that is the point     | 🟡 only with your yes, per click                    |
+| A key model                              | ❌                              | ❌                       | ✅                                                  |
+| A page's text cannot steer the agent     | 🟡 autonomy first               | 🟡 acts in live sessions | ✅ labeled untrusted, with specs (T4)               |
+| A coding agent in your repo, same window | ❌                              | ❌                       | ✅                                                  |
+
+** So, should you use it?
+
+Use something else if you want many agents (Zed, agent-shell), you live happily in Emacs (agent-shell), you want a signed app from Anthropic (the desktop app), or you need Linux or a battle-tested browser (Nyxt, or any big one). Use Nemesis if you want Claude Code, a browser and Emacs keys in one keyboard-driven window that other agents can drive over MCP, with a test behind every safety promise. It is young and has exactly one user. You could be the second.
+
 * Why the cockpit first
 
 The daily pain is talking to Claude Code. iTerm2 is stable but cannot be customized the way Emacs can. Emacs has the bindings, but hosting the Claude Code terminal UI inside a terminal emulator flickers, breaks scrolling, and fights the display engine. Nemesis never runs the terminal UI at all: it drives Claude Code headless through the SDK and draws the conversation itself.
