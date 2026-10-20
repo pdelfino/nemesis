@@ -34,6 +34,8 @@ export const REWIND_SOURCE = 'rewind'
 export const MCP_SOURCE = 'mcp'
 /** Closing a worktree window asks whether to remove the worktree; keeping it is the highlighted answer (#87). */
 export const WORKTREE_SOURCE = 'worktree'
+/** Ending a background session and closing its window (#158). */
+export const BACKGROUND_SOURCE = 'background'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -122,6 +124,17 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'Remove the worktree',
         doc: 'git worktree remove, only when git status shows nothing uncommitted; the branch stays.',
+      },
+    ],
+  },
+  {
+    name: BACKGROUND_SOURCE,
+    candidates: () => [
+      { id: NO, label: 'Keep it running', doc: 'The session and its hidden window stay.' },
+      {
+        id: YES,
+        label: 'End the session',
+        doc: 'Its window closes, which stops the session; its folder of events stays on disk.',
       },
     ],
   },

@@ -71,7 +71,7 @@ import {
   screenshotPrompt,
   SYMPTOM_TEMPLATE,
 } from './guide-prompts'
-import { confirm, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
+import { BACKGROUND_SOURCE, confirm, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -322,6 +322,10 @@ export interface CockpitWindows {
   toggleFullScreen(): void
   /** Pops the system's share menu (macOS) over this window for `urls`, with `title` as the text (#34). */
   openShareMenu(urls: readonly string[], title: string): void
+  /** Opens a hidden window in this window's folder whose session starts with `prompt`; its name (#158). */
+  openBackground(prompt: string): string
+  /** Closes a window, which stops its session (#158). */
+  close(windowId: number): void
 }
 
 /** Without the app there is one window and no way to open another. */
@@ -344,6 +348,12 @@ const ONE_WINDOW: CockpitWindows = {
   },
   openShareMenu: () => {
     throw new CommandError('No window is installed')
+  },
+  openBackground: () => {
+    throw new CommandError('No window opener is installed')
+  },
+  close: () => {
+    throw new CommandError('There is no other window')
   },
 }
 
@@ -1057,7 +1067,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'open-agent',
-      doc: 'Pick a session from the agents list and bring its window forward on its prompt buffer.',
+      doc: 'Pick a session from the agents list and bring its window forward on its pending request, else its prompt buffer.',
       run: () => {
         // The renderer holds the point and the preload gains no channel for
         // it, so the session is read off the palette over the same list (#157).
@@ -1067,6 +1077,47 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         }
         prompter.read({ source: 'agents', prompt: 'Open session:' }, (id) =>
           Promise.resolve().then(() => agents.open(Number(id))),
+        )
+      },
+    }),
+    defineCommand({
+      name: 'new-background-session',
+      doc: "Start a session without a window, in this window's folder, with the prompt you type; it shows in the agents buffer and asks as any other.",
+      run: () => {
+        prompter.read(
+          { source: 'background-prompt', prompt: 'Background prompt:', freeText: true },
+          (text) => {
+            const prompt = text.trim()
+            if (prompt.length === 0) {
+              help.show('No background session: the prompt was empty.')
+              return
+            }
+            windows.openBackground(prompt)
+            agents.show()
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'close-background-session',
+      doc: 'End a background session and close its hidden window, after a yes.',
+      run: () => {
+        if (!agents.lines().some((line) => line.background)) {
+          help.show('No background session to close.')
+          return
+        }
+        prompter.read(
+          { source: 'background-sessions', prompt: 'Close background session:' },
+          async (id) => {
+            const line = agents.lines().find((one) => String(one.windowId) === id)
+            if (line === undefined) throw new CommandError('That window is closed')
+            const yes = await confirm(
+              prompter,
+              BACKGROUND_SOURCE,
+              `End the background session ${line.session} in ${line.windowName} and close its window?`,
+            )
+            if (yes) windows.close(line.windowId)
+          },
         )
       },
     }),
@@ -1790,6 +1841,21 @@ export function cockpitSources(
           label: `${line.windowName}: ${line.session}`,
           doc: `${line.state}, ${line.cwd}`,
         })),
+    },
+    {
+      name: 'background-prompt',
+      candidates: () => [],
+    },
+    {
+      name: 'background-sessions',
+      candidates: () =>
+        (agents?.lines() ?? [])
+          .filter((line) => line.background)
+          .map((line) => ({
+            id: String(line.windowId),
+            label: `${line.windowName}: ${line.session}`,
+            doc: `${line.state}, ${line.cwd}`,
+          })),
     },
     {
       name: 'eval-form',

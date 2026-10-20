@@ -145,8 +145,13 @@ export interface AgentLine extends AgentSnapshot {
   readonly windowName: string
   /** The folder the session runs in (#87). */
   readonly cwd: string
-  /** The window's prompt buffer, which `open-agent` makes current. */
-  readonly promptBufferId: string | null
+  /**
+   * The buffer `open-agent` makes current: the window's pending request when
+   * there is one, as a notification's click does (#90), else its prompt buffer.
+   */
+  readonly targetBufferId: string | null
+  /** The window was opened hidden by `new-background-session` and not shown since (#158). */
+  readonly background: boolean
 }
 
 /** Every window's session, and a word when any of them changes. */
@@ -195,7 +200,11 @@ export function renderAgents(
   const header = `Agents: ${counts.join(', ')}`
   if (lines.length === 0) return `${header}\n`
   const windows = lines.map((line) =>
-    line.windowId === options.here ? `${line.windowName} (here)` : line.windowName,
+    line.windowId === options.here
+      ? `${line.windowName} (here)`
+      : line.background
+        ? `${line.windowName} (background)`
+        : line.windowName,
   )
   const windowWidth = Math.max(...windows.map((name) => name.length))
   const sessionWidth = Math.max(...lines.map((line) => line.session.length))
@@ -288,12 +297,12 @@ export class AgentsBuffers {
     return buffer
   }
 
-  /** `open-agent`: the window of `windowId` forward, on its prompt buffer. */
+  /** `open-agent`: the window of `windowId` forward, on its pending request or its prompt buffer. */
   open(windowId: number): void {
     const line = this.lines().find((one) => one.windowId === windowId)
     if (line === undefined) throw new CommandError('That window is closed')
-    if (line.promptBufferId === null) throw new CommandError('That window has no prompt buffer')
-    this.options.switchTo(line.windowId, line.promptBufferId)
+    if (line.targetBufferId === null) throw new CommandError('That window has no buffer to open')
+    this.options.switchTo(line.windowId, line.targetBufferId)
   }
 
   /** Stops the ticker and the subscription: the window is going away. */

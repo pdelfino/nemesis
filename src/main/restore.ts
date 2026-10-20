@@ -161,6 +161,18 @@ function parsePage(raw: unknown): SavedPage | null {
   return { url: href, title: title.length > 0 ? title : hostOf(href), partition: 'persistent' }
 }
 
+/**
+ * The windows a quit saves: every one but a background session's, whose
+ * window was opened hidden and never shown (#158). Its session is not
+ * resumed at start (that is #67), so a hidden window would come back empty.
+ */
+export function windowsToSave<T extends { readonly id: number }>(
+  windows: readonly T[],
+  background: ReadonlySet<number>,
+): T[] {
+  return windows.filter((window) => !background.has(window.id))
+}
+
 /** Whether this start skips the restore: the `restore` setting off, or `--no-restore` given. */
 export function restoreSkipped(restore: boolean, argv: readonly string[]): boolean {
   return !restore || argv.includes(NO_RESTORE_SWITCH)

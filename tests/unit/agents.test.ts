@@ -169,7 +169,8 @@ function line(overrides: Partial<AgentLine> = {}): AgentLine {
     windowId: 1,
     windowName: 'Window 1',
     cwd: '/Users/me/projects/nemesis',
-    promptBufferId: 'b2',
+    targetBufferId: 'b2',
+    background: false,
     session: 'Nemesis',
     state: 'idle',
     turnStartedAt: null,
@@ -217,6 +218,14 @@ describe('renderAgents', () => {
         '',
       ].join('\n'),
     )
+  })
+
+  it('marks a background session in place of here (#158)', () => {
+    const text = renderAgents(
+      [line(), line({ windowId: 2, windowName: 'Window 2', background: true })],
+      { here: 1, home: '', now: 0 },
+    )
+    expect(text.split('\n')[4]).toMatch(/^Window 2 \(background\) {2}Nemesis {2}idle$/)
   })
 
   it('counts the working sessions, and says so when there is none', () => {
@@ -299,7 +308,7 @@ describe('AgentsBuffers', () => {
   it('opens a session on its window and prompt buffer, and refuses a closed window', () => {
     const switched: Array<[number, string]> = []
     const agents = new AgentsBuffers(createCockpitBuffers(), {
-      source: source([line({ windowId: 7, promptBufferId: 'b9' })]),
+      source: source([line({ windowId: 7, targetBufferId: 'b9' })]),
       here: 1,
       home: '',
       switchTo: (windowId, bufferId) => switched.push([windowId, bufferId]),

@@ -10,6 +10,7 @@ import {
   saveWindows,
   serializeWindows,
   WINDOWS_FILE,
+  windowsToSave,
   type OpenPage,
 } from '../../src/main/restore'
 
@@ -120,5 +121,13 @@ describe('when the restore is skipped', () => {
     expect(restoreSkipped(true, ['electron', '.'])).toBe(false)
     expect(restoreSkipped(false, ['electron', '.'])).toBe(true)
     expect(restoreSkipped(true, ['electron', '.', '--no-restore'])).toBe(true)
+  })
+})
+
+describe('windowsToSave', () => {
+  it('leaves out the windows of background sessions (#158)', () => {
+    const windows = [{ id: 1 }, { id: 2 }, { id: 3 }]
+    expect(windowsToSave(windows, new Set([2]))).toEqual([{ id: 1 }, { id: 3 }])
+    expect(windowsToSave(windows, new Set())).toEqual(windows)
   })
 })

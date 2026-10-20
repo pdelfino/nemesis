@@ -544,6 +544,8 @@ describe('share-page (#34)', () => {
       openWorktree: vi.fn(),
       toggleFullScreen: vi.fn(),
       openShareMenu,
+      openBackground: vi.fn(),
+      close: vi.fn(),
     }
     const pages = { ...NO_PAGES, currentPage: () => page }
     const deps = resolveCockpitDeps({ windows, pages })

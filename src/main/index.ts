@@ -78,6 +78,7 @@ import {
   savedWindow,
   saveWindows,
   WINDOWS_FILE,
+  windowsToSave,
   type SavedWindow,
 } from './restore'
 import { SessionIndex } from './sessions'
@@ -195,7 +196,8 @@ app.on('web-contents-created', (_event, contents) => {
   })
 })
 
-function createWindow(): BrowserWindow {
+/** A window, shown once its page is ready unless it is a background session's (#158). */
+function createWindow(hidden = false): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -206,7 +208,7 @@ function createWindow(): BrowserWindow {
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: internalPagePreferences(join(__dirname, '../preload/index.js')),
   })
-  win.once('ready-to-show', () => win.show())
+  if (!hidden) win.once('ready-to-show', () => win.show())
 
   // The cockpit is an internal page: it may navigate on the internal scheme
   // only, and it opens no windows (#48). A development run adds the dev
@@ -421,6 +423,10 @@ app.on('before-quit', () => {
 interface CockpitPlace {
   readonly cwd: string
   readonly worktree?: { readonly worktree: Worktree; readonly opener: number } | undefined
+  /** A background session (#158): the window stays hidden until the user shows it. */
+  readonly hidden?: boolean
+  /** Sent as the session's first prompt once the page listens, as the reviewer's is (#87). */
+  readonly firstPrompt?: string
 }
 
 /**
@@ -786,6 +792,8 @@ void app.whenReady().then(() => {
   // read when a buffer draws, and a word to every buffer when any session's
   // state changes or a window opens or closes.
   const agentsListeners = new Set<() => void>()
+  // The windows opened hidden by new-background-session and not shown since (#158).
+  const background = new Set<number>()
   const agentsChanged = (): void => {
     for (const listener of [...agentsListeners]) listener()
   }
@@ -796,8 +804,12 @@ void app.whenReady().then(() => {
         windowId: cockpit.id,
         windowName: cockpit.name,
         cwd: cockpit.cwd,
-        promptBufferId:
-          cockpit.buffers.list().find((buffer) => buffer.kind === 'prompt')?.id ?? null,
+        targetBufferId:
+          (
+            cockpit.buffers.list().find((buffer) => buffer.kind === 'permission') ??
+            cockpit.buffers.list().find((buffer) => buffer.kind === 'prompt')
+          )?.id ?? null,
+        background: background.has(cockpit.id),
       })),
     onChange: (listener) => {
       agentsListeners.add(listener)
@@ -862,6 +874,20 @@ void app.whenReady().then(() => {
     openWorktree: (worktree) => {
       openCockpit({ cwd: worktree.path, worktree: { worktree, opener: id } })
     },
+    // A background session (#158): a window of its own, hidden, in this
+    // window's folder, whose first prompt is sent once its page listens. It
+    // asks exactly as a shown one; showing it makes it an ordinary window.
+    openBackground: (prompt) =>
+      openCockpit({
+        cwd: cockpits.get(id)?.cwd ?? process.cwd(),
+        hidden: true,
+        firstPrompt: prompt,
+      }).name,
+    close: (windowId) => {
+      const cockpit = cockpits.get(windowId)
+      if (cockpit === undefined) throw new CommandError('That window is closed')
+      cockpit.window.close()
+    },
     // The renderer reports the page section's new rectangle on the window's
     // resize, so the page view follows full-screen in and out (#32).
     toggleFullScreen: () => {
@@ -912,7 +938,8 @@ void app.whenReady().then(() => {
   }
   /** A window and its cockpit: its own session, buffers and keys (#70), in its own folder (#87). */
   const openCockpit = (place: CockpitPlace = { cwd: process.cwd() }): Cockpit => {
-    const win = createWindow()
+    const hidden = place.hidden === true
+    const win = createWindow(hidden)
     const id = win.webContents.id
     opened += 1
     const cockpit = createCockpit(
@@ -944,15 +971,32 @@ void app.whenReady().then(() => {
     }
     syncConfigCommands(cockpit.registry)
     cockpits.set(id, cockpit)
+    if (hidden) {
+      background.add(id)
+      // Shown by open-agent or a notification's click, it is an ordinary window.
+      win.on('show', () => {
+        if (background.delete(id)) agentsChanged()
+      })
+    }
+    const firstPrompt = place.firstPrompt
+    if (firstPrompt !== undefined) {
+      win.webContents.once('did-finish-load', () => {
+        cockpit.prompts.submit(firstPrompt).catch((error: unknown) => {
+          console.error('background: the first prompt was not sent:', error)
+        })
+      })
+    }
     cockpit.status.onChange(agentsChanged)
     agentsChanged()
-    lastFocused = id
+    // A hidden window is not the one the user is at.
+    if (!hidden) lastFocused = id
     win.on('focus', () => {
       lastFocused = id
       rebuildMenu()
     })
     win.on('closed', () => {
       cockpits.delete(id)
+      background.delete(id)
       if (lastFocused === id) lastFocused = null
       agentsChanged()
     })
@@ -997,7 +1041,8 @@ void app.whenReady().then(() => {
     try {
       saveWindows(
         windowsFile,
-        [...cockpits.values()].map((cockpit) =>
+        // A background session's hidden window is not restored (#158).
+        windowsToSave([...cockpits.values()], background).map((cockpit) =>
           savedWindow(
             cockpit.cwd,
             cockpit.pages.list().map((buffer) => ({
