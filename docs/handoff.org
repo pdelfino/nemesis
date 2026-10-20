@@ -24,7 +24,7 @@ No session can finish these; each needs Pedro.
 
 * What comes next
 
-Nothing is labeled =queue-ready=. The next phase is a pick waiting on Pedro in #156 (A: many sessions on one screen, recommended; B: daily driver from use; C: browser depth), with three "not yet" rows in =docs/guidelines-map.org= behind it. Until he picks, the next batch comes from use: the #44 log, and what hurts while living in Nemesis itself (=make dev=). Each pain becomes an issue with =## Verify=, =## Do not touch= and, when there is a design choice, an =## Approach= table for the maintainer's pick (CONTRIBUTING.org, "Issues are the unit of work").
+Nothing is labeled =queue-ready=. M6, many sessions on one screen (#156, option A picked 2026-OCTOBER-19), has landed four of its five issues on 2026-OCTOBER-20: the =agents= buffer (#157), background sessions (#158), =send-to-session= (#159) and =fan-out= (#160). The fifth, #161, waits on Pedro's pick of what the agent may see or start through MCP. Beyond it, the next batch comes from use: the #44 log, and what hurts while living in Nemesis itself (=make dev=). Each pain becomes an issue with =## Verify=, =## Do not touch= and, when there is a design choice, an =## Approach= table for the maintainer's pick (CONTRIBUTING.org, "Issues are the unit of work").
 
 Noticed on 2026-OCTOBER-19 and since fixed: =make real= left one folder per spec under =~/.claude/projects/=; the harness now removes it after each spec (#153).
 
