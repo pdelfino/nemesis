@@ -138,7 +138,8 @@ export const HOOK_POINT_DOCS: Readonly<Record<HookPoint, string>> = {
   'session-started': 'Fired when an agent session starts, with its id, model and permission mode.',
   'turn-ended': 'Fired when an agent turn ends, with its outcome, duration and turn count.',
   'before-quit': 'Fired before the app quits.',
-  'before-load': 'Asked before a page buffer loads a URL; a handler may block it or answer another URL, which the page policy checks again.',
+  'before-load':
+    'Asked before a page buffer loads a URL; a handler may block it or answer another URL, which the page policy checks again.',
 }
 
 export interface HookListing {
