@@ -3,7 +3,7 @@
 
 - Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #26)
 - Date: 2026-OCTOBER-18
-- Threat or Pillar: README.org pillar 3, LLM-friendly and MCP-driven, for the
+- Threat or Pillar: README.md pillar 3, LLM-friendly and MCP-driven, for the
   door an outside agent uses; SECURITY.org T1 for what a page may reach and
   T4 for what an agent may be steered into; =docs/guidelines-map.org= row
   "Automate and scale", which names the MCP server over the command table

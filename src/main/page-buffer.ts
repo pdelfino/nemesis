@@ -311,6 +311,8 @@ export interface PageCommands {
    * else in a new page buffer made current. A refused URL opens nothing.
    */
   open(url: string, newBuffer?: boolean): Promise<void>
+  /** A new page buffer with no page, made current (#172). */
+  blank(): void
   /** The current page buffer reloads, goes back or goes forward. */
   reload(): void
   back(): void
@@ -321,6 +323,8 @@ export interface PageCommands {
   find(text: string): void
   /** One of Chromium's zoom steps in or out, for the page's origin. */
   zoom(by: 1 | -1): void
+  /** The page's origin back to 100%. */
+  resetZoom(): void
   /** The page's selection to the clipboard. */
   copy(): void
   /** The current page buffer's committed URL, its title and its partition (#125). */
@@ -334,12 +338,14 @@ const noPages = (): never => {
 /** Without a window there is no view to hold a page. */
 export const NO_PAGES: PageCommands = {
   open: () => Promise.reject(new CommandError('No page buffers in this window')),
+  blank: noPages,
   reload: noPages,
   back: noPages,
   forward: noPages,
   scroll: noPages,
   find: noPages,
   zoom: noPages,
+  resetZoom: noPages,
   copy: noPages,
   currentPage: noPages,
 }
@@ -626,6 +632,23 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     await this.load(buffer.id, url)
   }
 
+  /**
+   * `url` in a new page buffer under the same policy as `open` (#174): made
+   * current when `focus` is set, else left in the background. A refused URL
+   * opens nothing.
+   */
+  async openNew(url: string, focus: boolean): Promise<void> {
+    if (this.allowed(url) === null) return
+    const buffer = this.createPage()
+    if (focus) this.options.buffers.switchTo(buffer.id)
+    await this.load(buffer.id, url)
+  }
+
+  blank(): void {
+    const buffer = this.createPage()
+    this.options.buffers.switchTo(buffer.id)
+  }
+
   reload(): void {
     const page = this.current()
     const contents = page.view.webContents
@@ -681,6 +704,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const contents = this.current().view.webContents
     contents.setZoomLevel(nextZoomLevel(contents.getZoomLevel(), by))
     // Chromium zooms every page of the origin in this session, so every page is read again.
+    this.readZoom()
+  }
+
+  resetZoom(): void {
+    this.current().view.webContents.setZoomLevel(0)
     this.readZoom()
   }
 

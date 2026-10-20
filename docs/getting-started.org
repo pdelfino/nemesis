@@ -144,9 +144,11 @@ Five keys work on a page buffer and nowhere else. Each is a command too, so =C-h
 
 =C-c C-s= (=show-semantic-view=) opens a read-only buffer with the page's landmarks, headings, links, buttons and fields, each with a =ref=. It is the same view an outside agent gets from =browser_snapshot= (section 14), so it shows what a driver can see and name.
 
+=C-c C-j= (=jump-to-heading=) lists the page's headings in the palette, indented by level, and =RET= scrolls the page to the one you pick. =C-c M-j= (=jump-to-heading-buffers=) does the same over every open page buffer, each heading tagged with its buffer, and switches to that buffer before it scrolls.
+
 ** Hints: =f= and =F=
 
-In a page buffer, =f= (=follow-hint=) puts a short label on every interactive element in view; type the letters of a label and a link is followed, a button pressed and a field focused. =F= (=copy-hint-url=) does the same but copies the link's URL. =C-g= takes the labels down. The labels come from the =hints.alphabet= setting (the home row by default) and are at most =hints.maxLength= long (=docs/config.org=). While the labels are up every key is a label key: nothing else gets it.
+In a page buffer, =f= (=follow-hint=) puts a short label on every interactive element in view; type the letters of a label and a link is followed, a button pressed and a field focused. =F= (=copy-hint-url=) does the same but copies the link's URL. =M-g= (=follow-hint-new-buffer=) and =M-f= (=follow-hint-new-buffer-focus=) label the links and open the one typed in a new page buffer, in the background or switched to. =C-g= takes the labels down. The labels come from the =hints.alphabet= setting (the home row by default) and are at most =hints.maxLength= long (=docs/config.org=). While the labels are up every key is a label key: nothing else gets it.
 
 ** Reader mode: =C-c C-r=, export and attach
 
@@ -201,7 +203,7 @@ Then =/mcp= in =claude= shows =nemesis= connected. Reads answer at once; anythin
 
 | Topic                                   | Read                                                      |
 |-----------------------------------------+-----------------------------------------------------------|
-| What Nemesis is, the roadmap, MCP door  | =README.org=                                              |
+| What Nemesis is, the roadmap, MCP door  | =README.md=                                               |
 | The config file, eval, the journal      | =docs/config.org=, ADR 0006                               |
 | Chords, layers, the user keymap         | ADR 0002 (=docs/adr/0002-keymaps.org=)                    |
 | The prompt buffer and the palette       | ADR 0003                                                  |

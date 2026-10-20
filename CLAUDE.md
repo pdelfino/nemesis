@@ -1,6 +1,6 @@
 # Nemesis: instructions for Claude Code
 
-Read `README.org` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #43; every unit of work is an issue with `## Verify` and `## Do not touch`.
+Read `README.md` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #43; every unit of work is an issue with `## Verify` and `## Do not touch`.
 
 `docs/handoff.org` is where the work stood at the last handoff between machines: what waits on Pedro, what comes next, how to set up a fresh clone and land work. Read it at the start of an interactive session; it is dated, and `git log` and the open issues are newer. Rewrite it when the work moves to another machine.
 
@@ -28,7 +28,7 @@ docs/adr/            architecture decision records
 
 ## Gate
 
-`npm run gate` = dependency script check, typecheck, lint, unit tests, the end-to-end specs and the security specs. It runs locally before every commit. CI is the second opinion. Nothing is pushed with a red gate.
+`npm run gate` = dependency script check, typecheck, lint, unit tests, the end-to-end specs and the security specs. It runs locally before every commit. CI is the second opinion. Nothing is pushed with a red gate. A Mac holding `~/.config/nemesis/no-window-tests` skips every Playwright spec (they flash windows on screen) and prints WINDOW TESTS SKIPPED: that gate is partial, so work done there lands on `main` only after the full gate is green on the other Mac or in GitHub Actions. Never delete that file or set `NEMESIS_WINDOW_TESTS=1` unless Pedro asks.
 
 Node comes from nvm and the default shell node is older: run `source ~/.nvm/nvm.sh && nvm use` once per shell before any `npm` command. `.npmrc` sets `engine-strict`, so the wrong Node fails loudly instead of silently.
 

@@ -6,7 +6,7 @@ import {
   createCockpitBuffers,
   parseBufferSpec,
 } from '../../src/main/buffers'
-import { createCockpitRegistry } from '../../src/main/commands/keyscheme'
+import { createCockpitRegistry, GLOBAL_KEYMAP } from '../../src/main/commands/keyscheme'
 
 function titles(buffers: BufferRegistry): string[] {
   return buffers.list().map((buffer) => buffer.title)
@@ -63,6 +63,39 @@ describe('the buffer registry (#60)', () => {
     expect(buffers.switchToNext()?.id).toBe(two.id)
     expect(buffers.switchToNext()?.id).toBe(one.id)
     expect(new BufferRegistry().switchToNext()).toBeNull()
+  })
+
+  it('goes to the most recently used other buffer, and next and previous follow the list (#172)', () => {
+    const buffers = new BufferRegistry()
+    const a = buffers.create({ kind: 'transcript', title: 'A' })
+    const b = buffers.create({ kind: 'transcript', title: 'B' })
+    const c = buffers.create({ kind: 'transcript', title: 'C' })
+    const d = buffers.create({ kind: 'transcript', title: 'D' })
+    expect(new BufferRegistry().switchToPrevious()).toBeNull()
+
+    buffers.switchTo(b.id)
+    buffers.switchTo(c.id)
+    // Previous goes to B, and again back to C, as C-x b RET does.
+    expect(buffers.switchToPrevious()?.id).toBe(b.id)
+    expect(buffers.switchToPrevious()?.id).toBe(c.id)
+    buffers.switchTo(a.id)
+    expect(buffers.switchToPrevious()?.id).toBe(c.id)
+
+    // Next and previous-in-order ignore use and cycle the list.
+    buffers.switchTo(a.id)
+    expect(buffers.switchToNext()?.id).toBe(b.id)
+    expect(buffers.switchToNext()?.id).toBe(c.id)
+    expect(buffers.switchToPreviousInOrder()?.id).toBe(b.id)
+    buffers.switchTo(a.id)
+    expect(buffers.switchToPreviousInOrder()?.id).toBe(d.id)
+
+    // A killed buffer is not a place to go back to.
+    buffers.switchTo(c.id)
+    buffers.kill(a.id)
+    expect(buffers.switchToPrevious()?.id).toBe(d.id)
+    buffers.kill(b.id)
+    buffers.kill(c.id)
+    expect(buffers.switchToPrevious()).toBeNull()
   })
 
   it('switches to a named buffer and complains about an unknown id', () => {
@@ -129,6 +162,25 @@ describe('the buffer commands in the command registry (#59, #60)', () => {
     await commands.run('kill-buffer', context)
     expect(buffers.list().map((buffer) => buffer.title)).toEqual(['Prompt'])
     expect(buffers.current?.title).toBe('Prompt')
+  })
+})
+
+describe('the buffer switching commands (#172)', () => {
+  it('runs switch-buffer-previous, switch-buffer-next and switch-buffer-previous-in-order', async () => {
+    const buffers = createCockpitBuffers()
+    const commands = createCockpitRegistry({ buffers })
+    const context = { source: 'test' } as const
+
+    await commands.run('switch-buffer-previous', context)
+    expect(buffers.current?.title).toBe('Transcript')
+    await commands.run('switch-buffer-previous', context)
+    expect(buffers.current?.title).toBe('Prompt')
+    await commands.run('switch-buffer-next', context)
+    expect(buffers.current?.title).toBe('Transcript')
+    await commands.run('switch-buffer-previous-in-order', context)
+    expect(buffers.current?.title).toBe('Prompt')
+    expect(GLOBAL_KEYMAP.commandFor('C-x <left>')).toBe('switch-buffer-previous-in-order')
+    expect(GLOBAL_KEYMAP.commandFor('C-x <right>')).toBe('switch-buffer-next')
   })
 })
 

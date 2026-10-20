@@ -13,7 +13,7 @@
  * adds `reader`, the form guide (#94) adds `form`, the MCP page tier
  * (#138) adds `text`, its mutation feed (#29) adds `mutations`, and
  * `browser_query` and `browser_select_option` (#141) add `query`, `options`
- * and `select`.
+ * and `select`, and `jump-to-heading` (#176) adds `scroll-to`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
@@ -484,6 +484,19 @@ export interface SelectAnswer {
   readonly selected: number
 }
 
+/**
+ * What a `scroll-to` found: the element scrolled to the top of the viewport,
+ * or no element under that number in this document.
+ */
+export const SCROLL_STATUSES = ['ok', 'gone'] as const
+
+export type ScrollStatus = (typeof SCROLL_STATUSES)[number]
+
+/** `scroll-to` (#176): how it went. */
+export interface ScrollToAnswer {
+  readonly status: ScrollStatus
+}
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
@@ -497,6 +510,7 @@ export interface PageAnswers {
   readonly query: QueryAnswer
   readonly options: OptionsAnswer
   readonly select: SelectAnswer
+  readonly 'scroll-to': ScrollToAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -659,6 +673,9 @@ export const PAGE_ANSWERS: {
   select: Object.freeze({
     status: { kind: 'enum', values: SELECT_STATUSES } as const,
     selected: { kind: 'number', min: 0, max: MAX_SELECT_OPTIONS, integer: true } as const,
+  }),
+  'scroll-to': Object.freeze({
+    status: { kind: 'enum', values: SCROLL_STATUSES } as const,
   }),
 })
 

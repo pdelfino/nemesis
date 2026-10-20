@@ -294,6 +294,16 @@ describe("the options and select answers (#141, the door's one write)", () => {
   })
 })
 
+describe('the scroll-to answer (#176)', () => {
+  it('takes a status and nothing else', () => {
+    expect(parsePageAnswer('scroll-to', { status: 'ok' })).toEqual({ status: 'ok' })
+    expect(parsePageAnswer('scroll-to', { status: 'gone' })).toEqual({ status: 'gone' })
+    for (const bad of [{ status: 'done' }, { status: 'ok', y: 4 }, {}]) {
+      expect(() => parsePageAnswer('scroll-to', bad)).toThrow()
+    }
+  })
+})
+
 describe('the reply check', () => {
   beforeEach(() => {
     vi.useFakeTimers()

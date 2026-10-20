@@ -59,7 +59,7 @@ import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
 import { Worktrees, type Worktree } from '../worktrees'
 import type { KeymapLayer } from './describe'
-import { bindingNote, describeCommand, describeKey } from './describe'
+import { bindingNote, bindingsText, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
 import type { BufferKeymaps, Keymap, ModeKeymaps } from './keymap'
 import { defineKeymap, isShadowed, KeyResolver } from './keymap'
@@ -92,6 +92,7 @@ import {
   REWIND_SOURCE,
   VERIFY_SOURCE,
 } from './confirm'
+import type { PaletteCandidate } from '../../shared/palette'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -190,6 +191,23 @@ export interface HintCommands {
   quit(): Promise<void>
 }
 
+/**
+ * jump-to-heading and jump-to-heading-buffers (#176). `load` reads the
+ * headings of the current page, or of every page buffer, and keeps them as
+ * the `headings` palette source lists them; `jump` scrolls to the one picked.
+ */
+export interface HeadingCommands {
+  load(everyBuffer: boolean): Promise<void>
+  candidates(): readonly PaletteCandidate[]
+  jump(id: string): Promise<void>
+}
+
+const NO_HEADINGS: HeadingCommands = {
+  load: () => Promise.reject(new CommandError('No page buffers in this window')),
+  candidates: () => [],
+  jump: () => Promise.reject(new CommandError('No page buffers in this window')),
+}
+
 const NO_HINTS: HintCommands = {
   start: () => Promise.reject(new CommandError('No page buffers in this window')),
   type: () => Promise.reject(new CommandError('No page buffers in this window')),
@@ -280,6 +298,10 @@ export interface CockpitDeps {
   readonly worktrees: Worktrees
   /** The window's page buffers, as open-url opens one (#119). */
   readonly pages: PageCommands
+  /** Puts text on the clipboard, as copy-url does (#173). */
+  readonly copyText: (text: string) => void
+  /** The text show-system-information shows and copies (#173). */
+  readonly systemText: () => string
   /**
    * The current page buffer's text and origin, for summarize-page (#55);
    * it rejects when the current buffer is not a page.
@@ -290,6 +312,8 @@ export interface CockpitDeps {
    * (#122); it rejects when the current buffer is not a page.
    */
   readonly semanticText: () => Promise<string>
+  /** The headings of the page or pages, to jump to (#176). */
+  readonly headings: HeadingCommands
   /** Hint mode on the current page buffer (#123); each rejects when the current buffer is not a page. */
   readonly hints: HintCommands
   /** Reader mode on the current page or reader buffer (#128). */
@@ -503,12 +527,15 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     reviews: partial.reviews ?? new ReviewBuffers(buffers),
     worktrees: partial.worktrees ?? new Worktrees(),
     pages: partial.pages ?? NO_PAGES,
+    copyText: partial.copyText ?? (() => undefined),
+    systemText: partial.systemText ?? (() => 'No system information in this window'),
     pageText:
       partial.pageText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
     semanticText:
       partial.semanticText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
+    headings: partial.headings ?? NO_HEADINGS,
     hints: partial.hints ?? NO_HINTS,
     reader: partial.reader ?? NO_READER,
     formGuide: partial.formGuide ?? NO_FORM_GUIDE,
@@ -549,6 +576,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     fetcher,
     pageText,
     semanticText,
+    headings,
     hints,
     reader,
     formGuide,
@@ -562,6 +590,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     reviews,
     worktrees,
     pages,
+    copyText,
+    systemText,
     urls,
     stores,
   } = deps
@@ -607,6 +637,15 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           .read()
           .then((reading) => help.show(describeKey(registry, reading)))
           .catch(report('describe-key'))
+      },
+    }),
+    defineCommand({
+      name: 'describe-bindings',
+      mcp: 'free',
+      doc: 'List every key binding in force for this buffer, with its command.',
+      run: () => {
+        const kind = buffers.current?.kind ?? null
+        help.show(bindingsText(cockpitKeymapLayers(), registry, kind as BufferType | null))
       },
     }),
     defineCommand({
@@ -1319,6 +1358,38 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'switch-buffer-previous',
+      doc: 'Switch to the most recently used other buffer.',
+      run: () => {
+        buffers.switchToPrevious()
+      },
+    }),
+    defineCommand({
+      name: 'switch-buffer-next',
+      doc: 'Switch to the next buffer in the list, wrapping around.',
+      run: () => {
+        buffers.switchToNext()
+      },
+    }),
+    defineCommand({
+      name: 'switch-buffer-previous-in-order',
+      doc: 'Switch to the previous buffer in the list, wrapping around.',
+      run: () => {
+        buffers.switchToPreviousInOrder()
+      },
+    }),
+    defineCommand({
+      name: 'make-buffer',
+      mcp: 'never',
+      doc: 'Open a blank page buffer and read the URL to open in it.',
+      run: () => {
+        pages.blank()
+        prompter.read({ source: 'page-url', prompt: 'Open URL:', freeText: true }, (text) =>
+          pages.open(resolveUrl(text, urls.engines())),
+        )
+      },
+    }),
+    defineCommand({
       name: 'new-window',
       doc: 'Open a new window with its own session and buffers.',
       run: () => {
@@ -1683,6 +1754,48 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'reset-page-zoom',
+      mcp: 'never',
+      doc: "Put the current page buffer's zoom back to 100%, for every page of its origin.",
+      run: () => {
+        pages.resetZoom()
+      },
+    }),
+    defineCommand({
+      name: 'copy-url',
+      mcp: 'never',
+      doc: "Copy the current page buffer's URL to the clipboard.",
+      run: () => {
+        if (buffers.current?.kind !== 'page') {
+          help.show('Nothing to copy: only a page buffer has a URL.')
+          return
+        }
+        copyText(pages.currentPage().url)
+      },
+    }),
+    defineCommand({
+      name: 'copy-title',
+      mcp: 'never',
+      doc: "Copy the current page buffer's title to the clipboard.",
+      run: () => {
+        if (buffers.current?.kind !== 'page') {
+          help.show('Nothing to copy: only a page buffer has a title.')
+          return
+        }
+        copyText(pages.currentPage().title)
+      },
+    }),
+    defineCommand({
+      name: 'show-system-information',
+      mcp: 'never',
+      doc: 'Show the versions of Nemesis, Electron, Chromium, Node and macOS and the settings file path, and copy them to the clipboard for a bug report.',
+      run: () => {
+        const text = systemText()
+        copyText(text)
+        help.show(text)
+      },
+    }),
+    defineCommand({
       name: 'copy-page-selection',
       mcp: 'never',
       doc: "Copy the current page buffer's selection to the clipboard.",
@@ -1701,6 +1814,18 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       mcp: 'never',
       doc: "Label the links in the current page buffer's view; typing a label copies that link's URL, C-g leaves.",
       run: () => hints.start('copy'),
+    }),
+    defineCommand({
+      name: 'follow-hint-new-buffer',
+      mcp: 'never',
+      doc: "Label the links in the current page buffer's view; typing a label opens that link in a new page buffer in the background, C-g leaves.",
+      run: () => hints.start('new-buffer'),
+    }),
+    defineCommand({
+      name: 'follow-hint-new-buffer-focus',
+      mcp: 'never',
+      doc: "Label the links in the current page buffer's view; typing a label opens that link in a new page buffer and switches to it, C-g leaves.",
+      run: () => hints.start('new-buffer-focus'),
     }),
     defineCommand({
       name: 'type-hint-key',
@@ -1735,6 +1860,36 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           .catch((error: unknown) => {
             help.show(`No semantic view: ${error instanceof Error ? error.message : String(error)}`)
           })
+      },
+    }),
+    defineCommand({
+      name: 'jump-to-heading',
+      mcp: 'never',
+      doc: "Pick one of the current page's headings, indented by level, and scroll the page to it.",
+      run: () => {
+        headings
+          .load(false)
+          .then(() => {
+            prompter.read({ source: 'headings', prompt: 'Jump to heading:' }, (id) =>
+              headings.jump(id),
+            )
+          })
+          .catch(report('jump-to-heading'))
+      },
+    }),
+    defineCommand({
+      name: 'jump-to-heading-buffers',
+      mcp: 'never',
+      doc: 'Pick a heading of any open page buffer, each tagged with its buffer, then switch to that buffer and scroll to it.',
+      run: () => {
+        headings
+          .load(true)
+          .then(() => {
+            prompter.read({ source: 'headings', prompt: 'Jump to heading in buffers:' }, (id) =>
+              headings.jump(id),
+            )
+          })
+          .catch(report('jump-to-heading-buffers'))
       },
     }),
     defineCommand({
@@ -1879,6 +2034,7 @@ export function cockpitSources(
   stores: PageStores | null = null,
   agents: AgentsBuffers | null = null,
   replies: RecentReplies | null = null,
+  headings: Pick<HeadingCommands, 'candidates'> = NO_HEADINGS,
 ): readonly PaletteSource[] {
   return [
     {
@@ -2103,6 +2259,11 @@ export function cockpitSources(
       name: 'find-in-page',
       candidates: () => [],
     },
+    // The headings jump-to-heading loaded just before its read (#176).
+    {
+      name: 'headings',
+      candidates: () => headings.candidates(),
+    },
     {
       name: 'journal',
       candidates: () =>
@@ -2151,6 +2312,10 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-e': 'environment',
   'C-c C-n': 'name-session',
   'C-x b': 'switch-buffer',
+  'C-x <left>': 'switch-buffer-previous-in-order',
+  'C-x <right>': 'switch-buffer-next',
+  'C-x B': 'switch-buffer-previous',
+  'C-x M-b': 'make-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
   'C-x s': 'search-transcripts',
@@ -2162,6 +2327,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
+  'C-h b': 'describe-bindings',
 })
 
 /**
@@ -2287,12 +2453,18 @@ const KIND_KEYMAPS: BufferKeymaps = {
     'C-x r m': 'bookmark-page',
     // The semantic view of the page, refs shown (#122).
     'C-c C-s': 'show-semantic-view',
+    // Nyxt's jump-to-heading, over the page and over every open page (#176).
+    'C-c C-j': 'jump-to-heading',
+    'C-c M-j': 'jump-to-heading-buffers',
     // The page's main text as a reader buffer (#128).
     'C-c C-r': 'reader-mode',
     // Watch me fill this form (#94).
     'C-c C-w': 'form-guide-mode',
     // Shares the page (#34); C-c C-s is the semantic view's (#122).
     'C-c S': 'share-page',
+    // Copy the page's URL and title (#173).
+    'C-c u': 'copy-url',
+    'C-c t': 'copy-title',
   }),
   // In a review buffer the send key sends the findings to the writer (#87).
   review: defineKeymap('review', {
@@ -2348,12 +2520,16 @@ export const MODE_KEYMAPS: ModeKeymaps = {
       'C-s': 'find-in-page',
       'C-+': 'zoom-in',
       'C--': 'zoom-out',
+      'C-0': 'reset-page-zoom',
       'M-w': 'copy-page-selection',
       g: 'reload-page',
       'C-z': 'toggle-passthrough',
       // Nyxt's hint keys (#123).
       f: 'follow-hint',
       F: 'copy-hint-url',
+      // Nyxt's new-buffer variants (#174): M-g in the background, M-f focused.
+      'M-g': 'follow-hint-new-buffer',
+      'M-f': 'follow-hint-new-buffer-focus',
     }),
   },
   // Hint mode (#123) is sealed while its labels are up: every label key
@@ -2454,6 +2630,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.stores,
     deps.agents,
     deps.replies,
+    deps.headings,
   )) {
     deps.prompter.addSource(source)
   }

@@ -68,6 +68,19 @@ test('the window opens a transcript and a prompt buffer, C-x b cycles, C-x k kil
     await expect.poll(() => buffers(page)).toEqual(['transcript Transcript *', 'prompt Prompt'])
     await expect(page.locator('#transcript')).toHaveAttribute('data-current', 'true')
     await expect(page.locator('#prompt')).not.toHaveAttribute('data-current', 'true')
+
+    // C-x B goes to the most recently used other buffer (#172).
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('Shift+B')
+    await expect.poll(() => buffers(page)).toEqual(['transcript Transcript', 'prompt Prompt *'])
+
+    // C-x <left> and C-x <right> cycle the list.
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('ArrowLeft')
+    await expect.poll(() => buffers(page)).toEqual(['transcript Transcript *', 'prompt Prompt'])
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(() => buffers(page)).toEqual(['transcript Transcript', 'prompt Prompt *'])
   } finally {
     await app.close()
   }

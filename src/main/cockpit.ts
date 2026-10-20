@@ -1,9 +1,12 @@
 import { app, shell, WebContentsView, type BrowserWindow } from 'electron'
+import { execFileSync } from 'node:child_process'
+import { release } from 'node:os'
 import { join } from 'node:path'
 import type { ClipboardReader } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
 import { PagePolicy } from './agent/page-policy'
 import { CommandError } from './commands/registry'
+import type { PaletteCandidate } from '../shared/palette'
 import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import type { AgentEvent } from './agent/events'
@@ -59,7 +62,7 @@ import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { capturePage, captureFullPage } from './pages/capture'
 import { ConsoleLog } from './pages/console'
 import { NetworkLog, type CompletedRequests } from './pages/network'
-import { SemanticView, semanticText } from './pages/semantic'
+import { headingsOf, SemanticView, semanticText } from './pages/semantic'
 import {
   PAGES_FOLDER,
   ReaderBuffers,
@@ -68,6 +71,8 @@ import {
   type ReaderDocument,
 } from './pages/reader'
 import { Repl } from './repl'
+import { SETTINGS_FILE } from './settings'
+import { systemInformationText } from './system-information'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
 import type { SessionIndex } from './sessions'
@@ -186,6 +191,20 @@ export function mergeNotices(...sources: readonly EventSource[]): EventSource {
  * The folder a window's session runs in: the one the app was started in, or
  * a worktree's for a window new-window-in-worktree opened (#87).
  */
+/** The short commit of the checkout the app runs from, or null when it is not one (#173). */
+function buildCommit(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: app.getAppPath(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim()
+  } catch {
+    return null
+  }
+}
+
 export function createCockpit(
   window: BrowserWindow,
   name: string,
@@ -466,6 +485,7 @@ export function createCockpit(
     settings: () => config.settings.hints,
     mode: (pageId, on) => pages.setHintMode(pageId, on),
     open: (pageId, url) => pages.load(pageId, url),
+    openNew: (url, focus) => pages.openNew(url, focus),
     click: (pageId, x, y) => pages.clickAt(pageId, x, y),
     copy: shared.writeClipboardText,
     bookmark: (pageId, url) => {
@@ -655,6 +675,8 @@ export function createCockpit(
     }
     return { answer, document }
   }
+  // The headings jump-to-heading loaded for its palette read (#176).
+  let headingJumps: Array<{ candidate: PaletteCandidate; ref: string }> = []
   const texts = new BufferTexts(buffers)
   const shown = (content: { readonly text: string }): string => content.text
   texts.follow(diffs, (content) => diffText(content.diff))
@@ -812,6 +834,20 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
+    copyText: shared.writeClipboardText,
+    systemText: () =>
+      systemInformationText(
+        {
+          version: app.getVersion(),
+          commit: buildCommit(),
+          electron: process.versions.electron,
+          chromium: process.versions.chrome,
+          node: process.versions.node,
+          os: release(),
+          settingsPath: join(app.getPath('userData'), SETTINGS_FILE),
+        },
+        shared.home,
+      ),
     // The current page's text for the agent (#55, #142): the door's reader
     // extraction, the page as the user sees it and the text attach-page-text
     // sends, under the origin of the committed URL main held. No second
@@ -831,6 +867,53 @@ export function createCockpit(
       if (current === null || pages.viewOf(current.id) === undefined)
         throw new CommandError('The current buffer is not a page')
       return semanticText(await semantic.snapshot(current.id))
+    },
+    headings: {
+      load: async (everyBuffer) => {
+        const ids = everyBuffer
+          ? buffers
+              .list()
+              .map((buffer) => buffer.id)
+              .filter((id) => pages.viewOf(id) !== undefined)
+          : [currentPageId()]
+        const loaded: Array<{ candidate: PaletteCandidate; ref: string }> = []
+        for (const id of ids) {
+          let snapshot: Awaited<ReturnType<typeof semantic.snapshot>>
+          try {
+            snapshot = await semantic.snapshot(id)
+          } catch (error) {
+            // A page that has loaded nothing has no headings; the current one is an error.
+            if (!everyBuffer)
+              throw new CommandError(error instanceof Error ? error.message : String(error))
+            continue
+          }
+          const title = buffers.get(id)?.title ?? id
+          for (const heading of headingsOf(snapshot.nodes)) {
+            loaded.push({
+              ref: heading.ref,
+              candidate: {
+                id: `h${loaded.length + 1}`,
+                label: `${'  '.repeat(Math.max(heading.level - 1, 0))}${heading.name}`,
+                doc: `h${heading.level} in ${title}`,
+                ...(everyBuffer ? { detail: title } : {}),
+              },
+            })
+          }
+        }
+        if (loaded.length === 0) throw new CommandError('No headings to jump to')
+        headingJumps = loaded
+      },
+      candidates: () => headingJumps.map((one) => one.candidate),
+      jump: async (id) => {
+        const target = headingJumps.find((one) => one.candidate.id === id)
+        const resolved = target === undefined ? null : semantic.resolve(target.ref)
+        if (target === undefined || resolved === null) {
+          throw new CommandError('That heading is gone: the page navigated')
+        }
+        if (buffers.current?.id !== resolved.pageId) buffers.switchTo(resolved.pageId)
+        const { answer } = await askDocument(resolved.pageId, 'scroll-to', [resolved.element])
+        if (answer.status !== 'ok') throw new CommandError('That heading is gone from the page')
+      },
     },
     hints: {
       start: async (action) => hints.start(currentPageId(), action),

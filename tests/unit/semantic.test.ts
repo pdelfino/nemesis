@@ -11,6 +11,7 @@ import {
 } from '../../src/shared/page-door'
 import {
   buildTree,
+  headingsOf,
   parseRef,
   SemanticView,
   semanticText,
@@ -268,5 +269,23 @@ describe('page text is data', () => {
     expect(source).not.toMatch(/executeJavaScript/)
     expect(source).not.toMatch(/\beval\s*\(/)
     expect(source).not.toMatch(/\bnew\s+Function\b/)
+  })
+})
+
+describe('the headings of a snapshot (#176)', () => {
+  it('lists the named headings in document order, with their refs and levels', () => {
+    const answer: SnapshotAnswer = {
+      nodes: [
+        node(1, 0, { role: 'main', name: '' }),
+        node(2, 1, { role: 'heading', name: 'One', level: 1 }),
+        node(3, 1, { role: 'heading', name: '', level: 2 }),
+        node(4, 1, { role: 'heading', name: 'Two', level: 2 }),
+        node(5, 0, { role: 'contentinfo', name: '' }),
+      ],
+    }
+    expect(headingsOf(buildTree(7, answer).nodes)).toEqual([
+      { ref: 'd7e2', level: 1, name: 'One' },
+      { ref: 'd7e4', level: 2, name: 'Two' },
+    ])
   })
 })

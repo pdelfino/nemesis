@@ -43,6 +43,8 @@ export class BufferRegistry {
   private readonly listeners = new Set<BufferListener>()
   private currentId: string | null = null
   private counter = 0
+  /** Buffer ids, the most recently current first (#172). */
+  private recent: string[] = []
   /**
    * The app's hooks (#165). The buffer points fire before announce(), so a
    * synchronous handler's effect is in the same push the renderer gets; the
@@ -75,6 +77,9 @@ export class BufferRegistry {
     })
     this.buffers.push(buffer)
     if (this.currentId === null) this.currentId = buffer.id
+    // A new buffer is the least recently used, unless it is the current one.
+    if (this.currentId === buffer.id) this.recent.unshift(buffer.id)
+    else this.recent.push(buffer.id)
     if (this.hooks?.has('buffer-created') === true)
       void this.hooks.fire('buffer-created', { buffer })
     this.announce()
@@ -101,6 +106,7 @@ export class BufferRegistry {
     if (this.currentId !== buffer.id) {
       const from = this.current
       this.currentId = buffer.id
+      this.recent = [buffer.id, ...this.recent.filter((id) => id !== buffer.id)]
       if (this.hooks?.has('buffer-switched') === true) {
         void this.hooks.fire('buffer-switched', { from, to: buffer })
       }
@@ -170,6 +176,24 @@ export class BufferRegistry {
     return this.switchTo(next.id)
   }
 
+  /** Cycles to the buffer before the current one, wrapping around (#172). */
+  switchToPreviousInOrder(): BufferInfo | null {
+    if (this.buffers.length === 0) return null
+    const index = this.buffers.findIndex((buffer) => buffer.id === this.currentId)
+    const previous = this.buffers[(index - 1 + this.buffers.length) % this.buffers.length]
+    if (previous === undefined) return null
+    return this.switchTo(previous.id)
+  }
+
+  /**
+   * Switches to the most recently used other buffer, what `C-x b RET` does in
+   * Emacs. Doing it twice goes back and forth between two buffers (#172).
+   */
+  switchToPrevious(): BufferInfo | null {
+    const id = this.recent.find((candidate) => candidate !== this.currentId)
+    return id === undefined ? null : this.switchTo(id)
+  }
+
   /**
    * Kills a buffer, the current one by default, and moves current to the
    * buffer that followed it, as Emacs does. Killing the last buffer leaves no
@@ -182,9 +206,11 @@ export class BufferRegistry {
 
     const [killed] = this.buffers.splice(index, 1)
     if (killed === undefined) return null
+    this.recent = this.recent.filter((recentId) => recentId !== killed.id)
     if (this.currentId === killed.id) {
       const next = this.buffers[index % Math.max(this.buffers.length, 1)]
       this.currentId = next?.id ?? null
+      if (next !== undefined) this.recent = [next.id, ...this.recent.filter((r) => r !== next.id)]
     }
     if (this.hooks?.has('buffer-killed') === true) {
       void this.hooks.fire('buffer-killed', { buffer: killed })

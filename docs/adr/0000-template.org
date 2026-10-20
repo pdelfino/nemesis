@@ -3,7 +3,7 @@
 
 - Status: proposed
 - Date: 2026-MONTH-DD
-- Threat or Pillar: SECURITY.org T<n> <name>, or the pillar of README.org this serves, or none
+- Threat or Pillar: SECURITY.org T<n> <name>, or the pillar of README.md this serves, or none
 - Issue: #<number>
 
 * Context

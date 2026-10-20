@@ -1,7 +1,10 @@
 import type { ElectronApplication } from '@playwright/test'
 import { expect, test, type Page } from './_test'
-import { launchNemesis } from './_launch'
+import { launchApp, launchNemesis } from './_launch'
 import { fixtureServer } from './security/_harness'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 /**
  * The first page on screen (#119): `C-x C-f` reads a URL in the palette and
@@ -74,6 +77,18 @@ function shares(app: ElectronApplication): Promise<unknown> {
   return app.evaluate(() => (globalThis as { __nemesisShares?: unknown }).__nemesisShares)
 }
 
+/** The zoom factor of the page view showing `url`. */
+function zoomFactor(app: ElectronApplication, url: string): Promise<number | undefined> {
+  return app.evaluate(
+    ({ webContents }, shown) =>
+      webContents
+        .getAllWebContents()
+        .find((contents) => !contents.isDestroyed() && contents.getURL() === shown)
+        ?.getZoomFactor(),
+    url,
+  )
+}
+
 /** Runs a command by name at M-x. */
 async function run(page: Page, command: string): Promise<void> {
   await page.keyboard.press('Alt+x')
@@ -87,7 +102,9 @@ async function run(page: Page, command: string): Promise<void> {
 
 test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it', async () => {
   const fixtures = await fixtureServer()
-  const app = await launchNemesis()
+  const scratch = mkdtempSync(join(tmpdir(), 'nemesis-page-'))
+  const clipboardFile = join(scratch, 'clipboard.txt')
+  const { app } = await launchApp('nemesis-e2e-', [], {}, { NEMESIS_CLIPBOARD_TEXT: clipboardFile })
   try {
     const window = await app.firstWindow()
     await window.waitForLoadState('domcontentloaded')
@@ -168,6 +185,19 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
     await window.keyboard.press('Shift+S')
     await expect.poll(() => shares(app)).toEqual([{ urls: [second], title: 'window open' }])
 
+    // copy-url puts the committed URL on the clipboard, copy-title the title (#173).
+    await run(window, 'copy-url')
+    expect(readFileSync(clipboardFile, 'utf8')).toBe(second)
+    await run(window, 'copy-title')
+    expect(readFileSync(clipboardFile, 'utf8')).toBe('window open')
+
+    // Zoom in twice, then reset: the factor is 1 again (#173).
+    await run(window, 'zoom-in')
+    await run(window, 'zoom-in')
+    await expect.poll(() => zoomFactor(app, second)).toBeGreaterThan(1)
+    await run(window, 'reset-page-zoom')
+    await expect.poll(() => zoomFactor(app, second)).toBe(1)
+
     // Switching away hides the page; switching back shows the same one.
     await window.keyboard.press('Control+x')
     await window.keyboard.press('b')
@@ -182,6 +212,9 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
     await run(window, 'share-page')
     await expect.poll(async () => (await current(window))?.kind).toBe('help')
     expect(await shares(app)).toHaveLength(1)
+    // ...and so is copy-url: the clipboard keeps the page's title.
+    await run(window, 'copy-url')
+    expect(readFileSync(clipboardFile, 'utf8')).toBe('window open')
     await window.keyboard.press('Control+x')
     await window.keyboard.press('b')
     await expect.poll(async () => (await current(window))?.kind).toBe('transcript')
@@ -202,6 +235,7 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
   } finally {
     await app.close()
     await fixtures.close()
+    rmSync(scratch, { recursive: true, force: true })
   }
 })
 

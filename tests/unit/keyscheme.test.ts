@@ -57,6 +57,7 @@ describe('the default Emacs keyscheme (#59)', () => {
     // The help keys, Emacs 28's (#65).
     expect(GLOBAL_KEYMAP.commandFor('C-h x')).toBe('describe-command')
     expect(GLOBAL_KEYMAP.commandFor('C-h k')).toBe('describe-key')
+    expect(GLOBAL_KEYMAP.commandFor('C-h b')).toBe('describe-bindings')
     // Search across transcripts (#69), on the free C-x s.
     expect(GLOBAL_KEYMAP.commandFor('C-x s')).toBe('search-transcripts')
     // The guide's context keys (#80).

@@ -3,7 +3,7 @@
 
 - Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #22)
 - Date: 2026-OCTOBER-18
-- Threat or Pillar: README.org pillar 1, keyboard-driven; pillar 4, safe by
+- Threat or Pillar: README.md pillar 1, keyboard-driven; pillar 4, safe by
   construction, for the rule on who may switch a mode (SECURITY.org T4)
 - Issue: #22 (study #14; consumers #73 and #71)
 
