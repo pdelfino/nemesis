@@ -301,6 +301,8 @@ export interface PageCommands {
    * else in a new page buffer made current. A refused URL opens nothing.
    */
   open(url: string, newBuffer?: boolean): Promise<void>
+  /** A new page buffer with no page, made current (#172). */
+  blank(): void
   /** The current page buffer reloads, goes back or goes forward. */
   reload(): void
   back(): void
@@ -328,6 +330,7 @@ const noPages = (): never => {
 /** Without a window there is no view to hold a page. */
 export const NO_PAGES: PageCommands = {
   open: () => Promise.reject(new CommandError('No page buffers in this window')),
+  blank: noPages,
   reload: noPages,
   back: noPages,
   forward: noPages,
@@ -619,6 +622,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const buffer = this.createPage()
     this.options.buffers.switchTo(buffer.id)
     await this.load(buffer.id, url)
+  }
+
+  blank(): void {
+    const buffer = this.createPage()
+    this.options.buffers.switchTo(buffer.id)
   }
 
   reload(): void {

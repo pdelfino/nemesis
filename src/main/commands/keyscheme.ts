@@ -1310,6 +1310,38 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'switch-buffer-previous',
+      doc: 'Switch to the most recently used other buffer.',
+      run: () => {
+        buffers.switchToPrevious()
+      },
+    }),
+    defineCommand({
+      name: 'switch-buffer-next',
+      doc: 'Switch to the next buffer in the list, wrapping around.',
+      run: () => {
+        buffers.switchToNext()
+      },
+    }),
+    defineCommand({
+      name: 'switch-buffer-previous-in-order',
+      doc: 'Switch to the previous buffer in the list, wrapping around.',
+      run: () => {
+        buffers.switchToPreviousInOrder()
+      },
+    }),
+    defineCommand({
+      name: 'make-buffer',
+      mcp: 'never',
+      doc: 'Open a blank page buffer and read the URL to open in it.',
+      run: () => {
+        pages.blank()
+        prompter.read({ source: 'page-url', prompt: 'Open URL:', freeText: true }, (text) =>
+          pages.open(resolveUrl(text, urls.engines())),
+        )
+      },
+    }),
+    defineCommand({
       name: 'new-window',
       doc: 'Open a new window with its own session and buffers.',
       run: () => {
@@ -2059,6 +2091,10 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-c C-e': 'environment',
   'C-c C-n': 'name-session',
   'C-x b': 'switch-buffer',
+  'C-x <left>': 'switch-buffer-previous-in-order',
+  'C-x <right>': 'switch-buffer-next',
+  'C-x B': 'switch-buffer-previous',
+  'C-x M-b': 'make-buffer',
   'C-x k': 'kill-buffer',
   'C-x n': 'new-task',
   'C-x s': 'search-transcripts',
