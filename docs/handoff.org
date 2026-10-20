@@ -26,6 +26,10 @@ No session can finish these; each needs Pedro.
 
 Nothing is labeled =queue-ready=. M6, many sessions on one screen (#156, option A picked 2026-OCTOBER-19), has landed four of its five issues on 2026-OCTOBER-20: the =agents= buffer (#157), background sessions (#158), =send-to-session= (#159) and =fan-out= (#160). The fifth, #161, waits on Pedro's pick of what the agent may see or start through MCP. Beyond it, the next batch comes from use: the #44 log, and what hurts while living in Nemesis itself (=make dev=). Each pain becomes an issue with =## Verify=, =## Do not touch= and, when there is a design choice, an =## Approach= table for the maintainer's pick (CONTRIBUTING.org, "Issues are the unit of work").
 
+Added on 2026-OCTOBER-20, later the same day: =make real= proves the agents line against a real background session (#162, =tests/real/agents.spec.ts=, green three times; the other 8 real specs green the same day). Three proposals wait on Pedro's pick, no code before it: #161 (MCP and the agents list), #163 (the Nyxt manual against Nemesis, 29 rows) and #164 (=doctor= proposes cuts to CLAUDE.md, the last guidelines-map row not done).
+
+Dependency check of 2026-OCTOBER-20: Electron 44.9.1 was published that day with empty release notes; its siblings 43.8.1 and 42.11.16 carry two fixes already in our 44.9.0. Read its notes again at the next session and bump within a week of 2026-OCTOBER-20 if they name a Chromium security fix. The Agent SDK has 0.3.304 (we pin 0.3.302); =npm audit= shows one moderate advisory, build-time only, in electron-builder's =sprintf-js=.
+
 Noticed on 2026-OCTOBER-19 and since fixed: =make real= left one folder per spec under =~/.claude/projects/=; the harness now removes it after each spec (#153).
 
 * Setting up a fresh machine
