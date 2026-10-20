@@ -251,3 +251,25 @@ export function semanticText(snapshot: SemanticSnapshot): string {
 export function snapshotPrompt(instruction: string, snapshot: SemanticSnapshot): string {
   return pagePrompt(instruction, snapshot.origin, semanticTree(snapshot.nodes))
 }
+
+/** A heading of a snapshot: its ref, its level and its name, which is the page's text. */
+export interface Heading {
+  readonly ref: string
+  readonly level: number
+  readonly name: string
+}
+
+/** The named headings of a snapshot, in document order (#176). */
+export function headingsOf(nodes: readonly SemanticNode[]): readonly Heading[] {
+  const found: Heading[] = []
+  const walk = (list: readonly SemanticNode[]): void => {
+    for (const node of list) {
+      if (node.role === 'heading' && node.name.length > 0) {
+        found.push({ ref: node.ref, level: node.level ?? 1, name: node.name })
+      }
+      walk(node.children)
+    }
+  }
+  walk(nodes)
+  return found
+}

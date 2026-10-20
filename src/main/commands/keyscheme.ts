@@ -74,6 +74,7 @@ import {
   SYMPTOM_TEMPLATE,
 } from './guide-prompts'
 import { BACKGROUND_SOURCE, confirm, FAN_OUT_SOURCE, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
+import type { PaletteCandidate } from '../../shared/palette'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -170,6 +171,23 @@ export interface HintCommands {
   start(action: HintAction): Promise<void>
   type(key: string): Promise<void>
   quit(): Promise<void>
+}
+
+/**
+ * jump-to-heading and jump-to-heading-buffers (#176). `load` reads the
+ * headings of the current page, or of every page buffer, and keeps them as
+ * the `headings` palette source lists them; `jump` scrolls to the one picked.
+ */
+export interface HeadingCommands {
+  load(everyBuffer: boolean): Promise<void>
+  candidates(): readonly PaletteCandidate[]
+  jump(id: string): Promise<void>
+}
+
+const NO_HEADINGS: HeadingCommands = {
+  load: () => Promise.reject(new CommandError('No page buffers in this window')),
+  candidates: () => [],
+  jump: () => Promise.reject(new CommandError('No page buffers in this window')),
 }
 
 const NO_HINTS: HintCommands = {
@@ -282,6 +300,8 @@ export interface CockpitDeps {
    * (#122); it rejects when the current buffer is not a page.
    */
   readonly semanticText: () => Promise<string>
+  /** The headings of the page or pages, to jump to (#176). */
+  readonly headings: HeadingCommands
   /** Hint mode on the current page buffer (#123); each rejects when the current buffer is not a page. */
   readonly hints: HintCommands
   /** Reader mode on the current page or reader buffer (#128). */
@@ -498,6 +518,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     semanticText:
       partial.semanticText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
+    headings: partial.headings ?? NO_HEADINGS,
     hints: partial.hints ?? NO_HINTS,
     reader: partial.reader ?? NO_READER,
     formGuide: partial.formGuide ?? NO_FORM_GUIDE,
@@ -537,6 +558,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     fetcher,
     pageText,
     semanticText,
+    headings,
     hints,
     reader,
     formGuide,
@@ -1730,6 +1752,36 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'jump-to-heading',
+      mcp: 'never',
+      doc: "Pick one of the current page's headings, indented by level, and scroll the page to it.",
+      run: () => {
+        headings
+          .load(false)
+          .then(() => {
+            prompter.read({ source: 'headings', prompt: 'Jump to heading:' }, (id) =>
+              headings.jump(id),
+            )
+          })
+          .catch(report('jump-to-heading'))
+      },
+    }),
+    defineCommand({
+      name: 'jump-to-heading-buffers',
+      mcp: 'never',
+      doc: 'Pick a heading of any open page buffer, each tagged with its buffer, then switch to that buffer and scroll to it.',
+      run: () => {
+        headings
+          .load(true)
+          .then(() => {
+            prompter.read({ source: 'headings', prompt: 'Jump to heading in buffers:' }, (id) =>
+              headings.jump(id),
+            )
+          })
+          .catch(report('jump-to-heading-buffers'))
+      },
+    }),
+    defineCommand({
       name: 'reader-mode',
       mcp: 'never',
       doc: "Show the current page buffer's main text in a read-only reader buffer: title, headings, paragraphs, lists, links as numbered footnotes.",
@@ -1889,6 +1941,7 @@ export function cockpitSources(
   stores: PageStores | null = null,
   agents: AgentsBuffers | null = null,
   replies: RecentReplies | null = null,
+  headings: Pick<HeadingCommands, 'candidates'> = NO_HEADINGS,
 ): readonly PaletteSource[] {
   return [
     {
@@ -2105,6 +2158,11 @@ export function cockpitSources(
       name: 'find-in-page',
       candidates: () => [],
     },
+    // The headings jump-to-heading loaded just before its read (#176).
+    {
+      name: 'headings',
+      candidates: () => headings.candidates(),
+    },
     {
       name: 'journal',
       candidates: () =>
@@ -2201,6 +2259,9 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-x r m': 'bookmark-page',
     // The semantic view of the page, refs shown (#122).
     'C-c C-s': 'show-semantic-view',
+    // Nyxt's jump-to-heading, over the page and over every open page (#176).
+    'C-c C-j': 'jump-to-heading',
+    'C-c M-j': 'jump-to-heading-buffers',
     // The page's main text as a reader buffer (#128).
     'C-c C-r': 'reader-mode',
     // Watch me fill this form (#94).
@@ -2370,6 +2431,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.stores,
     deps.agents,
     deps.replies,
+    deps.headings,
   )) {
     deps.prompter.addSource(source)
   }

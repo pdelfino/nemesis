@@ -339,3 +339,11 @@ of this one.
 - Follow-up: the landing issue for the door, labeled =security=, reviewed by
   Pedro interactively as anything under =src/preload/=, carrying the
   SECURITY.org row, the spec and the grep test above, test-first.
+
+Amendment of 2026-OCTOBER-20 (#176): =scroll-to= is a request name with a
+schema. It takes one number, an
+element's number, and calls =scrollIntoView= with the block at the start, as
+=jump-to-heading= needs. It moves the scroll position only: no value is read,
+nothing in the document changes, and the answer is =ok= or =gone=. Main
+makes the element's number from a ref of the page's current document, so a
+heading of a document that has since navigated is refused before the request.

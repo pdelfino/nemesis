@@ -1,5 +1,5 @@
 import type { ElectronApplication } from '@playwright/test'
-import { expect, test } from './_test'
+import { expect, test, type Page } from './_test'
 import { fixtureServer, launchNemesis } from './security/_harness'
 
 /**
@@ -327,6 +327,92 @@ test('the snapshot sees into open shadow roots, a slotted link once, and nothing
     expect(flat((await snapshot(app, ids)).nodes).map((node) => node.ref)).toEqual(
       nodes.map((node) => node.ref),
     )
+  } finally {
+    await nemesis.close()
+    await fixtures.close()
+  }
+})
+
+/** Runs a command by name through M-x, then answers its read with the candidate typed. */
+async function runAndPick(
+  page: Page,
+  command: string,
+  typed: string,
+  label: string,
+): Promise<void> {
+  const choose = async (query: string, wanted: string): Promise<void> => {
+    await expect(page.locator('#palette-input .cm-content')).toBeFocused()
+    await page.keyboard.type(query)
+    await expect
+      .poll(() =>
+        page
+          .locator('#palette-candidates li[aria-selected="true"]')
+          .evaluate((item) => (item.firstChild?.textContent ?? '').trim()),
+      )
+      .toBe(wanted)
+    await page.keyboard.press('Enter')
+  }
+  await page.keyboard.press('Alt+x')
+  await choose(command, command)
+  await choose(typed, label)
+}
+
+function viewportTop(page: Page, selector: string): Promise<number> {
+  return page.evaluate(
+    (selector) =>
+      (
+        globalThis as unknown as {
+          document: { querySelector(s: string): { getBoundingClientRect(): { top: number } } }
+        }
+      ).document
+        .querySelector(selector)
+        .getBoundingClientRect().top,
+    selector,
+  )
+}
+
+test('jump-to-heading scrolls to the third heading, and across buffers switches to its page', async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const { window } = nemesis
+  try {
+    const headings = await nemesis.openPageBuffer(fixtures.secureUrl('headings.html'))
+    expect(headings.loadError).toBeNull()
+    expect(await viewportTop(headings.page, '#third')).toBeGreaterThan(1000)
+
+    // In the page: the headings, indented by level, and the third one's top in view.
+    await runAndPick(window, 'jump-to-heading', 'Third', 'Third heading')
+    await expect
+      .poll(async () => Math.abs(await viewportTop(headings.page, '#third')), { timeout: 5000 })
+      .toBeLessThan(5)
+
+    // Across the open pages: from another page, the pick switches to its buffer and scrolls.
+    await headings.page.evaluate(() => {
+      ;(globalThis as unknown as { scrollTo(x: number, y: number): void }).scrollTo(0, 0)
+    })
+    expect(await viewportTop(headings.page, '#third')).toBeGreaterThan(1000)
+    const other = await nemesis.openPageBuffer(fixtures.secureUrl('semantic.html'))
+    expect(other.loadError).toBeNull()
+    const currentTitle = (): Promise<string | undefined> =>
+      window.evaluate(async () => {
+        const list = await (
+          globalThis as unknown as {
+            nemesis: {
+              buffers(): Promise<{
+                buffers: { id: string; title: string }[]
+                currentId: string | null
+              }>
+            }
+          }
+        ).nemesis.buffers()
+        return list.buffers.find((one) => one.id === list.currentId)?.title
+      })
+    await expect.poll(currentTitle).toBe('semantic')
+    await runAndPick(window, 'jump-to-heading-buffers', 'Third', 'Third heading')
+    await expect.poll(currentTitle).toBe('headings')
+    await expect
+      .poll(async () => Math.abs(await viewportTop(headings.page, '#third')), { timeout: 5000 })
+      .toBeLessThan(5)
   } finally {
     await nemesis.close()
     await fixtures.close()

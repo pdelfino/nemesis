@@ -36,6 +36,7 @@ import {
   type PageAnswers,
   type QueryAnswer,
   type QueryMatch,
+  type ScrollToAnswer,
   type SelectAnswer,
   type SelectOption,
   type PageRequestName,
@@ -97,6 +98,7 @@ interface PageElement {
   readonly href?: unknown
   getBoundingClientRect(): PageRect
   checkVisibility?(): boolean
+  scrollIntoView?(options: { readonly block: 'start' }): void
 }
 
 /** The parts of a node of the hint overlay this world writes; only the overlay's own nodes. */
@@ -1149,6 +1151,22 @@ function select(args: readonly number[]): SelectAnswer {
   return { status: 'ok', selected }
 }
 
+/**
+ * `scroll-to` (#176): the element's number in, the element at the top of the
+ * viewport. It moves the scroll position as a user's own scroll would and
+ * changes nothing in the document; no value is read.
+ */
+function scrollTo(args: readonly number[]): ScrollToAnswer {
+  const [id] = args
+  if (args.length !== 1 || id === undefined || id < 1) {
+    throw new TypeError('scroll-to takes one element')
+  }
+  const element = elementById(id)
+  if (element === null || element.scrollIntoView === undefined) return { status: 'gone' }
+  element.scrollIntoView({ block: 'start' })
+  return { status: 'ok' }
+}
+
 /** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138, #29, #141). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
@@ -1167,6 +1185,7 @@ const HANDLERS: {
   query,
   options,
   select,
+  'scroll-to': scrollTo,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

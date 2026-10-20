@@ -6,6 +6,7 @@ import type { ClipboardReader } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
 import { PagePolicy } from './agent/page-policy'
 import { CommandError } from './commands/registry'
+import type { PaletteCandidate } from '../shared/palette'
 import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import type { AgentEvent } from './agent/events'
@@ -50,7 +51,7 @@ import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { capturePage, captureFullPage } from './pages/capture'
 import { ConsoleLog } from './pages/console'
 import { NetworkLog, type CompletedRequests } from './pages/network'
-import { SemanticView, semanticText } from './pages/semantic'
+import { headingsOf, SemanticView, semanticText } from './pages/semantic'
 import {
   PAGES_FOLDER,
   ReaderBuffers,
@@ -583,6 +584,8 @@ export function createCockpit(
     }
     return { answer, document }
   }
+  // The headings jump-to-heading loaded for its palette read (#176).
+  let headingJumps: Array<{ candidate: PaletteCandidate; ref: string }> = []
   const texts = new BufferTexts(buffers)
   const shown = (content: { readonly text: string }): string => content.text
   texts.follow(diffs, (content) => diffText(content.diff))
@@ -769,6 +772,53 @@ export function createCockpit(
       if (current === null || pages.viewOf(current.id) === undefined)
         throw new CommandError('The current buffer is not a page')
       return semanticText(await semantic.snapshot(current.id))
+    },
+    headings: {
+      load: async (everyBuffer) => {
+        const ids = everyBuffer
+          ? buffers
+              .list()
+              .map((buffer) => buffer.id)
+              .filter((id) => pages.viewOf(id) !== undefined)
+          : [currentPageId()]
+        const loaded: Array<{ candidate: PaletteCandidate; ref: string }> = []
+        for (const id of ids) {
+          let snapshot: Awaited<ReturnType<typeof semantic.snapshot>>
+          try {
+            snapshot = await semantic.snapshot(id)
+          } catch (error) {
+            // A page that has loaded nothing has no headings; the current one is an error.
+            if (!everyBuffer)
+              throw new CommandError(error instanceof Error ? error.message : String(error))
+            continue
+          }
+          const title = buffers.get(id)?.title ?? id
+          for (const heading of headingsOf(snapshot.nodes)) {
+            loaded.push({
+              ref: heading.ref,
+              candidate: {
+                id: `h${loaded.length + 1}`,
+                label: `${'  '.repeat(Math.max(heading.level - 1, 0))}${heading.name}`,
+                doc: `h${heading.level} in ${title}`,
+                ...(everyBuffer ? { detail: title } : {}),
+              },
+            })
+          }
+        }
+        if (loaded.length === 0) throw new CommandError('No headings to jump to')
+        headingJumps = loaded
+      },
+      candidates: () => headingJumps.map((one) => one.candidate),
+      jump: async (id) => {
+        const target = headingJumps.find((one) => one.candidate.id === id)
+        const resolved = target === undefined ? null : semantic.resolve(target.ref)
+        if (target === undefined || resolved === null) {
+          throw new CommandError('That heading is gone: the page navigated')
+        }
+        if (buffers.current?.id !== resolved.pageId) buffers.switchTo(resolved.pageId)
+        const { answer } = await askDocument(resolved.pageId, 'scroll-to', [resolved.element])
+        if (answer.status !== 'ok') throw new CommandError('That heading is gone from the page')
+      },
     },
     hints: {
       start: async (action) => hints.start(currentPageId(), action),
