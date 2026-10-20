@@ -75,6 +75,12 @@ export interface Settings {
    * the labels of that length can name gets labels on the first ones only.
    */
   readonly hints: HintSettings
+  /**
+   * The modes a new page buffer starts in besides `document` (#168), first
+   * wins: `["blocker"]` by default. A name no mode has is ignored at the
+   * time a page opens, so a config's own mode may be listed.
+   */
+  readonly pageModes: readonly string[]
 }
 
 /** The `hints` object of settings.json. */
@@ -140,7 +146,12 @@ const KNOWN_KEYS: readonly string[] = [
   'blockerUpdates',
   'restore',
   'hints',
+  'pageModes',
 ]
+
+/** The most modes `pageModes` may list, and the shape of a mode's name (modes.ts). */
+const MAX_PAGE_MODES = 16
+const PAGE_MODE_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
 
 /** The most sessions `fanOutMax` may allow: the top of the official /batch range (#160). */
 export const MAX_FAN_OUT = 30
@@ -167,6 +178,7 @@ export function defaultSettings(documentsDir: string): Settings {
     blockerUpdates: 'weekly',
     restore: true,
     hints: DEFAULT_HINT_SETTINGS,
+    pageModes: ['blocker'],
   }
 }
 
@@ -262,6 +274,17 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
 
   const hints = parseHints(value['hints'] ?? defaults.hints)
 
+  const pageModes = value['pageModes'] ?? defaults.pageModes
+  if (
+    !Array.isArray(pageModes) ||
+    pageModes.length > MAX_PAGE_MODES ||
+    pageModes.some((name) => typeof name !== 'string' || !PAGE_MODE_NAME.test(name))
+  ) {
+    throw new SettingsError(
+      `Setting "pageModes" is not a list of up to ${MAX_PAGE_MODES} kebab-case mode names`,
+    )
+  }
+
   return {
     sessionsDir: expanded,
     model,
@@ -275,6 +298,7 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     blockerUpdates: blockerUpdates as BlockerUpdates,
     restore,
     hints,
+    pageModes: pageModes as string[],
   }
 }
 
@@ -379,6 +403,7 @@ export function serializeSettings(settings: Settings): string {
     blockerUpdates: settings.blockerUpdates,
     restore: settings.restore,
     hints: settings.hints,
+    pageModes: settings.pageModes,
     ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`

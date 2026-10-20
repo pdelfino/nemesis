@@ -28,6 +28,7 @@ describe('the settings schema', () => {
       blockerUpdates: 'weekly',
       restore: true,
       hints: { alphabet: 'asdfghjkl', maxLength: 3 },
+      pageModes: ['blocker'],
     })
   })
 
@@ -145,12 +146,18 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ blockerUpdates: 'hourly' }, defaults)).toThrow(/"blockerUpdates"/)
     expect(() => parseSettings({ blockerUpdates: false }, defaults)).toThrow(/"blockerUpdates"/)
     expect(() => parseSettings({ restore: 'no' }, defaults)).toThrow(/"restore"/)
+    expect(() => parseSettings({ pageModes: 'blocker' }, defaults)).toThrow(/"pageModes"/)
+    expect(() => parseSettings({ pageModes: ['Blocker'] }, defaults)).toThrow(/"pageModes"/)
+    expect(parseSettings({ pageModes: [] }, defaults).pageModes).toEqual([])
+    expect(parseSettings({ pageModes: ['passthrough'] }, defaults).pageModes).toEqual([
+      'passthrough',
+    ])
   })
 
   it('serializes the defaults with the home folder as ~', () => {
     const home = defaultSettings(join(homedir(), 'Documents'))
     expect(serializeSettings(home)).toBe(
-      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ],\n  "stopGateRetries": 3,\n  "blockerUpdates": "weekly",\n  "restore": true,\n  "hints": {\n    "alphabet": "asdfghjkl",\n    "maxLength": 3\n  }\n}\n',
+      '{\n  "sessionsDir": "~/Documents/nemesis/sessions",\n  "model": null,\n  "keyscheme": "cockpit",\n  "theme": "system",\n  "verify": null,\n  "searchEngines": [\n    {\n      "keyword": "ddg",\n      "name": "DuckDuckGo",\n      "url": "https://duckduckgo.com/?q=%s"\n    }\n  ],\n  "stopGateRetries": 3,\n  "blockerUpdates": "weekly",\n  "restore": true,\n  "hints": {\n    "alphabet": "asdfghjkl",\n    "maxLength": 3\n  },\n  "pageModes": [\n    "blocker"\n  ]\n}\n',
     )
     expect(JSON.parse(serializeSettings({ ...defaults, theme: 'dark' }))).toMatchObject({
       theme: 'dark',
@@ -198,6 +205,7 @@ describe('the settings file', () => {
       blockerUpdates: 'weekly',
       restore: true,
       hints: { alphabet: 'asdfghjkl', maxLength: 3 },
+      pageModes: ['blocker'],
     })
     expect(loadSettings(file, defaults)).toEqual(defaults)
   })

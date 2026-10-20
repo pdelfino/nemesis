@@ -211,6 +211,7 @@ function rig(
   keys?: (press: KeyPress, modes: readonly string[]) => boolean,
   blocker?: PageBlocker,
   console?: (pageId: string, level: string, message: string) => void,
+  defaultModes?: () => readonly string[],
 ): Rig {
   const buffers = new BufferRegistry()
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
@@ -237,6 +238,7 @@ function rig(
     ...(keys === undefined ? {} : { keys }),
     ...(blocker === undefined ? {} : { blocker }),
     ...(console === undefined ? {} : { console }),
+    ...(defaultModes === undefined ? {} : { defaultModes }),
   })
   const notices: string[] = []
   pages.on((event: AgentEvent) => {
@@ -710,7 +712,7 @@ describe('keys typed in a page (#120)', () => {
     expect(only(bare.views).webContents.type({ key: 'v', control: true })).toBe(false)
   })
 
-  it('puts passthrough in front of document on toggle, and in the buffer list', () => {
+  it('asks the cockpit with the modes of the buffer list, passthrough first when it is on', () => {
     const asked: (readonly string[])[] = []
     const { pages, buffers, views } = rig((_press, modes) => {
       asked.push(modes)
@@ -719,12 +721,12 @@ describe('keys typed in a page (#120)', () => {
     const buffer = pages.createPage()
     buffers.switchTo(buffer.id)
     expect(buffers.get(buffer.id)?.modes).toEqual(['document'])
-    pages.togglePassthrough()
-    expect(buffers.get(buffer.id)?.modes).toEqual(['passthrough', 'document'])
+    buffers.update(buffer.id, { modes: ['passthrough', 'document'] })
     only(views).webContents.type({ key: 'x' })
     expect(asked.at(-1)).toEqual(['passthrough', 'document'])
-    pages.togglePassthrough()
-    expect(buffers.get(buffer.id)?.modes).toEqual(['document'])
+    buffers.update(buffer.id, { modes: ['document'] })
+    only(views).webContents.type({ key: 'x' })
+    expect(asked.at(-1)).toEqual(['document'])
   })
 
   it('reads a key the way the renderer reports one', () => {
@@ -952,29 +954,39 @@ describe('blocker mode on a page (#126)', () => {
     expect(attached?.page.url()).toBe('https://news.example/')
   })
 
-  it('turns the mode off and on for the current page only, and says so in the buffer list', () => {
+  it('follows the blocker mode in the buffer list, for that page only', () => {
     const blocker = new FakeBlocker()
     const { pages, buffers, views } = rig(undefined, blocker)
     const one = pages.createPage()
     const two = pages.createPage()
-    buffers.switchTo(one.id)
-    pages.toggleBlocker()
+    expect(buffers.get(one.id)?.modes).toEqual(['blocker', 'document'])
+    buffers.update(one.id, { modes: ['document'] })
     const [first, second] = views
     expect(blocker.pages.get(first?.webContents.id ?? -1)?.on).toBe(false)
     expect(blocker.pages.get(second?.webContents.id ?? -1)?.on).toBe(true)
     expect(buffers.get(one.id)?.blocker).toBe(false)
     expect(buffers.get(two.id)?.blocker).toBe(true)
-    pages.toggleBlocker()
+    buffers.update(one.id, { modes: ['blocker', 'document'] })
     expect(blocker.pages.get(first?.webContents.id ?? -1)?.on).toBe(true)
     expect(buffers.get(one.id)?.blocker).toBe(true)
   })
 
-  it('has no blocker fields and refuses the toggle in a window without a blocker', () => {
+  it('starts a page in the default modes of the config, document last, blocker only with a blocker', () => {
+    const blocker = new FakeBlocker()
+    const withNone = rig(undefined, blocker, undefined, () => [])
+    const bare = withNone.pages.createPage()
+    expect(withNone.buffers.get(bare.id)?.modes).toEqual(['document'])
+    expect(blocker.pages.get(only(withNone.views).webContents.id)?.on).toBe(false)
+    expect(withNone.buffers.get(bare.id)?.blocker).toBe(false)
+    const again = rig(undefined, undefined, undefined, () => ['passthrough', 'blocker'])
+    const page = again.pages.createPage()
+    expect(again.buffers.get(page.id)?.modes).toEqual(['passthrough', 'document'])
+  })
+
+  it('has no blocker fields in a window without a blocker', () => {
     const { pages, buffers } = rig()
     const buffer = pages.createPage()
-    buffers.switchTo(buffer.id)
     expect(buffers.get(buffer.id)?.blocker).toBeUndefined()
-    expect(() => pages.toggleBlocker()).toThrow(/no blocker/)
   })
 })
 

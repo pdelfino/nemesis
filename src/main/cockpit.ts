@@ -41,7 +41,13 @@ import { IN_APP_SERVER } from './mcp/catalog'
 import { CockpitMcp } from './mcp/server'
 import { installNotifications } from './notify/install'
 import { PlanBuffers } from './plans'
-import { installSwipe, PageBuffers, type PagePolicies } from './page-buffer'
+import {
+  FORM_GUIDE_MODE,
+  installSwipe,
+  PageBuffers,
+  READER_MODE,
+  type PagePolicies,
+} from './page-buffer'
 import type { PageScriptDoor } from './page-door'
 import { encodeQuery, type PageAnswers, type PageRequestName } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
@@ -423,6 +429,8 @@ export function createCockpit(
     // (#120): bound in the page's modes, it is the cockpit's; else the page's.
     keys: (press, modes) => dispatcher.take(press, modes).consumed,
     ...(shared.blocker === undefined ? {} : { blocker: shared.blocker }),
+    // The config's `pageModes`, the registered ones (#168); a name no mode has is ignored.
+    defaultModes: () => config.settings.pageModes.filter((name) => cockpitModes.has(name)),
     console: (pageId, level, message) => consoleLog.record(pageId, level, message),
   })
   installPageBridge(pages, contents)
@@ -472,6 +480,14 @@ export function createCockpit(
       }
     },
   }
+  // A page leaves a mode whose effect ended on its own: a killed reader buffer, a refused watch (#168).
+  const leaveMode = (pageId: string, mode: string): void => {
+    const buffer = buffers.get(pageId)
+    const on = buffer?.modes ?? []
+    if (buffer !== undefined && on.includes(mode)) {
+      buffers.update(pageId, { modes: on.filter((name) => name !== mode) })
+    }
+  }
   const currentPageId = (): string => {
     const current = buffers.current
     if (current === null || pages.viewOf(current.id) === undefined)
@@ -491,6 +507,7 @@ export function createCockpit(
     committedUrl: (pageId) =>
       pages.viewOf(pageId) === undefined ? undefined : buffers.get(pageId)?.url,
     dir: join(settings.sessionsDir, PAGES_FOLDER),
+    closed: (pageId) => leaveMode(pageId, READER_MODE),
   })
   // The document export and attach work from: the reader buffer's own, or the current page's read now.
   const readerDocument = async (): Promise<ReaderDocument> => {
@@ -522,6 +539,38 @@ export function createCockpit(
       for (const listener of guideListeners) listener({ type: 'notice', text })
     },
     events: (listener) => pages.onPageEvent(listener),
+  })
+  // The page modes of #168: a page's mode list is the truth, and a mode put
+  // on or off by enable-mode, disable-mode or its toggler starts or ends its
+  // effect here. The watch and the reader buffer report back through the list.
+  const seenModes = new Map<string, readonly string[]>()
+  buffers.subscribe(({ buffers: list }) => {
+    const live = new Set<string>()
+    for (const buffer of list) {
+      if (buffer.kind !== 'page') continue
+      live.add(buffer.id)
+      const before = seenModes.get(buffer.id) ?? []
+      const now = buffer.modes ?? []
+      seenModes.set(buffer.id, now)
+      const turned = (mode: string): 'on' | 'off' | null =>
+        before.includes(mode) === now.includes(mode) ? null : now.includes(mode) ? 'on' : 'off'
+      const guide = turned(FORM_GUIDE_MODE)
+      if (guide === 'on') {
+        formGuide.start(buffer.id)
+        if (!formGuide.watching(buffer.id)) leaveMode(buffer.id, FORM_GUIDE_MODE)
+      } else if (guide === 'off') void formGuide.stop(buffer.id)
+      const reading = turned(READER_MODE)
+      if (reading === 'on') {
+        // Text the page preload extracted, never the page's HTML (#128).
+        readers.show(buffer.id).catch((error: unknown) => {
+          leaveMode(buffer.id, READER_MODE)
+          deps.help.show(
+            `No reader view: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
+      } else if (reading === 'off') readers.close(buffer.id)
+    }
+    for (const id of [...seenModes.keys()]) if (!live.has(id)) seenModes.delete(id)
   })
   const guideNotices: EventSource = {
     on: (listener) => {
@@ -777,14 +826,10 @@ export function createCockpit(
       quit: async () => hints.quit(currentPageId()),
     },
     reader: {
-      show: async () => {
-        await readers.show(currentPageId())
-      },
       export: async () => readers.export(await readerDocument()),
       attachment: async () => readerAttachment(await readerDocument()),
     },
     formGuide: {
-      toggle: async () => formGuide.toggle(currentPageId()),
       accept: async () => formGuide.accept(currentPageId()),
     },
     // What open-url reads over (#124): the profile's bookmarks and history

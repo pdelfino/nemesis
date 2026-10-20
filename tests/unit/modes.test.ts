@@ -48,7 +48,7 @@ function rig(registry: ModeRegistry = new ModeRegistry()) {
 
 describe('defineMode and the registry', () => {
   it('refuses a duplicate name, a bad name, a missing doc and a reserved name', () => {
-    const registry = new ModeRegistry(new Set(['passthrough']))
+    const registry = new ModeRegistry(new Set(['document']))
     registry.register(defineMode({ name: 'focus', doc: 'Focus.' }))
     expect(() => registry.register(defineMode({ name: 'focus', doc: 'Again.' }))).toThrow(ModeError)
     expect(() => registry.register(defineMode({ name: 'focus', doc: 'Again.' }))).toThrow(
@@ -56,7 +56,7 @@ describe('defineMode and the registry', () => {
     )
     expect(() => defineMode({ name: 'Focus', doc: 'Focus.' })).toThrow(/kebab-case/)
     expect(() => defineMode({ name: 'focus', doc: ' ' })).toThrow(/doc line/)
-    expect(() => registry.register(defineMode({ name: 'passthrough', doc: 'No.' }))).toThrow(
+    expect(() => registry.register(defineMode({ name: 'document', doc: 'No.' }))).toThrow(
       /page buffer's own/,
     )
   })
@@ -75,17 +75,27 @@ describe('defineMode and the registry', () => {
       'diff',
       'plan',
       'spec',
+      'reader',
+      'blocker',
+      'passthrough',
+      'form-guide',
     ])
     expect(DEFAULT_MODES).toEqual({
       permission: ['permission'],
       diff: ['diff'],
       plan: ['plan'],
       spec: ['spec'],
+      page: ['blocker', 'document'],
     })
     expect(registry.get('permission')?.modal).toBe(true)
     expect(registry.get(BASE_MODE)?.visible).toBe(false)
-    // None of the five registers a toggle: base is under everything, the four are their kinds' own.
-    expect(COCKPIT_MODES.every((mode) => mode.toggler === false)).toBe(true)
+    // The five do not register a toggle: base is under everything, the four are their kinds' own.
+    // The page toggles do, and keep the command names they had (#168).
+    expect(
+      COCKPIT_MODES.filter((mode) => mode.toggler !== false).map(
+        (mode) => mode.command ?? `toggle-${mode.name}`,
+      ),
+    ).toEqual(['reader-mode', 'toggle-blocker', 'toggle-passthrough', 'form-guide-mode'])
   })
 })
 
@@ -154,14 +164,13 @@ describe('a buffer and its modes', () => {
     expect(modes.state(id, 'focus')).toBeUndefined()
   })
 
-  it('refuses an unknown mode, base, a kind the mode is not for, and a page buffer', async () => {
+  it('refuses an unknown mode, base, and a kind the mode is not for', async () => {
     const { buffers, modes } = rig(createModeRegistry())
     const prompt = buffers.create({ kind: 'prompt', title: 'Prompt' })
     await expect(modes.enableMode(prompt.id, 'ghost')).rejects.toThrow(/No mode named "ghost"/)
     await expect(modes.enableMode(prompt.id, BASE_MODE)).rejects.toThrow(/No mode named/)
     await expect(modes.enableMode(prompt.id, 'plan')).rejects.toThrow(/for plan buffers/)
-    const page = buffers.create({ kind: 'page', title: 'Page' })
-    await expect(modes.enableMode(page.id, 'focus')).rejects.toThrow(/page buffer/)
+    await expect(modes.enableMode(prompt.id, 'blocker')).rejects.toThrow(/for page buffers/)
   })
 
   it('drops the mode when enable throws, so nothing is half on', async () => {
@@ -256,7 +265,11 @@ describe('the mode commands', () => {
     expect(table.list().map((command) => command.name)).toEqual([
       'disable-mode',
       'enable-mode',
+      'form-guide-mode',
+      'reader-mode',
+      'toggle-blocker',
       'toggle-focus',
+      'toggle-passthrough',
     ])
   })
 
@@ -284,6 +297,47 @@ describe('the mode commands', () => {
     expect(reads.at(-1)).toEqual({ source: 'modes-on', ids: ['focus'] })
     await prompter.answer({ id: 'p2', choice: 'focus' })
     expect(buffers.get(prompt.id)?.modes).toEqual([])
+  })
+
+  it('reads the buffers, several when marked, then the mode, and switches them all (#168)', async () => {
+    const { table, buffers, prompter, modes } = commands()
+    const one = buffers.create({ kind: 'page', title: 'One' })
+    const two = buffers.create({ kind: 'page', title: 'Two' })
+    const three = buffers.create({ kind: 'page', title: 'Three' })
+    prompter.addSource({
+      name: 'buffers',
+      candidates: () => buffers.list().map((b) => ({ id: b.id, label: b.title, doc: b.kind })),
+    })
+    const reads: { source: string; ids: string[] }[] = []
+    prompter.on((request) => {
+      if (request === null) return
+      reads.push({ source: request.source, ids: request.candidates.map((c) => c.id) })
+    })
+    await table.run('disable-mode', { source: 'palette' })
+    expect(reads.at(-1)?.source).toBe('buffers')
+    await prompter.answer({ id: 'p1', choice: null, ids: [one.id, two.id] })
+    // Only what is on in a chosen buffer, and only registered modes: not `document`.
+    expect(reads.at(-1)).toEqual({ source: 'modes-on', ids: ['blocker'] })
+    await prompter.answer({ id: 'p2', choice: 'blocker' })
+    expect(buffers.get(one.id)?.modes).toEqual(['document'])
+    expect(buffers.get(two.id)?.modes).toEqual(['document'])
+    expect(buffers.get(three.id)?.modes).toEqual(['blocker', 'document'])
+    expect(modes.targets).toBeNull()
+    await table.run('enable-mode', { source: 'palette' })
+    await prompter.answer({ id: 'p3', choice: null, ids: [two.id, three.id] })
+    // Blocker is on in the third already but off in the second, so it is still offered.
+    expect(reads.at(-1)?.ids).toEqual(['reader', 'blocker', 'passthrough', 'form-guide', 'focus'])
+    await prompter.answer({ id: 'p4', choice: 'blocker' })
+    expect(buffers.get(two.id)?.modes).toEqual(['blocker', 'document'])
+    expect(buffers.get(three.id)?.modes).toEqual(['blocker', 'document'])
+  })
+
+  it('never lets an MCP client or the config switch a mode over the page boundary', async () => {
+    const { table } = commands()
+    for (const name of ['enable-mode', 'disable-mode', 'toggle-blocker', 'toggle-passthrough']) {
+      await expect(table.run(name, { source: 'mcp', client: 'x' })).rejects.toThrow(/never/)
+      await expect(table.run(name, { source: 'config' })).rejects.toThrow(/never/)
+    }
   })
 
   it('names a mode layer in describe and in the palette note', () => {

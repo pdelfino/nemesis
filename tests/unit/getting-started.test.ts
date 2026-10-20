@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { normalizeChord, type Keymap } from '../../src/main/commands/keymap'
-import { BUFFER_KEYMAPS, GLOBAL_KEYMAP, MODE_KEYMAPS } from '../../src/main/commands/keyscheme'
+import {
+  BUFFER_KEYMAPS,
+  cockpitModes,
+  GLOBAL_KEYMAP,
+  MODE_KEYMAPS,
+} from '../../src/main/commands/keyscheme'
 
 /** docs/getting-started.org (#145): a chord the guide names must exist in the keyscheme. */
 const doc = readFileSync(join(__dirname, '..', '..', 'docs', 'getting-started.org'), 'utf8')
@@ -14,6 +19,7 @@ const keymaps: readonly Keymap[] = [
   GLOBAL_KEYMAP,
   ...Object.values(BUFFER_KEYMAPS),
   ...Object.values(MODE_KEYMAPS).map((mode) => mode.keymap),
+  ...cockpitModes.list().flatMap((mode) => (mode.layer === null ? [] : [mode.layer])),
 ]
 const bound = new Set(keymaps.flatMap((keymap) => keymap.entries().map((e) => e.chord)))
 const prefixes = new Set(keymaps.flatMap((keymap) => keymap.shape().prefixes))
@@ -55,7 +61,7 @@ describe('docs/getting-started.org', () => {
     const modes = (name: string) => Object.values(MODE_KEYMAPS).find((m) => m.keymap.name === name)
     expect(modes('document')?.keymap.commandFor('f')).toBe('follow-hint')
     expect(modes('document')?.keymap.commandFor('F')).toBe('copy-hint-url')
-    expect(modes('form-guide')?.keymap.commandFor('C-c C-y')).toBe('form-guide-accept')
+    expect(cockpitModes.get('form-guide')?.layer?.commandFor('C-c C-y')).toBe('form-guide-accept')
     expect(GLOBAL_KEYMAP.commandFor('C-x 5 F')).toBe('toggle-full-screen')
   })
 

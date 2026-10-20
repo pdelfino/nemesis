@@ -21,6 +21,7 @@ import {
   GLOBAL_KEYMAP,
   MODE_KEYMAPS,
   resolveCockpitDeps,
+  cockpitModes,
 } from '../../src/main/commands/keyscheme'
 import { parseStroke } from '../../src/main/commands/keymap'
 import { NO_PAGES } from '../../src/main/page-buffer'
@@ -292,13 +293,16 @@ describe('the page layer and its modes (#120)', () => {
   })
 
   it('keeps passthrough to its exit chord, and every mode command registered', () => {
-    expect(MODE_KEYMAPS['passthrough']?.keymap.entries()).toEqual([
-      { chord: 'C-z', command: 'toggle-passthrough' },
-    ])
-    expect(MODE_KEYMAPS['passthrough']?.sealed).toBe(true)
+    const passthrough = cockpitModes.get('passthrough')
+    expect(passthrough?.layer?.entries()).toEqual([{ chord: 'C-z', command: 'toggle-passthrough' }])
+    expect(passthrough?.sealed).toBe(true)
     const registry = createCockpitRegistry()
     for (const mode of Object.values(MODE_KEYMAPS)) {
       for (const { command } of mode.keymap.entries()) expect(registry.has(command)).toBe(true)
+    }
+    // The page toggles are modes that keep their command names (#168), never an MCP client's.
+    for (const name of ['toggle-passthrough', 'toggle-blocker', 'reader-mode', 'form-guide-mode']) {
+      expect(registry.get(name)?.mcp, name).toBe('never')
     }
   })
 })

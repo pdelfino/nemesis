@@ -52,6 +52,11 @@ export interface ReadSpec {
    */
   readonly multiple?: true | undefined
   /**
+   * With `multiple`: called once after the consumer ran for every id, so a
+   * second read can follow the choice of buffers (#168). Not called on a cancel.
+   */
+  readonly after?: (() => void) | undefined
+  /**
    * A yes or no of confirm.ts: the user's to give, so it always goes to the
    * window, even inside a run whose reads are answered in advance (#28).
    */
@@ -79,6 +84,7 @@ interface PendingRead {
   readonly request: PaletteRequest
   readonly consume: PaletteConsumer
   readonly cancel: (() => void) | undefined
+  readonly after: (() => void) | undefined
 }
 
 export class Prompter {
@@ -126,7 +132,7 @@ export class Prompter {
       return request
     }
     const dropped = this.current
-    this.current = { request, consume, cancel: spec.onCancel }
+    this.current = { request, consume, cancel: spec.onCancel, after: spec.after }
     dropped?.cancel?.()
     for (const listener of [...this.listeners]) listener(request)
     return request
@@ -178,7 +184,7 @@ export class Prompter {
       Promise.resolve()
         .then(() => consume(choice))
         .then(
-          () => undefined,
+          () => spec.after?.(),
           (error: unknown) => {
             script.failure ??= error instanceof Error ? error : new CommandError(String(error))
           },
@@ -222,6 +228,7 @@ export class Prompter {
       if (unknown !== undefined) throw new CommandError(`"${unknown}" is not among the candidates`)
       let outcome: PaletteOutcome = {}
       for (const id of new Set(answer.ids)) outcome = (await read.consume(id)) ?? outcome
+      read.after?.()
       return outcome
     }
     if (answer.choice === null) {
@@ -231,7 +238,9 @@ export class Prompter {
     if (!read.request.candidates.some((candidate) => candidate.id === answer.choice)) {
       throw new CommandError(`"${answer.choice}" is not among the candidates`)
     }
-    return (await read.consume(answer.choice)) ?? {}
+    const outcome = (await read.consume(answer.choice)) ?? {}
+    read.after?.()
+    return outcome
   }
 }
 

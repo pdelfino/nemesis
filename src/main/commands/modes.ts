@@ -4,7 +4,7 @@ import type { HookHandler, HookPoint, HookRegistry } from '../hooks'
 import type { KeymapSpec } from './keymap'
 import { defineKeymap, Keymap } from './keymap'
 import type { PaletteSource, Prompter } from './prompter'
-import type { Command } from './registry'
+import type { Command, CommandContext } from './registry'
 import { CommandError, defineCommand } from './registry'
 
 /**
@@ -20,9 +20,10 @@ import { CommandError, defineCommand } from './registry'
  * src/shared/ names a mode switch, so neither a page nor the renderer can
  * turn one on (SECURITY.org T4; tests/unit/modes.test.ts pins it).
  *
- * The page modes (`document`, `hint`, `form-guide`, `passthrough`) are still
- * the page buffer's own toggles and are converted by #168; their names are
- * reserved here so nothing else takes them.
+ * The page toggles are modes too (#168): `reader`, `blocker`, `passthrough`
+ * and `form-guide` (keyscheme.ts), each keeping its old command name as its
+ * toggler. `document` and `hint` stay the page buffer's own, always on and
+ * on while labels are up, and their names are reserved here.
  */
 
 /** A handler a mode attaches at a hook point (ADR 0005) while it is on. */
@@ -53,8 +54,12 @@ export interface ModeSpec<Settings extends object = Record<string, unknown>> {
   readonly visible?: boolean
   /** While on, an unmodified key is a command, not text. Default false. */
   readonly modal?: boolean
+  /** While on, no layer below this one sees a key. Default false. */
+  readonly sealed?: boolean
   /** Registers `toggle-<name>`. Default true. */
   readonly toggler?: boolean
+  /** The toggler's name when it is not `toggle-<name>`: a mode that kept the command it came from (#168). */
+  readonly command?: string
   /** Buffer kinds the mode may be enabled in. Absent means any. */
   readonly kinds?: readonly BufferType[]
   enable?(buffer: BufferInfo, state: ModeState<Settings>): void | Promise<void>
@@ -84,6 +89,8 @@ export const DEFAULT_MODES: Readonly<Partial<Record<BufferType, readonly string[
   diff: ['diff'],
   plan: ['plan'],
   spec: ['spec'],
+  // A page is in `document` always; the blocker is on from creation (#126).
+  page: ['blocker', 'document'],
 }
 
 export function defineMode<Settings extends object>(spec: ModeSpec<Settings>): Mode {
@@ -107,7 +114,9 @@ export function togglerName(mode: string): string {
 /** `toggle-<name>` for a mode, acting through `toggle`, which knows the current buffer. */
 export function toggleCommand(mode: Mode, toggle: (name: string) => Promise<void>): Command {
   return defineCommand({
-    name: togglerName(mode.name),
+    name: mode.command ?? togglerName(mode.name),
+    // A mode of the page boundary is the user's to switch, never an MCP client's or the config's.
+    ...(mode.kinds?.includes('page') === true ? { mcp: 'never' as const } : {}),
     doc: `Turn ${mode.name} mode on or off in the current buffer: ${mode.doc}`,
     run: () => toggle(mode.name),
   })
@@ -322,10 +331,30 @@ export class BufferModes {
     return this.buffers.current
   }
 
+  /** Whether this window has the buffer. */
+  exists(bufferId: string): boolean {
+    return this.buffers.get(bufferId) !== undefined
+  }
+
+  /** The buffers a mode read is for, while the buffers read before it is answered (#168). */
+  targets: readonly string[] | null = null
+
+  /** The buffers the mode commands act on now: the ones read, else the current one. */
+  targetIds(): readonly string[] {
+    if (this.targets !== null) return this.targets
+    const id = this.buffers.current?.id
+    return id === undefined ? [] : [id]
+  }
+
+  /** The names among `names` that are registered modes: a page's `document` and `hint` are not. */
+  registered(names: readonly string[]): readonly string[] {
+    return names.filter((name) => name !== BASE_MODE && this.registry.has(name))
+  }
+
   /** The modes that could go on in a buffer now: registered, allowed for its kind, and off. */
   available(bufferId: string): readonly Mode[] {
     const buffer = this.buffers.get(bufferId)
-    if (buffer === undefined || buffer.kind === 'page') return []
+    if (buffer === undefined) return []
     const on = buffer.modes ?? []
     return this.registry
       .list()
@@ -343,11 +372,9 @@ export class BufferModes {
     else await this.enableMode(bufferId, name)
   }
 
-  /** The page buffer's modes are its own until #168 makes them registered modes. */
   private ownBuffer(bufferId: string): BufferInfo {
     const buffer = this.buffers.get(bufferId)
     if (buffer === undefined) throw new ModeError(`No buffer with id "${bufferId}"`)
-    if (buffer.kind === 'page') throw new ModeError('A page buffer keeps its own modes for now')
     return buffer
   }
 
@@ -377,7 +404,7 @@ export class BufferModes {
 
   /** A buffer that appeared with modes (its kind's defaults): each registered one goes on. */
   private adopt(buffer: BufferInfo): void {
-    if (buffer.kind === 'page' || this.states.has(buffer.id)) return
+    if (this.states.has(buffer.id)) return
     this.states.set(buffer.id, new Map())
     for (const name of buffer.modes ?? []) {
       const mode = this.registry.get(name)
@@ -439,24 +466,29 @@ export const ENABLE_MODE_SOURCE = 'modes-off'
 export const DISABLE_MODE_SOURCE = 'modes-on'
 
 export function modeSources(modes: BufferModes): readonly PaletteSource[] {
-  const current = (): string | null => modes.current?.id ?? null
   return [
     {
       name: ENABLE_MODE_SOURCE,
       candidates: () => {
-        const id = current()
-        return id === null
-          ? []
-          : modes.available(id).map((mode) => ({ id: mode.name, label: mode.name, doc: mode.doc }))
+        // Every mode that could go on in at least one of the buffers, once each.
+        const seen = new Map<string, Mode>()
+        for (const id of modes.targetIds()) {
+          for (const mode of modes.available(id)) seen.set(mode.name, mode)
+        }
+        return [...seen.values()].map((mode) => ({
+          id: mode.name,
+          label: mode.name,
+          doc: mode.doc,
+        }))
       },
     },
     {
       name: DISABLE_MODE_SOURCE,
       candidates: () => {
-        const id = current()
-        return id === null || modes.current?.kind === 'page'
-          ? []
-          : modes.enabled(id).map((name) => ({ id: name, label: name, doc: `${name} mode` }))
+        const names = new Set(
+          modes.targetIds().flatMap((id) => modes.registered(modes.enabled(id))),
+        )
+        return [...names].map((name) => ({ id: name, label: name, doc: `${name} mode` }))
       },
     },
   ]
@@ -476,26 +508,61 @@ export function modeCommands(
     if (buffer === null) throw new CommandError('There is no current buffer')
     return buffer.id
   }
+  /**
+   * Reads the mode to switch and applies it to every target. From the palette
+   * the buffers are read first, several at once when marked (#167); from a
+   * key, the config or a test, the current buffer is the one.
+   */
+  const switchMode = (
+    context: CommandContext,
+    prompt: string,
+    source: string,
+    apply: (id: string, name: string) => Promise<void>,
+  ): void => {
+    const readMode = (ids: readonly string[]): void => {
+      modes.targets = ids
+      prompter.read({ source, prompt, onCancel: () => (modes.targets = null) }, async (name) => {
+        modes.targets = null
+        // A buffer the mode is not for, or one gone since the read, is skipped.
+        for (const id of ids) {
+          await apply(id, name).catch((error: unknown) => {
+            if (!(error instanceof ModeError)) throw error
+          })
+        }
+      })
+    }
+    if (context.source !== 'palette') {
+      readMode([currentId()])
+      return
+    }
+    const chosen: string[] = []
+    prompter.read(
+      { source: 'buffers', prompt: 'In buffer:', multiple: true, after: () => readMode(chosen) },
+      (id) => {
+        // Another window's buffer is that window's to switch.
+        if (modes.exists(id)) chosen.push(id)
+      },
+    )
+  }
   return [
     defineCommand({
       name: 'enable-mode',
-      doc: 'Turn a mode on in the current buffer, chosen by name.',
-      run: () => {
-        const id = currentId()
-        prompter.read({ source: ENABLE_MODE_SOURCE, prompt: 'Enable mode:' }, (name) =>
+      // Page modes sit on the page boundary: the user's, never an MCP client's.
+      mcp: 'never',
+      doc: 'Turn a mode on in the buffers chosen, several at once when marked (M-SPC marks); from a key, in the current buffer.',
+      run: (context) =>
+        switchMode(context, 'Enable mode:', ENABLE_MODE_SOURCE, (id, name) =>
           modes.enableMode(id, name),
-        )
-      },
+        ),
     }),
     defineCommand({
       name: 'disable-mode',
-      doc: 'Turn a mode off in the current buffer, chosen by name.',
-      run: () => {
-        const id = currentId()
-        prompter.read({ source: DISABLE_MODE_SOURCE, prompt: 'Disable mode:' }, (name) =>
+      mcp: 'never',
+      doc: 'Turn a mode off in the buffers chosen, several at once when marked (M-SPC marks); from a key, in the current buffer.',
+      run: (context) =>
+        switchMode(context, 'Disable mode:', DISABLE_MODE_SOURCE, (id, name) =>
           modes.disableMode(id, name),
-        )
-      },
+        ),
     }),
     ...togglable
       .filter((mode) => mode.name !== BASE_MODE && mode.toggler !== false)

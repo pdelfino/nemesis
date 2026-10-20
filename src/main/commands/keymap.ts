@@ -322,8 +322,9 @@ export class KeyResolver {
     for (const name of modes) {
       const mode = this.modes[name]
       if (mode === undefined) {
-        const layer = this.registry?.get(name)?.layer
-        if (layer !== undefined && layer !== null) layers.push(layer)
+        const registered = this.registry?.get(name)
+        if (registered?.layer != null) layers.push(registered.layer)
+        if (registered?.sealed === true) return layers
         continue
       }
       layers.push(mode.keymap)

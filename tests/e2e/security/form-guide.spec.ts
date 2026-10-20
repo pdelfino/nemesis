@@ -156,7 +156,7 @@ async function watch(nemesis: Nemesis, buffer: PageBuffer, focus: string): Promi
   if (ids === undefined) throw new Error('The page buffer has no ids')
   await buffer.page.focus(`#${focus}`)
   await chord(nemesis.app, buffer.contentsId, ['c', 'w'])
-  await expect.poll(() => modes(nemesis, ids)).toEqual(['form-guide', 'document'])
+  await expect.poll(() => modes(nemesis, ids)).toEqual(['form-guide', 'blocker', 'document'])
   return ids
 }
 
@@ -265,7 +265,7 @@ test('C-c C-w again ends the watch and hides the pane', async () => {
     const ids = await watch(nemesis, buffer, 'given')
     await expect(nemesis.window.locator('#form-guide')).toBeVisible()
     await chord(app, buffer.contentsId, ['c', 'w'])
-    await expect.poll(() => modes(nemesis, ids)).toEqual(['document'])
+    await expect.poll(() => modes(nemesis, ids)).toEqual(['blocker', 'document'])
     expect(await state(app, ids)).toBeNull()
     await expect(nemesis.window.locator('#form-guide')).toBeHidden()
   } finally {

@@ -59,7 +59,16 @@ describe('the shape of a keymap', () => {
       prefixes: ['C-c'],
     })
     expect(bindings.byMode['plan']?.modal).toBe(false)
-    expect(Object.keys(bindings.byMode)).toEqual(['permission', 'diff', 'plan', 'spec'])
+    expect(Object.keys(bindings.byMode)).toEqual([
+      'permission',
+      'diff',
+      'plan',
+      'spec',
+      'reader',
+      'blocker',
+      'passthrough',
+      'form-guide',
+    ])
     expect(JSON.stringify(bindings)).not.toContain('switch-buffer')
   })
 })

@@ -62,6 +62,8 @@ export interface ReaderBuffersOptions {
   /** Where `export-page-text` writes: the sessions folder's `pages` folder. */
   readonly dir: string
   readonly now?: () => Date
+  /** A page's reader buffer was killed (#168): the page leaves reader mode. */
+  readonly closed?: (pageId: string) => void
 }
 
 export class ReaderBuffers {
@@ -77,7 +79,11 @@ export class ReaderBuffers {
     options.buffers.subscribe((list) => {
       const live = new Set(list.buffers.map((buffer) => buffer.id))
       for (const id of [...this.documents.keys()]) if (!live.has(id)) this.documents.delete(id)
-      for (const [page, id] of [...this.ofPage]) if (!live.has(id)) this.ofPage.delete(page)
+      for (const [page, id] of [...this.ofPage]) {
+        if (live.has(id)) continue
+        this.ofPage.delete(page)
+        options.closed?.(page)
+      }
     })
   }
 
@@ -131,6 +137,12 @@ export class ReaderBuffers {
     for (const listener of [...this.listeners]) listener({ bufferId: buffer.id, text, document })
     this.options.buffers.switchTo(buffer.id)
     return buffer
+  }
+
+  /** Kills a page's reader buffer, when it has one (#168). */
+  close(pageId: string): void {
+    const id = this.ofPage.get(pageId)
+    if (id !== undefined) this.options.buffers.kill(id)
   }
 
   /** Writes the document as an Org file under the pages folder; the path written. */

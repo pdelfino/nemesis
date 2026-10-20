@@ -4,6 +4,7 @@ import type { AgentEvent, AgentEventListener } from './agent/events'
 import type { BufferInfo, PageBounds, PageEvent, PageSpec } from '../shared/buffers'
 import type { KeyPress } from '../shared/keys'
 import type { BufferRegistry } from './buffers'
+import { DEFAULT_MODES } from './commands/modes'
 import { CommandError } from './commands/registry'
 import type { PageBlocker } from './pages/blocker'
 import { navigationAllowed } from './security/navigation-policy'
@@ -85,6 +86,10 @@ export const PASSTHROUGH_MODE = 'passthrough'
 export const HINT_MODE = 'hint'
 /** On while the form guide watches the page (#94): the accept key. */
 export const FORM_GUIDE_MODE = 'form-guide'
+/** On while the page's text is open in its reader buffer (#128, #168). */
+export const READER_MODE = 'reader'
+/** On while the page's requests go through the blocker (#126, #168). */
+export const BLOCKER_MODE = 'blocker'
 
 /** Chromium's zoom steps, as factors; Chromium's own menu walks the same list. */
 const ZOOM_FACTORS = [
@@ -282,6 +287,11 @@ export interface PageBuffersOptions<V extends PageView> {
   readonly keys?: (press: KeyPress, modes: readonly string[]) => boolean
   /** The blocker every page is attached to (#126). Absent, no page has blocker mode. */
   readonly blocker?: PageBlocker
+  /**
+   * The registered modes a new page starts in besides `document` (#168), from
+   * the config's `pageModes`. Absent, the kind's defaults (`blocker`).
+   */
+  readonly defaultModes?: () => readonly string[]
   /** Hears each page's `console-message` events (#138), kept in main; absent, none is kept. */
   readonly console?: (pageId: string, level: string, message: string) => void
 }
@@ -313,10 +323,6 @@ export interface PageCommands {
   zoom(by: 1 | -1): void
   /** The page's selection to the clipboard. */
   copy(): void
-  /** Puts `passthrough` in front of `document`, or takes it off. */
-  togglePassthrough(): void
-  /** Blocker mode off or on for the current page buffer (#126). */
-  toggleBlocker(): void
   /** The current page buffer's committed URL, its title and its partition (#125). */
   currentPage(): CurrentPage
 }
@@ -335,8 +341,6 @@ export const NO_PAGES: PageCommands = {
   find: noPages,
   zoom: noPages,
   copy: noPages,
-  togglePassthrough: noPages,
-  toggleBlocker: noPages,
   currentPage: noPages,
 }
 
@@ -363,8 +367,6 @@ interface Page<V extends PageView> {
   /** Every listener this module put on the contents, for destroy to take off. */
   readonly listeners: (readonly [string, (...args: never[]) => void])[]
   attached: boolean
-  /** The page's modes, first wins: `document`, with `passthrough` in front while on. */
-  modes: readonly string[]
   /** The text of the last find, so a repeat steps to the next match. */
   found: string
   /** The partition of #54 the page lives in; the history never records `ephemeral` (#125). */
@@ -463,6 +465,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     options.buffers.subscribe((list) => {
       const alive = new Set(list.buffers.map((buffer) => buffer.id))
       for (const id of [...this.pages.keys()]) if (!alive.has(id)) this.destroyPage(id)
+      for (const buffer of list.buffers) this.followBlocker(buffer)
       this.show()
     })
   }
@@ -517,30 +520,32 @@ export class PageBuffers<V extends PageView> implements PageCommands {
       title: spec.url === undefined ? 'Page' : hostOf(spec.url),
       elementId: PAGE_ELEMENT_ID,
     })
+    // The buffer's own mode list is the page's: the kind's defaults, or the config's (#168).
+    const modes = this.startModes()
     const page: Page<V> = {
       id: buffer.id,
       view,
       listeners: [],
       attached: false,
-      modes: [DOCUMENT_MODE],
       found: '',
       partition: partitionName,
-      blocker: this.options.blocker !== undefined,
+      blocker: modes.includes(BLOCKER_MODE),
       blocked: 0,
       pending: null,
     }
     this.pages.set(buffer.id, page)
-    this.options.buffers.update(buffer.id, {
-      modes: page.modes,
-      zoom: zoomPercent(contents.getZoomLevel()),
-      ...(page.blocker ? { blocker: true, blocked: 0 } : {}),
-    })
     const blocker = this.options.blocker
+    this.options.buffers.update(buffer.id, {
+      modes,
+      zoom: zoomPercent(contents.getZoomLevel()),
+      ...(blocker === undefined ? {} : { blocker: page.blocker, blocked: 0 }),
+    })
     if (blocker !== undefined) {
       blocker.attach(contents.id, {
         url: () => (contents.isDestroyed() ? '' : contents.getURL()),
         blocked: () => this.countBlocked(page),
       })
+      if (!page.blocker) blocker.enable(contents.id, false)
       blocker.start()
     }
     this.listen(page)
@@ -683,43 +688,23 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     this.current().view.webContents.copy()
   }
 
-  togglePassthrough(): void {
-    const page = this.current()
-    page.modes = page.modes.includes(PASSTHROUGH_MODE)
-      ? page.modes.filter((mode) => mode !== PASSTHROUGH_MODE)
-      : [PASSTHROUGH_MODE, ...page.modes]
-    this.options.buffers.update(page.id, { modes: page.modes })
-  }
-
-  toggleBlocker(): void {
-    const blocker = this.options.blocker
-    if (blocker === undefined) throw new CommandError('This window has no blocker')
-    const page = this.current()
-    page.blocker = !page.blocker
-    blocker.enable(page.view.webContents.id, page.blocker)
-    this.options.buffers.update(page.id, { blocker: page.blocker })
-  }
-
   /** Puts `hint` in front of a page's modes, or takes it off (#123). */
   setHintMode(id: string, on: boolean): void {
-    const page = this.pages.get(id)
-    if (page === undefined) return
-    const rest = page.modes.filter((mode) => mode !== HINT_MODE)
-    page.modes = on ? [HINT_MODE, ...rest] : rest
-    this.options.buffers.update(page.id, { modes: page.modes })
+    if (!this.pages.has(id)) return
+    const rest = this.modesOf(id).filter((mode) => mode !== HINT_MODE)
+    this.options.buffers.update(id, { modes: on ? [HINT_MODE, ...rest] : rest })
   }
 
   /**
    * Puts `form-guide` in the page's modes, behind `hint` while labels are up,
-   * or takes it off (#94).
+   * or takes it off (#94). The mode commands do the same through BufferModes,
+   * and the cockpit starts or stops the watch from the list (cockpit.ts).
    */
   setFormGuideMode(id: string, on: boolean): void {
-    const page = this.pages.get(id)
-    if (page === undefined) return
-    const rest = page.modes.filter((mode) => mode !== FORM_GUIDE_MODE)
+    if (!this.pages.has(id)) return
+    const rest = this.modesOf(id).filter((mode) => mode !== FORM_GUIDE_MODE)
     if (on) rest.splice(rest[0] === HINT_MODE ? 1 : 0, 0, FORM_GUIDE_MODE)
-    page.modes = rest
-    this.options.buffers.update(page.id, { modes: page.modes })
+    this.options.buffers.update(id, { modes: rest })
   }
 
   /**
@@ -828,7 +813,30 @@ export class PageBuffers<V extends PageView> implements PageCommands {
 
   /** The modes of a page buffer, first wins; empty for an id that holds no page. */
   modesOf(id: string): readonly string[] {
-    return this.pages.get(id)?.modes ?? []
+    return this.pages.has(id) ? (this.options.buffers.get(id)?.modes ?? []) : []
+  }
+
+  /** The modes a new page starts in: `document` always, the config's or the default's, deduplicated. */
+  private startModes(): readonly string[] {
+    const wanted = this.options.defaultModes?.() ?? DEFAULT_MODES['page'] ?? []
+    const names = [...new Set(wanted.filter((name) => name !== DOCUMENT_MODE))]
+    // `document` goes last, as the default list has it: what a mode binds wins.
+    const modes = [...names, DOCUMENT_MODE]
+    return this.options.blocker === undefined
+      ? modes.filter((name) => name !== BLOCKER_MODE)
+      : modes
+  }
+
+  /** Blocker mode in the page's modes is the blocker on for its contents; the list is the one truth (#168). */
+  private followBlocker(buffer: BufferInfo): void {
+    const blocker = this.options.blocker
+    const page = this.pages.get(buffer.id)
+    if (blocker === undefined || page === undefined) return
+    const on = (buffer.modes ?? []).includes(BLOCKER_MODE)
+    if (on === page.blocker) return
+    page.blocker = on
+    blocker.enable(page.view.webContents.id, on)
+    this.options.buffers.update(page.id, { blocker: on })
   }
 
   /** One more request the blocker cancelled for the page, into the buffer list. */

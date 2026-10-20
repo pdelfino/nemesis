@@ -143,7 +143,7 @@ test('labels go up over the links, out of reach of the page, and typing one foll
 
     await press(app, buffer.contentsId, 'f')
     await expect.poll(async () => (await targets(app, ids)).length).toBe(4)
-    expect(await modes(nemesis, ids)).toEqual(['hint', 'document'])
+    expect(await modes(nemesis, ids)).toEqual(['hint', 'blocker', 'document'])
     const labelled = await targets(app, ids)
     // The home row, one key each, in document order, each on a ref of the snapshot.
     expect(labelled.map((target) => [target.label, target.role])).toEqual([
@@ -197,7 +197,7 @@ test('labels go up over the links, out of reach of the page, and typing one foll
     // Typing `a` follows the first link, main's `a`, not the one the forgery covers.
     await press(app, buffer.contentsId, 'a')
     await expect.poll(() => buffer.page.url()).toBe(fixtures.secureUrl('semantic.html'))
-    await expect.poll(() => modes(nemesis, ids)).toEqual(['document'])
+    await expect.poll(() => modes(nemesis, ids)).toEqual(['blocker', 'document'])
     expect(await targets(app, ids)).toEqual([])
   } finally {
     await nemesis.close()
@@ -237,7 +237,7 @@ test('F labels the links and copies the URL of the one typed', async () => {
       .toBe(fixtures.secureUrl('injection.html'))
     // A copy follows nothing.
     expect(buffer.page.url()).toBe(url)
-    await expect.poll(() => modes(nemesis, ids)).toEqual(['document'])
+    await expect.poll(() => modes(nemesis, ids)).toEqual(['blocker', 'document'])
   } finally {
     await nemesis.close()
     await fixtures.close()
@@ -266,7 +266,7 @@ test('a label on a field focuses it; a stray key does nothing; C-g leaves', asyn
     await press(app, buffer.contentsId, 'f')
     await expect.poll(async () => (await targets(app, ids)).length).toBe(4)
     await press(app, buffer.contentsId, 'g', ['control'])
-    await expect.poll(() => modes(nemesis, ids)).toEqual(['document'])
+    await expect.poll(() => modes(nemesis, ids)).toEqual(['blocker', 'document'])
     expect(await targets(app, ids)).toEqual([])
     const first = (await drawn(app, ids))[0]
     expect(first).toBeUndefined()
@@ -278,10 +278,10 @@ test('a label on a field focuses it; a stray key does nothing; C-g leaves', asyn
     await press(app, buffer.contentsId, 'f')
     await expect.poll(async () => (await targets(app, ids)).length).toBe(4)
     await press(app, buffer.contentsId, 'z')
-    expect(await modes(nemesis, ids)).toEqual(['hint', 'document'])
+    expect(await modes(nemesis, ids)).toEqual(['hint', 'blocker', 'document'])
     await press(app, buffer.contentsId, 'd')
     await expect.poll(focused).toBe('field')
-    await expect.poll(() => modes(nemesis, ids)).toEqual(['document'])
+    await expect.poll(() => modes(nemesis, ids)).toEqual(['blocker', 'document'])
     expect(buffer.page.url()).toBe(url)
   } finally {
     await nemesis.close()

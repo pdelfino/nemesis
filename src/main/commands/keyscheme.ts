@@ -66,6 +66,7 @@ import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatc
 import {
   BASE_MODE,
   BufferModes,
+  DEFAULT_MODES,
   defineMode,
   modeCommands,
   ModeRegistry,
@@ -193,8 +194,6 @@ const NO_HINTS: HintCommands = {
  * other buffer.
  */
 export interface ReaderCommands {
-  /** Shows the current page's main text in its reader buffer. */
-  show(): Promise<void>
   /** Writes the text as an Org file under the sessions folder; the path written. */
   export(): Promise<string>
   /** The text inside wrapUntrusted's block, headed by the page's committed origin. */
@@ -202,21 +201,17 @@ export interface ReaderCommands {
 }
 
 const NO_READER: ReaderCommands = {
-  show: () => Promise.reject(new CommandError('No page buffers in this window')),
   export: () => Promise.reject(new CommandError('No page buffers in this window')),
   attachment: () => Promise.reject(new CommandError('No page buffers in this window')),
 }
 
 /** The form guide (#94), always about the current page buffer. */
 export interface FormGuideCommands {
-  /** Watching on, or off when it was on. */
-  toggle(): Promise<void>
   /** The shown suggestion typed into the focused field, when it is the field it names. */
   accept(): Promise<void>
 }
 
 const NO_FORM_GUIDE: FormGuideCommands = {
-  toggle: () => Promise.reject(new CommandError('No page buffers in this window')),
   accept: () => Promise.reject(new CommandError('No page buffers in this window')),
 }
 
@@ -1592,14 +1587,6 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
-      name: 'toggle-passthrough',
-      mcp: 'never',
-      doc: 'Send every key but C-z to the current page buffer, for a site with its own keys; C-z again gives them back.',
-      run: () => {
-        pages.togglePassthrough()
-      },
-    }),
-    defineCommand({
       name: 'follow-hint',
       mcp: 'never',
       doc: "Label the links, buttons and fields in the current page buffer's view; typing a label follows the link or focuses the field, C-g leaves.",
@@ -1641,17 +1628,6 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
-      name: 'reader-mode',
-      mcp: 'never',
-      doc: "Show the current page buffer's main text in a read-only reader buffer: title, headings, paragraphs, lists, links as numbered footnotes.",
-      run: () => {
-        // Text the page preload extracted, never the page's HTML (#128).
-        reader.show().catch((error: unknown) => {
-          help.show(`No reader view: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      },
-    }),
-    defineCommand({
       name: 'export-page-text',
       mcp: 'never',
       doc: "Write the current page's main text as an Org file under the sessions folder, headed by its origin and the time.",
@@ -1687,26 +1663,10 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
-      name: 'form-guide-mode',
-      mcp: 'never',
-      doc: 'Watch the form in the current page buffer and guide its filling, field by field, in a pane beside the page; again to stop. The guide never types, clicks or submits.',
-      // The form is read through the door, secrets masked in the page, and
-      // reaches the guide only as untrusted data from its origin (#94).
-      run: () => formGuide.toggle(),
-    }),
-    defineCommand({
       name: 'form-guide-accept',
       mcp: 'never',
       doc: "Type the form guide's shown suggestion into the focused field, when it is the field the suggestion names. Nothing is submitted.",
       run: () => formGuide.accept(),
-    }),
-    defineCommand({
-      name: 'toggle-blocker',
-      mcp: 'never',
-      doc: 'Turn blocker mode off for the current page buffer, so requests to listed hosts go through, or back on; reload to fetch what was blocked.',
-      run: () => {
-        pages.toggleBlocker()
-      },
     }),
     defineCommand({
       name: 'kill-buffer',
@@ -2141,14 +2101,46 @@ export const COCKPIT_MODES: readonly Mode[] = [
     toggler: false,
     kinds: ['spec'],
   }),
+  // The page toggles (#168), each keeping its command name as its toggler.
+  // The reader's text is what the page preload extracted, never the page's HTML (#128).
+  defineMode({
+    name: 'reader',
+    doc: "The page's main text in a read-only reader buffer: title, headings, paragraphs, lists, links as numbered footnotes.",
+    command: 'reader-mode',
+    kinds: ['page'],
+  }),
+  defineMode({
+    name: 'blocker',
+    doc: 'Cancel requests to listed hosts; off lets them through, reload to fetch what was blocked.',
+    // The page state of the mode line says it: the count blocked, or `blocker off`.
+    visible: false,
+    kinds: ['page'],
+  }),
+  // Sealed: its only key is its own exit, every other key is the page's (#120).
+  defineMode({
+    name: PASSTHROUGH_MODE,
+    doc: 'Send every key but C-z to the page, for a site with its own keys; C-z again gives them back.',
+    keymap: { 'C-z': 'toggle-passthrough' },
+    sealed: true,
+    // The page state of the mode line says `passthrough`.
+    visible: false,
+    kinds: ['page'],
+  }),
+  // The form is read through the door, secrets masked in the page, and
+  // reaches the guide only as untrusted data from its origin (#94).
+  defineMode({
+    name: FORM_GUIDE_MODE,
+    doc: 'Watch the form in the page and guide its filling, field by field, in a pane beside it. The guide never types, clicks or submits.',
+    keymap: { 'C-c C-y': 'form-guide-accept' },
+    command: 'form-guide-mode',
+    kinds: ['page'],
+  }),
 ]
 
 /** The app's modes: the cockpit's, then the config file's (#166). */
 export function createModeRegistry(): ModeRegistry {
-  // The page buffer's modes keep their names until #168 makes them registered modes.
-  const registry = new ModeRegistry(
-    new Set([DOCUMENT_MODE, HINT_MODE, FORM_GUIDE_MODE, PASSTHROUGH_MODE]),
-  )
+  // `document` and `hint` stay the page buffer's own, the others are registered above.
+  const registry = new ModeRegistry(new Set([DOCUMENT_MODE, HINT_MODE]))
   for (const mode of COCKPIT_MODES) registry.register(mode)
   return registry
 }
@@ -2207,7 +2199,10 @@ function defaultModeKeymaps(): BufferKeymaps {
   const layers: Partial<Record<BufferType, Keymap>> = {}
   for (const mode of COCKPIT_MODES) {
     const kind = mode.kinds?.length === 1 ? mode.kinds[0] : undefined
-    if (kind !== undefined && mode.layer !== null) layers[kind] = mode.layer
+    // Only a kind's default mode is its layer: the page toggles (#168) are not.
+    if (kind !== undefined && mode.layer !== null && DEFAULT_MODES[kind]?.includes(mode.name)) {
+      layers[kind] = mode.layer
+    }
   }
   return layers
 }
@@ -2220,9 +2215,8 @@ export const BUFFER_KEYMAPS: BufferKeymaps = { ...KIND_KEYMAPS, ...defaultModeKe
  * map and the global one. `document` is on in every page buffer and stays
  * small, as Nyxt keeps its own: what it does not bind, `C-x`, `C-c` and
  * `M-x` chords and `C-g` among them, falls through to the cockpit's maps,
- * and what no layer binds goes to the page. `passthrough` is sealed: its
- * only key is its own exit, and every other key, `C-g` included, is the
- * page's while it is on.
+ * and what no layer binds goes to the page. The other page modes are
+ * registered ones (COCKPIT_MODES); `passthrough` is sealed there.
  */
 export const MODE_KEYMAPS: ModeKeymaps = {
   [DOCUMENT_MODE]: {
@@ -2251,19 +2245,6 @@ export const MODE_KEYMAPS: ModeKeymaps = {
     keymap: defineKeymap(HINT_MODE, {
       ...Object.fromEntries([...HINT_CHARACTERS].map((key) => [key, 'type-hint-key'])),
       'C-g': 'quit-hints',
-    }),
-    sealed: true,
-  },
-  // The form guide (#94): while it watches, its one key types the shown
-  // suggestion into the focused field, Emacs's yank on the C-c prefix.
-  [FORM_GUIDE_MODE]: {
-    keymap: defineKeymap(FORM_GUIDE_MODE, {
-      'C-c C-y': 'form-guide-accept',
-    }),
-  },
-  [PASSTHROUGH_MODE]: {
-    keymap: defineKeymap(PASSTHROUGH_MODE, {
-      'C-z': 'toggle-passthrough',
     }),
     sealed: true,
   },

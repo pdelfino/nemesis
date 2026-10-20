@@ -20,6 +20,8 @@ interface BufferInfo {
   readonly kind: string
   readonly title: string
   readonly url?: string
+  readonly modes?: readonly string[]
+  readonly blocker?: boolean
 }
 
 interface TestWindow {
@@ -197,6 +199,65 @@ test('C-x C-f opens a page buffer; title, URL, back, forward and kill follow it'
     await expect.poll(() => attachedViews(app)).toEqual([])
     await expect.poll(() => liveContents(app)).not.toContain(second)
     await expect(window.locator('#page')).toBeHidden()
+  } finally {
+    await app.close()
+    await fixtures.close()
+  }
+})
+
+test('disable-mode over two marked page buffers turns the blocker off in both (#168)', async () => {
+  const fixtures = await fixtureServer()
+  const app = await launchNemesis()
+  try {
+    const window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+    // The first page in a buffer of its own, the second in a new one.
+    for (const [command, name] of [
+      ['open-url', 'node-probe.html'],
+      ['open-url-in-new-buffer', 'window-open.html'],
+    ] as const) {
+      await window.keyboard.press('Alt+x')
+      await expect(window.locator('#palette-input .cm-content')).toBeFocused()
+      await window.keyboard.type(command)
+      await window.keyboard.press('Enter')
+      await expect(window.locator('#palette-prompt')).toContainText('URL')
+      await expect(window.locator('#palette-input .cm-content')).toBeFocused()
+      await window.keyboard.type(fixtures.url(name))
+      await window.keyboard.press('Enter')
+      await expect.poll(async () => (await current(window))?.url).toBe(fixtures.url(name))
+    }
+    const pageBuffers = async () =>
+      window.evaluate(async () => {
+        const list = await (globalThis as unknown as TestWindow).nemesis.buffers()
+        return list.buffers.filter((buffer) => buffer.kind === 'page')
+      })
+    await expect.poll(async () => (await pageBuffers()).length).toBe(2)
+    // The blocker is a mode, on by default in a page buffer.
+    expect((await pageBuffers()).map((buffer) => buffer.modes)).toEqual([
+      ['blocker', 'document'],
+      ['blocker', 'document'],
+    ])
+
+    await window.keyboard.press('Alt+x')
+    await window.keyboard.type('disable-mode')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('#palette-prompt')).toHaveText('In buffer:')
+    // Mark the two pages, then read the mode.
+    await window.keyboard.type('e')
+    await window.keyboard.press('Alt+a')
+    await expect(window.locator('#palette-prompt')).toHaveText('In buffer: ●2')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('#palette-prompt')).toHaveText('Disable mode:')
+    await window.keyboard.type('blocker')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('#palette')).toBeHidden()
+
+    await expect
+      .poll(async () => (await pageBuffers()).map((buffer) => buffer.modes))
+      .toEqual([['document'], ['document']])
+    // The current page's mode line says it, and the buffer list says it of both.
+    await expect(window.locator('#modeline #page-state')).toHaveText('blocker off')
+    expect((await pageBuffers()).map((buffer) => buffer.blocker)).toEqual([false, false])
   } finally {
     await app.close()
     await fixtures.close()
