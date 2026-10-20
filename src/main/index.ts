@@ -888,6 +888,13 @@ void app.whenReady().then(() => {
       if (cockpit === undefined) throw new CommandError('That window is closed')
       cockpit.window.close()
     },
+    // send-to-session (#159): appended to the other window's draft, never
+    // sent, and that window is not focused.
+    insertPrompt: (windowId, text) => {
+      const cockpit = cockpits.get(windowId)
+      if (cockpit === undefined) throw new CommandError('That window is closed')
+      cockpit.prompts.insert(text)
+    },
     // The renderer reports the page section's new rectangle on the window's
     // resize, so the page view follows full-screen in and out (#32).
     toggleFullScreen: () => {

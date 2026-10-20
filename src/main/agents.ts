@@ -270,6 +270,11 @@ export class AgentsBuffers {
     return this.bufferId === null ? null : (this.buffers.get(this.bufferId) ?? null)
   }
 
+  /** The id of the window this buffer lives in. */
+  get here(): number {
+    return this.options.here
+  }
+
   /** Every window's session, in window order. */
   lines(): readonly AgentLine[] {
     return this.options.source.list()

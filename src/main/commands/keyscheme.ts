@@ -20,6 +20,7 @@ import type { BufferInfo } from '../../shared/buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
 import { AgentsBuffers } from '../agents'
+import { quoteFromSession, quoteSource, RecentReplies, replyLabel } from '../replies'
 import { EnvironmentBuffers } from '../environment'
 import { UrlFetcher, type FetchedPage } from '../fetch-url'
 import { WorkingFiles } from '../files'
@@ -250,6 +251,8 @@ export interface CockpitDeps {
   readonly environment: EnvironmentBuffers
   /** Every window's session and its state, as one buffer (#157). */
   readonly agents: AgentsBuffers
+  /** The session's last replies, which send-to-session quotes in another window (#159). */
+  readonly replies: RecentReplies
   /** Eval in the config scope, the `*repl*` buffer and the journal (#72). */
   readonly repl: Repl
   /** The other windows, as `new-window` opens one and the palette lists their buffers (#70). */
@@ -326,6 +329,8 @@ export interface CockpitWindows {
   openBackground(prompt: string): string
   /** Closes a window, which stops its session (#158). */
   close(windowId: number): void
+  /** Appends text to another window's prompt buffer, unsent (#159). */
+  insertPrompt(windowId: number, text: string): void
 }
 
 /** Without the app there is one window and no way to open another. */
@@ -353,6 +358,9 @@ const ONE_WINDOW: CockpitWindows = {
     throw new CommandError('No window opener is installed')
   },
   close: () => {
+    throw new CommandError('There is no other window')
+  },
+  insertPrompt: () => {
     throw new CommandError('There is no other window')
   },
 }
@@ -460,6 +468,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         },
         tickMs: 0,
       }),
+    replies: partial.replies ?? new RecentReplies(),
     // Without the app there is no config scope: every form is refused.
     repl: partial.repl ?? new Repl(buffers),
     windows: partial.windows ?? ONE_WINDOW,
@@ -517,6 +526,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     formGuide,
     environment,
     agents,
+    replies,
     repl,
     windows,
     cwd,
@@ -1122,6 +1132,39 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'send-to-session',
+      doc: "Quote one of this session's recent replies in another session's prompt buffer, labeled with where it came from; it is not sent.",
+      run: () => {
+        const here = agents.lines().find((line) => line.windowId === agents.here)
+        const others = agents.lines().filter((line) => line.windowId !== agents.here)
+        if (others.length === 0) {
+          help.show('No other session to send to: open one with C-x 5 2 or new-background-session.')
+          return
+        }
+        const recent = replies.list()
+        if (recent.length === 0) {
+          help.show('No reply to send yet: this session has not finished a turn.')
+          return
+        }
+        prompter.read({ source: 'session-replies', prompt: 'Send which reply:' }, (index) => {
+          const reply = recent[Number(index)]
+          if (reply === undefined) return
+          prompter.read({ source: 'other-sessions', prompt: 'Send to session:' }, (id) => {
+            const target = others.find((line) => String(line.windowId) === id)
+            if (target === undefined) throw new CommandError('That window is closed')
+            const source = quoteSource(
+              here?.windowName ?? 'this window',
+              here?.session ?? 'Nemesis',
+            )
+            windows.insertPrompt(target.windowId, quoteFromSession(source, reply.text))
+            replies.notice(
+              `Sent a reply to the prompt of ${target.windowName}, session ${target.session}; it waits there unsent.`,
+            )
+          })
+        })
+      },
+    }),
+    defineCommand({
       name: 'edit-claude-md',
       doc: "Open the nearest CLAUDE.md with the default application, after a yes, with the guide's reminder to keep it short.",
       run: () => {
@@ -1694,6 +1737,7 @@ export function cockpitSources(
   urls: UrlSources,
   stores: PageStores | null = null,
   agents: AgentsBuffers | null = null,
+  replies: RecentReplies | null = null,
 ): readonly PaletteSource[] {
   return [
     {
@@ -1845,6 +1889,26 @@ export function cockpitSources(
     {
       name: 'background-prompt',
       candidates: () => [],
+    },
+    {
+      name: 'session-replies',
+      candidates: () =>
+        (replies?.list() ?? []).map((reply, index) => ({
+          id: String(index),
+          label: replyLabel(reply),
+          doc: `${reply.text.split('\n').length} lines`,
+        })),
+    },
+    {
+      name: 'other-sessions',
+      candidates: () =>
+        (agents?.lines() ?? [])
+          .filter((line) => line.windowId !== agents?.here)
+          .map((line) => ({
+            id: String(line.windowId),
+            label: `${line.windowName}: ${line.session}`,
+            doc: `${line.state}, ${line.cwd}`,
+          })),
     },
     {
       name: 'background-sessions',
@@ -2142,6 +2206,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.urls,
     deps.stores,
     deps.agents,
+    deps.replies,
   )) {
     deps.prompter.addSource(source)
   }

@@ -546,6 +546,7 @@ describe('share-page (#34)', () => {
       openShareMenu,
       openBackground: vi.fn(),
       close: vi.fn(),
+      insertPrompt: vi.fn(),
     }
     const pages = { ...NO_PAGES, currentPage: () => page }
     const deps = resolveCockpitDeps({ windows, pages })

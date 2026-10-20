@@ -8,6 +8,7 @@ import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import type { AgentEvent } from './agent/events'
 import { AgentsBuffers, AgentStatus, type AgentsSource } from './agents'
+import { RecentReplies } from './replies'
 import { SessionManager } from './agent/session-manager'
 import { installBufferBridge, installPageBridge } from './buffer-bridge'
 import { createCockpitBuffers, type BufferRegistry } from './buffers'
@@ -320,6 +321,10 @@ export function createCockpit(
     switchTo: (windowId, bufferId) => shared.windows.switchTo(windowId, bufferId),
   })
   onDestroyed(() => agents.dispose())
+  // The session's last replies, for send-to-session to quote in another
+  // window's prompt (#159); its notice says where one went.
+  const replies = new RecentReplies()
+  agent.on((event) => replies.observe(event))
   // The environment of the working directory as one buffer (#86): the
   // CLAUDE.md files, rules, hooks, skills, servers and subagents off disk
   // and off the session's init frame. A listed file opens through the same
@@ -525,6 +530,7 @@ export function createCockpit(
     screenshots,
     fetcher,
     environment,
+    replies,
     repl,
     reviews,
     worktrees,
@@ -703,6 +709,7 @@ export function createCockpit(
     fetcher,
     environment,
     agents,
+    replies,
     repl,
     windows: shared.windows,
     cwd,
