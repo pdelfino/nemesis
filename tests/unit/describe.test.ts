@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { HelpBuffers } from '../../src/main/help'
-import { describeCommand, describeKey } from '../../src/main/commands/describe'
+import { bindingsText, describeCommand, describeKey } from '../../src/main/commands/describe'
 import {
   cockpitKeymapLayers,
   createCockpitRegistry,
@@ -60,5 +60,17 @@ describe('the help buffer', () => {
     const third = help.show('three')
     expect(third.id).not.toBe(first.id)
     expect(shown).toHaveBeenLastCalledWith({ bufferId: third.id, text: 'three' })
+  })
+})
+
+describe('describe-bindings', () => {
+  it('lists the global bindings, then the buffer layer', () => {
+    const registry = createCockpitRegistry()
+    const text = bindingsText(cockpitKeymapLayers(), registry, 'permission')
+    expect(text).toContain('C-x b  switch-buffer  Switch to the next buffer.')
+    expect(text).toContain('permission bindings')
+    expect(text.indexOf('C-x b  switch-buffer')).toBeLessThan(text.indexOf('permission bindings'))
+    expect(text.indexOf('permission bindings')).toBeLessThan(text.indexOf('y  answer-yes'))
+    expect(text).not.toContain('transcript bindings')
   })
 })

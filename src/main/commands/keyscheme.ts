@@ -58,7 +58,7 @@ import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
 import { Worktrees, type Worktree } from '../worktrees'
 import type { KeymapLayer } from './describe'
-import { bindingNote, describeCommand, describeKey } from './describe'
+import { bindingNote, bindingsText, describeCommand, describeKey } from './describe'
 import type { BufferType } from '../../shared/keys'
 import type { BufferKeymaps, Keymap, ModeKeymaps } from './keymap'
 import { defineKeymap, isShadowed, KeyResolver } from './keymap'
@@ -589,6 +589,15 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
           .read()
           .then((reading) => help.show(describeKey(registry, reading)))
           .catch(report('describe-key'))
+      },
+    }),
+    defineCommand({
+      name: 'describe-bindings',
+      mcp: 'free',
+      doc: 'List every key binding in force for this buffer, with its command.',
+      run: () => {
+        const kind = buffers.current?.kind ?? null
+        help.show(bindingsText(cockpitKeymapLayers(), registry, kind as BufferType | null))
       },
     }),
     defineCommand({
@@ -2061,6 +2070,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
+  'C-h b': 'describe-bindings',
 })
 
 /** Per-buffer-type bindings. They are consulted before the global map. */

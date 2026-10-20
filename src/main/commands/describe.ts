@@ -60,6 +60,33 @@ export function describeCommand(
   return lines.join('\n')
 }
 
+/**
+ * Every binding in force for a buffer of `bufferType` (describe-bindings): the
+ * global layers first, then that buffer type's, each as chord, command and the
+ * command's doc line. Without a type, every layer is listed.
+ */
+export function bindingsText(
+  layers: readonly KeymapLayer[],
+  registry: CommandRegistry,
+  bufferType?: BufferType | null,
+): string {
+  const applies = (layer: KeymapLayer): boolean =>
+    bufferType === undefined || layer.bufferType === null || layer.bufferType === bufferType
+  const ordered = [
+    ...layers.filter((layer) => applies(layer) && layer.bufferType === null),
+    ...layers.filter((layer) => applies(layer) && layer.bufferType !== null),
+  ]
+  const sections = ordered.map((layer) => {
+    const title = layer.bufferType === null ? 'Global bindings' : `${layer.bufferType} bindings`
+    const rows = layer.keymap.entries().map(({ chord, command }) => {
+      const doc = registry.get(command)?.doc ?? ''
+      return `${chord}  ${command}${doc === '' ? '' : `  ${doc}`}`
+    })
+    return [title, ...rows].join('\n')
+  })
+  return sections.join('\n\n')
+}
+
 export function describeKey(registry: CommandRegistry, reading: KeyReading): string {
   const where = reading.bufferType === null ? '' : ` in a ${reading.bufferType} buffer`
   if (reading.command === null) return `${reading.chord} is not bound${where}.`
