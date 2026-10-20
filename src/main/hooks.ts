@@ -19,6 +19,12 @@ import type { HelpBuffers } from './help'
  * command on the first veto, and a timeout there is a veto. A point fired
  * from inside one of its own handlers runs nothing and leaves a notice.
  *
+ * `before-load` (#179, the ADR 0005 amendment) is the page point: an
+ * interceptor answered synchronously through `dispatch`, since a page's own
+ * `will-navigate` must be answered before the event returns. Its handlers may
+ * block a load or rewrite its URL; the page buffer then puts the answer
+ * through the same navigation policy as any URL, so a handler never widens it.
+ *
  * This module takes types alone from src/main/agent/ and nothing from
  * src/main/security/ or src/preload/, and no IPC channel carries a hook, so
  * no handler reaches the permission path (tests/unit/hooks.test.ts pins it).
@@ -56,9 +62,23 @@ export interface HookEvents {
     readonly numTurns: number
   }
   readonly 'before-quit': Record<string, never>
+  /**
+   * A top-frame load of a page buffer, only of a URL the page policy takes
+   * (http: and https:). `from` is `cockpit` for a load the cockpit starts
+   * (open-url, a bookmark, a restored page) and `page` for a link or a script
+   * of the page; `bufferId` is null when the buffer is not made yet.
+   */
+  readonly 'before-load': {
+    readonly url: string
+    readonly bufferId: string | null
+    readonly from: 'cockpit' | 'page'
+  }
 }
 
 export type HookPoint = keyof HookEvents
+
+/** The points `fire` runs; `before-load` is `dispatch`'s alone. */
+export type AsyncHookPoint = Exclude<HookPoint, 'before-load'>
 
 /** An interceptor's answer. An observer's return value is ignored. */
 export interface Veto {
@@ -66,7 +86,12 @@ export interface Veto {
   readonly reason: string
 }
 
-export type HookResult = Veto | void | undefined
+/** A `before-load` answer: load this URL instead, under the same policy. */
+export interface Rewrite {
+  readonly rewrite: string
+}
+
+export type HookResult = Veto | Rewrite | void | undefined
 
 export interface HookHandler<P extends HookPoint> {
   /** Kebab-case, the same rule as a command name; the key for off and list-hooks. */
@@ -83,6 +108,8 @@ export interface HookPointSpec {
   readonly kind: 'observer' | 'interceptor'
   /** Per handler. Past it, an observer is abandoned and an interceptor vetoes. */
   readonly timeoutMs: number
+  /** Answered before the fire site returns, so no timeout applies (`before-load`). */
+  readonly synchronous?: true
 }
 
 const OBSERVER: HookPointSpec = { kind: 'observer', timeoutMs: 2000 }
@@ -97,6 +124,7 @@ export const HOOK_POINTS: Readonly<Record<HookPoint, HookPointSpec>> = {
   'session-started': OBSERVER,
   'turn-ended': OBSERVER,
   'before-quit': OBSERVER,
+  'before-load': { kind: 'interceptor', timeoutMs: 0, synchronous: true },
 }
 
 export interface HookListing {
@@ -218,7 +246,7 @@ export class HookRegistry {
    * handler is called before fire returns, so a synchronous handler of a
    * synchronous fire site has run when the site goes on.
    */
-  async fire<P extends HookPoint>(point: P, event: HookEvents[P]): Promise<Veto | null> {
+  async fire<P extends AsyncHookPoint>(point: P, event: HookEvents[P]): Promise<Veto | null> {
     const inside = this.running.getStore() ?? new Set<HookPoint>()
     if (inside.has(point)) {
       this.notify(`Hook ${point}: fired while its handlers were running; skipped.`)
@@ -244,6 +272,51 @@ export class HookRegistry {
       if (spec.kind === 'interceptor' && isVeto(result)) {
         this.notify(`${label} refused it: ${result.reason}`)
         return result
+      }
+    }
+    return null
+  }
+
+  /**
+   * The `before-load` fire point, synchronous: handlers oldest first, and the
+   * first veto (a block) or rewrite ends the chain and is returned; null is
+   * no change. A throw, a rewrite that is not a string, or an answer that is
+   * a promise is a notice and no change. A rewrite is not run through the
+   * handlers again, so two rules cannot send a load back and forth.
+   */
+  dispatch(event: HookEvents['before-load']): Veto | Rewrite | null {
+    const point = 'before-load'
+    const inside = this.running.getStore() ?? new Set<HookPoint>()
+    if (inside.has(point)) {
+      this.notify(`Hook ${point}: fired while its handlers were running; skipped.`)
+      return null
+    }
+    const context: ReadonlySet<HookPoint> = new Set([...inside, point])
+    for (const { source, handler } of [...(this.handlers.get(point) ?? [])]) {
+      const label = `Hook ${point}: handler ${handler.name} (${source})`
+      let result: HookResult | Promise<HookResult>
+      try {
+        result = this.running.run(context, () => handler.run(event, new AbortController().signal))
+      } catch (error) {
+        this.notify(`${label} failed: ${messageOf(error)}`)
+        continue
+      }
+      if (isThenable(result)) {
+        // Settled and dropped: a load cannot wait, and a late rejection is not unhandled.
+        Promise.resolve(result).catch(() => undefined)
+        this.notify(`${label} answered with a promise; a before-load handler answers at once.`)
+        continue
+      }
+      if (isVeto(result)) {
+        this.notify(`${label} blocked a load: ${result.reason}`)
+        return result
+      }
+      if (isRewrite(result)) {
+        if (typeof result.rewrite !== 'string') {
+          this.notify(`${label} failed: a rewrite is a URL string`)
+          continue
+        }
+        return { rewrite: result.rewrite }
       }
     }
     return null
@@ -280,7 +353,19 @@ export class HookRegistry {
 }
 
 function isVeto(result: HookResult): result is Veto {
-  return typeof result === 'object' && result !== null && result.veto === true
+  return typeof result === 'object' && result !== null && 'veto' in result && result.veto === true
+}
+
+function isRewrite(result: HookResult): result is Rewrite {
+  return typeof result === 'object' && result !== null && 'rewrite' in result
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === 'function'
+  )
 }
 
 function messageOf(error: unknown): string {

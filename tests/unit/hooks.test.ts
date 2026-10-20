@@ -14,6 +14,7 @@ import {
   type HookHandler,
   type HookPoint,
 } from '../../src/main/hooks'
+import { PageBuffers, type PageView } from '../../src/main/page-buffer'
 import { defaultSettings } from '../../src/main/settings'
 
 // The hooks of ADR 0005 (#165): one order, oldest first; named handlers,
@@ -449,6 +450,189 @@ nemesis.on('before-command', {
     expect(
       await h.hooks.fire('before-command', { command: 'kill-buffer', context: { source: 'key' } }),
     ).toEqual({ veto: true, reason: 'kept' })
+  })
+
+  it('dispatchUrl rewrites and blocks at before-load, answering at once (#179)', () => {
+    const h = harness()
+    h.write(`nemesis.dispatchUrl({
+  match: /^https:\\/\\/www\\.reddit\\.com\\//g,
+  rewrite: (url: string) => url.replace('://www.reddit.com/', '://old.reddit.com/'),
+})
+nemesis.dispatchUrl({ name: 'no-tracker', match: /tracker\\.test/, block: 'a tracker' })
+`)
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    expect(h.hooks.list()).toEqual([
+      {
+        point: 'before-load',
+        name: 'dispatch-url-1',
+        doc: 'Rewrites page loads matching /^https:\\/\\/www\\.reddit\\.com\\//.',
+        source: 'config',
+      },
+      {
+        point: 'before-load',
+        name: 'no-tracker',
+        doc: 'Blocks page loads matching /tracker\\.test/.',
+        source: 'config',
+      },
+    ])
+    const load = (url: string) => h.hooks.dispatch({ url, bufferId: null, from: 'page' })
+    // The g flag is dropped, so the same URL matches twice running.
+    expect(load('https://www.reddit.com/r/emacs')).toEqual({
+      rewrite: 'https://old.reddit.com/r/emacs',
+    })
+    expect(load('https://www.reddit.com/r/emacs')).toEqual({
+      rewrite: 'https://old.reddit.com/r/emacs',
+    })
+    expect(load('https://tracker.test/pixel')).toEqual({ veto: true, reason: 'a tracker' })
+    expect(load('https://example.test/')).toBeNull()
+    expect(h.notices).toEqual([
+      'Hook before-load: handler no-tracker (config) blocked a load: a tracker',
+    ])
+  })
+
+  it('refuses a dispatchUrl without a regular expression or with both answers', () => {
+    const h = harness()
+    h.write(`nemesis.dispatchUrl({ match: 'reddit.com', block: true })\n`)
+    expect(h.loader.reload(h.target)).toMatchObject({
+      ok: false,
+      problem: { line: 1, message: 'HookError: dispatchUrl: match is a regular expression' },
+    })
+    h.write(`nemesis.dispatchUrl({ match: /a/, block: true, rewrite: (u: string) => u })\n`)
+    expect(h.loader.reload(h.target)).toMatchObject({
+      ok: false,
+      problem: { line: 1, message: 'HookError: dispatchUrl takes one of rewrite or block' },
+    })
+  })
+
+  it("takes an on('before-load') rewrite from the file, and reports an async one as no change", async () => {
+    const h = harness()
+    h.write(`nemesis.on('before-load', {
+  name: 'to-example',
+  doc: 'Sends a.test to example.test.',
+  run(event: { url: string }) {
+    return event.url.includes('a.test') ? { rewrite: 'https://example.test/' } : undefined
+  },
+})
+nemesis.on('before-load', {
+  name: 'too-slow',
+  doc: 'Answers with a promise.',
+  async run() {
+    return { veto: true, reason: 'late' }
+  },
+})
+`)
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    const load = (url: string) => h.hooks.dispatch({ url, bufferId: 'b1', from: 'cockpit' })
+    expect(load('https://a.test/')).toEqual({ rewrite: 'https://example.test/' })
+    expect(load('https://b.test/')).toBeNull()
+    await Promise.resolve()
+    expect(h.notices).toEqual([
+      'Hook before-load: handler too-slow (config) answered with a promise; a before-load handler answers at once.',
+    ])
+  })
+})
+
+describe('before-load, the page point (#179, ADR 0005 amendment)', () => {
+  it('is a synchronous interceptor: first block or rewrite wins, a throw is no change', () => {
+    const { hooks, notices } = registry()
+    const ran: string[] = []
+    hooks.on(
+      'before-load',
+      handler('breaks', () => {
+        ran.push('breaks')
+        throw new Error('boom')
+      }),
+      'config',
+    )
+    hooks.on(
+      'before-load',
+      handler('not-a-url', (e) => {
+        ran.push('not-a-url')
+        return e.url.includes('odd')
+          ? ({ rewrite: 7 } as unknown as { rewrite: string })
+          : undefined
+      }),
+      'config',
+    )
+    hooks.on(
+      'before-load',
+      handler('rewrite', (e) => {
+        ran.push('rewrite')
+        return e.url.includes('www.') ? { rewrite: e.url.replace('www.', 'old.') } : undefined
+      }),
+      'config',
+    )
+    hooks.on(
+      'before-load',
+      handler('block', (e) => {
+        ran.push('block')
+        return e.url.includes('ads') ? { veto: true, reason: 'ads' } : undefined
+      }),
+      'config',
+    )
+    const event = { bufferId: 'b1', from: 'page' } as const
+    expect(hooks.dispatch({ ...event, url: 'https://www.reddit.com/' })).toEqual({
+      rewrite: 'https://old.reddit.com/',
+    })
+    expect(ran).toEqual(['breaks', 'not-a-url', 'rewrite'])
+    expect(hooks.dispatch({ ...event, url: 'https://ads.test/' })).toEqual({
+      veto: true,
+      reason: 'ads',
+    })
+    expect(hooks.dispatch({ ...event, url: 'https://odd.test/' })).toBeNull()
+    expect(notices).toEqual([
+      'Hook before-load: handler breaks (config) failed: boom',
+      'Hook before-load: handler breaks (config) failed: boom',
+      'Hook before-load: handler block (config) blocked a load: ads',
+      'Hook before-load: handler breaks (config) failed: boom',
+      'Hook before-load: handler not-a-url (config) failed: a rewrite is a URL string',
+    ])
+    expect(renderHooks(hooks.list())).toContain('before-load (interceptor)')
+  })
+
+  it('a rewrite loads the target, a block loads nothing, and a rewrite the policy refuses is refused', async () => {
+    const { hooks } = registry()
+    hooks.on(
+      'before-load',
+      handler('dispatch', (e) => {
+        if (e.url.includes('www.reddit.com')) return { rewrite: 'https://old.reddit.com/' }
+        if (e.url.includes('tracker')) return { veto: true, reason: 'tracker' }
+        if (e.url.includes('escape')) return { rewrite: 'file:///etc/passwd' }
+        return undefined
+      }),
+      'config',
+    )
+    const loads: string[] = []
+    const notices: string[] = []
+    const buffers = new BufferRegistry()
+    const contents = {
+      id: 1,
+      on: () => contents,
+      getZoomLevel: () => 0,
+      getURL: () => '',
+      loadURL: (url: string) => {
+        loads.push(url)
+        return Promise.resolve()
+      },
+    }
+    const pages = new PageBuffers<PageView>({
+      buffers,
+      createView: () => ({ webContents: contents, setBounds: () => {} }) as unknown as PageView,
+      host: { addChildView: () => {}, removeChildView: () => {}, focusCockpit: () => {} },
+      policies: { navigation: () => {}, transport: () => {}, permissions: () => {} },
+      hooks,
+    })
+    pages.on((event) => {
+      if (event.type === 'notice') notices.push(event.text)
+    })
+    const page = pages.createPage()
+    expect(await pages.load(page.id, 'https://www.reddit.com/r/emacs')).toBeNull()
+    expect(await pages.load(page.id, 'https://tracker.test/')).toBe('blocked')
+    expect(await pages.load(page.id, 'https://escape.test/')).toBe('refused')
+    expect(loads).toEqual(['https://old.reddit.com/'])
+    expect(notices).toEqual([
+      'Not opened: file: is not a page URL; a page buffer opens http: and https: only (SECURITY.org, T3)',
+    ])
   })
 })
 

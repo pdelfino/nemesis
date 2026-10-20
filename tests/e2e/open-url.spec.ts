@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, test, type Page } from './_test'
 import { launchApp } from './_launch'
 import { fixtureServer } from './security/_harness'
@@ -120,6 +123,38 @@ test('open-url opens a typed URL, searches on a keyword, opens a new buffer, ref
       .toMatchObject({ kind: 'page', title: 'window open', url: second })
     const { pages } = await buffers(window)
     expect(pages.map((page) => page.url)).toEqual([searched, second])
+  } finally {
+    await app.close()
+    await fixtures.close()
+  }
+})
+
+// URL dispatch from the config (#179): a dispatchUrl rule rewrites a fixture
+// URL typed at open-url, and the page buffer loads the rule's target, as the
+// old-reddit example of docs/config.org does for reddit.com.
+test('a dispatchUrl rule rewrites the URL open-url loads', async () => {
+  const fixtures = await fixtureServer()
+  const dir = mkdtempSync(join(tmpdir(), 'nemesis-e2e-dispatch-'))
+  writeFileSync(
+    join(dir, 'init.ts'),
+    `nemesis.dispatchUrl({
+  name: 'headings-to-probe',
+  match: /\\/headings\\.html$/,
+  rewrite: (url: string) => url.replace(/headings\\.html$/, 'node-probe.html'),
+})
+`,
+  )
+  const { app } = await launchApp('nemesis-open-url-', [], {}, { NEMESIS_CONFIG_DIR: dir })
+  try {
+    const window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+
+    await run(window, 'open-url')
+    await answer(window, 'Open URL:', fixtures.url('headings.html'))
+    await expect
+      .poll(async () => (await buffers(window)).current)
+      .toMatchObject({ kind: 'page', title: 'node probe', url: fixtures.url('node-probe.html') })
+    expect((await buffers(window)).pages).toHaveLength(1)
   } finally {
     await app.close()
     await fixtures.close()

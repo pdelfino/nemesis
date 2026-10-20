@@ -2,8 +2,8 @@ import type { Command } from '../commands/registry'
 import { CommandError, defineCommand } from '../commands/registry'
 import type { Keymap } from '../commands/keymap'
 import { defineKeymap, KeymapError, normalizeChord } from '../commands/keymap'
-import type { HookHandler, HookPoint } from '../hooks'
-import { checkHandler, checkPointAndName, HookError } from '../hooks'
+import type { HookHandler, HookPoint, HookResult } from '../hooks'
+import { checkHandler, checkPointAndName, HOOK_POINTS, HookError } from '../hooks'
 import type { Mode, ModeHook } from '../commands/modes'
 import { defineMode, ModeError, togglerName } from '../commands/modes'
 import type { NotifyToggles, Settings } from '../settings'
@@ -17,7 +17,8 @@ import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } fro
  * until the loader commits the whole load.
  *
  * The object reaches the command registry's shapes, the keymap builder, the
- * settings rules, the hook points (#165), the mode definition (#166), a read
+ * settings rules, the hook points (#165), URL dispatch over `before-load`
+ * (#179), the mode definition (#166), a read
  * of the buffer list,
  * `commands.run` and `notice`, and
  * nothing of src/main/agent/, src/main/security/ or src/preload/. The file is
@@ -134,6 +135,12 @@ export interface ConfigApi {
   on(point: unknown, spec: unknown): void
   /** Removes a handler by point and name. */
   off(point: unknown, name: unknown): void
+  /**
+   * A URL rule (#179): a `before-load` handler that rewrites or blocks the
+   * page loads whose URL `match` matches. The answer still goes through the
+   * page policy.
+   */
+  dispatchUrl(spec: unknown): void
   /** A mode (ADR 0004): a keymap layer, hooks and settings, with `toggle-<name>` unless `toggler` is false. */
   defineMode(spec: unknown): void
   readonly settings: {
@@ -224,21 +231,102 @@ function modeHooks(spec: Record<string, unknown>, mode: string): readonly ModeHo
     if (!isRecord(hook)) throw new ModeError(`Mode "${mode}": a hook is { point, name, doc, run }`)
     const { point, name, doc, run } = hook
     checkHandler(point, name, doc, run)
-    const body = run as (event: unknown, signal: AbortSignal) => unknown
     return {
       point: point as HookPoint,
-      handler: Object.freeze({
-        name: name as string,
-        doc: doc as string,
-        run: async (event: unknown, signal: AbortSignal) => {
-          const result = await body.call(undefined, { ...(event as object) }, signal)
-          return isRecord(result) && result['veto'] === true
-            ? { veto: true as const, reason: String(result['reason'] ?? 'refused by the config') }
-            : undefined
-        },
-      }),
+      handler: fileHandler(point as HookPoint, name as string, doc as string, run),
     }
   })
+}
+
+/** What a handler of the file returned, as the registry reads it: a veto, a rewrite or nothing. */
+function answerOf(result: unknown): HookResult {
+  if (!isRecord(result)) return undefined
+  if (result['veto'] === true) {
+    return { veto: true, reason: String(result['reason'] ?? 'refused by the config') }
+  }
+  if ('rewrite' in result) return { rewrite: result['rewrite'] as string }
+  return undefined
+}
+
+/**
+ * A handler of the file, frozen; it sees a copy of the payload, as a command
+ * body sees a copy of its context. At a synchronous point (`before-load`) the
+ * body is called and answered at once, and a promise it returns is handed on
+ * for the registry to report.
+ */
+function fileHandler(
+  point: HookPoint,
+  name: string,
+  doc: string,
+  run: unknown,
+): HookHandler<HookPoint> {
+  const body = run as (event: unknown, signal: AbortSignal) => unknown
+  const call = (event: unknown, signal: AbortSignal): unknown =>
+    body.call(undefined, { ...(event as object) }, signal)
+  return Object.freeze({
+    name,
+    doc,
+    run:
+      HOOK_POINTS[point].synchronous === true
+        ? (event: unknown, signal: AbortSignal) => {
+            const result = call(event, signal)
+            return isPromiseLike(result) ? Promise.resolve(result).then(answerOf) : answerOf(result)
+          }
+        : async (event: unknown, signal: AbortSignal) => answerOf(await call(event, signal)),
+  })
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return isRecord(value) && typeof value['then'] === 'function'
+}
+
+/** A RegExp of any realm: the config's come from its own vm context. */
+function isRegExp(value: unknown): value is RegExp {
+  return Object.prototype.toString.call(value) === '[object RegExp]'
+}
+
+/** `dispatchUrl`'s spec, checked on the file's line, as a `before-load` handler. */
+function urlRule(spec: unknown, staging: ConfigStaging): HookHandler<'before-load'> {
+  if (!isRecord(spec)) {
+    throw new HookError('dispatchUrl takes { match, rewrite } or { match, block }')
+  }
+  const { match, rewrite, block } = spec
+  if (!isRegExp(match)) throw new HookError('dispatchUrl: match is a regular expression')
+  if ((rewrite === undefined) === (block === undefined)) {
+    throw new HookError('dispatchUrl takes one of rewrite or block')
+  }
+  if (rewrite !== undefined && typeof rewrite !== 'function') {
+    throw new HookError('dispatchUrl: rewrite is a function from URL to URL')
+  }
+  if (block !== undefined && typeof block !== 'string' && block !== true) {
+    throw new HookError('dispatchUrl: block is true or a reason')
+  }
+  // A copy without g or y, so a test keeps no lastIndex between loads.
+  const pattern = new RegExp(match.source, match.flags.replace(/[gy]/g, ''))
+  let name = spec['name']
+  if (name === undefined) {
+    let n = 1
+    while (staging.hooks.has(`before-load dispatch-url-${n}`)) n += 1
+    name = `dispatch-url-${n}`
+  }
+  const doc =
+    spec['doc'] ??
+    `${rewrite === undefined ? 'Blocks' : 'Rewrites'} page loads matching ${String(pattern)}.`
+  const body = rewrite as ((url: string) => unknown) | undefined
+  const run = (event: { readonly url: string }): HookResult => {
+    if (!pattern.test(event.url)) return undefined
+    if (body === undefined) {
+      return {
+        veto: true,
+        reason: typeof block === 'string' ? block : `matches ${String(pattern)}`,
+      }
+    }
+    const target = body.call(undefined, event.url)
+    if (typeof target !== 'string') throw new HookError('a rewrite returns a URL string')
+    return { rewrite: target }
+  }
+  checkHandler('before-load', name, doc, run)
+  return Object.freeze({ name: name as string, doc: doc as string, run })
 }
 
 /** A mode's enable or disable from the file: it sees copies of the buffer and the state. */
@@ -349,20 +437,22 @@ export function createConfigApi(staging: ConfigStaging, env: ConfigApiEnv): Conf
       if (staging.hooks.has(key)) {
         throw new HookError(`Hook "${String(point)}" already has a handler named "${String(name)}"`)
       }
-      const body = run as (event: unknown, signal: AbortSignal) => unknown
       staging.hooks.set(key, {
         point: point as HookPoint,
-        handler: Object.freeze({
-          name: name as string,
-          doc: doc as string,
-          // The file sees a copy of the payload, as a command body sees a copy of its context.
-          run: async (event: unknown, signal: AbortSignal) => {
-            const result = await body.call(undefined, { ...(event as object) }, signal)
-            return isRecord(result) && result['veto'] === true
-              ? { veto: true as const, reason: String(result['reason'] ?? 'refused by the config') }
-              : undefined
-          },
-        }),
+        handler: fileHandler(point as HookPoint, name as string, doc as string, run),
+        site: staging.site(),
+      })
+    },
+    dispatchUrl(spec) {
+      staging.open('dispatchUrl')
+      const handler = urlRule(spec, staging)
+      const key = `before-load ${handler.name}`
+      if (staging.hooks.has(key)) {
+        throw new HookError(`Hook "before-load" already has a handler named "${handler.name}"`)
+      }
+      staging.hooks.set(key, {
+        point: 'before-load',
+        handler: handler as unknown as HookHandler<HookPoint>,
         site: staging.site(),
       })
     },

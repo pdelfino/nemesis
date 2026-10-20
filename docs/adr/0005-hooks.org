@@ -214,6 +214,51 @@ unit test pins the import rules and the channel list. The SDK =hooks=
 option, when the T4 =PreToolUse= rule lands, is set in =session.ts= alone and
 holds no cockpit handler.
 
+** Amendment of 2026-OCTOBER-20: =before-load=, the page point (#179)
+
+Picked by Pedro on 2026-OCTOBER-20, in session, through #163: option A of
+#179, redirect and block only, no external programs. This is the review the
+paragraph above reserved for the page points; the request interceptor stays
+out of it, since Electron gives one =onBeforeRequest= listener per session
+and the blocker (#126) holds it.
+
+- *The point.* =before-load= is a tenth point, an interceptor, fired by
+  =src/main/page-buffer.ts= before a page buffer loads a URL: from =load=,
+  =open= and =openNew= (=from: 'cockpit'=, =bufferId= null when the buffer
+  is not made yet) and from the page's own top-frame =will-navigate=, same
+  document moves excepted (=from: 'page'=). The payload is the URL, the
+  buffer id and =from=; the URL is what the history and the bookmarks keep,
+  never the page's content.
+- *Synchronous, through =dispatch=.* =will-navigate= must be answered before
+  the event returns, so =before-load= is not run by =fire= but by a
+  synchronous =HookRegistry.dispatch=: handlers oldest first, no timeout, and
+  a handler that returns a promise is reported and counts as no change. A
+  synchronous answer is what lets "no change" leave the page's navigation
+  alone, a posted form included; an asynchronous one would have to stop
+  every navigation and reissue it as a GET.
+- *The one composed value.* The paragraph above said a URL rewrite would
+  need a compose-a-value kind. It does not: the first handler that answers
+  ={ rewrite }= or a veto ends the chain, as the first veto ends
+  =before-command=, and a rewritten URL is loaded without running the
+  handlers again, so two rules cannot loop. A throw, or a rewrite that is not
+  a string, is a notice and no change.
+- *Never instead of the policy.* Only a URL =navigationAllowed('page')= takes
+  reaches a handler, so an external scheme keeps the prompt of #51. The
+  answer is a URL like any other: =load= puts it through
+  =navigationAllowed('page')= and =upgradeOf= before =loadURL=, and the
+  navigation policy's own =will-navigate= and =will-redirect= listeners
+  (=src/main/security/navigation-policy.ts=, unchanged) still see every
+  navigation the page starts. A handler can narrow or redirect; it cannot
+  widen. Reload, =back=, =forward= and server redirects are not dispatched.
+- *The config.* =nemesis.on('before-load', ...)= takes a handler as for any
+  point, and =nemesis.dispatchUrl({ match, rewrite | block, name?, doc? })=
+  writes one from a regular expression. A rule never names a program: option
+  B of #179 (hand a =magnet:= link to a program) would make a config line a
+  process spawn and needs a SECURITY.org row first.
+- *What the import rule still holds.* =src/main/hooks.ts= takes nothing new;
+  =page-buffer.ts=, which already imports the navigation policy, imports the
+  registry's types and calls =dispatch=.
+
 * Alternatives considered
 
 Each question lists its options with the files touched, the cost, the risk

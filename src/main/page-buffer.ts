@@ -6,6 +6,7 @@ import type { KeyPress } from '../shared/keys'
 import type { BufferRegistry } from './buffers'
 import { DEFAULT_MODES } from './commands/modes'
 import { CommandError } from './commands/registry'
+import type { HookEvents, HookRegistry } from './hooks'
 import type { PageBlocker } from './pages/blocker'
 import { navigationAllowed } from './security/navigation-policy'
 import { hostOf, upgradeOf } from './security/transport'
@@ -26,6 +27,13 @@ import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
  * - `load`, `reload`, `back` and `forward` ask `navigationAllowed('page', url)`
  *   and `upgradeOf` first, because `loadURL` raises no `will-navigate` for
  *   the policies to see. A refusal is a notice, never a throw.
+ * - `before-load` (#179, ADR 0005 amendment) runs before those checks on
+ *   every load the cockpit starts and on every top-frame `will-navigate` of a
+ *   page: a handler may block the load or rewrite its URL, and the rewritten
+ *   URL is checked as any URL is, so a handler narrows or redirects and never
+ *   widens. Only a URL the page policy takes reaches the handlers: an
+ *   external scheme keeps its own path (#51). A history step and a reload
+ *   are not dispatched again.
  * - One event stream per page, read off the WebContents and checked here
  *   before the registry or a listener sees it (#53). The URL a buffer shows
  *   is the committed top-frame URL (T3), never the one a navigation started
@@ -194,6 +202,14 @@ export interface PageContents {
     ) => void,
   ): unknown
   on(event: 'did-redirect-navigation', listener: (details: RedirectDetails) => void): unknown
+  /** A top-frame navigation the page starts; Electron's details carry `isSameDocument`. */
+  on(
+    event: 'will-navigate',
+    listener: (
+      event: { preventDefault(): void; readonly isSameDocument?: boolean },
+      url: string,
+    ) => void,
+  ): unknown
   on(
     event: 'before-input-event',
     listener: (event: { preventDefault(): void }, input: PageInput) => void,
@@ -294,6 +310,8 @@ export interface PageBuffersOptions<V extends PageView> {
   readonly defaultModes?: () => readonly string[]
   /** Hears each page's `console-message` events (#138), kept in main; absent, none is kept. */
   readonly console?: (pageId: string, level: string, message: string) => void
+  /** The app's hooks, for `before-load` (#179). Absent, no load is dispatched. */
+  readonly hooks?: HookRegistry
 }
 
 /** The current page as bookmark-page reads it (#125). */
@@ -595,12 +613,21 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   }
 
   /**
-   * Loads `url` in a page buffer: refused unless `navigationAllowed('page')`,
+   * Loads `url` in a page buffer, or the URL `before-load` rewrote it to
+   * (#179): refused unless `navigationAllowed('page')`,
    * re-issued on `https:` when transport would upgrade it. Answers null when
-   * the load committed, else the reason, which a refusal has also said as a
-   * notice; a load that failed says so through its `failed` event.
+   * the load committed, else the reason, which a refusal or a block has also
+   * said as a notice; a load that failed says so through its `failed` event.
    */
   async load(id: string, url: string): Promise<string | null> {
+    if (!this.pages.has(id)) return `No page buffer with id "${id}"`
+    const dispatched = this.dispatch(url, id, 'cockpit')
+    if (dispatched === null) return 'blocked'
+    return this.go(id, dispatched)
+  }
+
+  /** `load` once `before-load` has answered: the policies and the load itself. */
+  private async go(id: string, url: string): Promise<string | null> {
     const page = this.pages.get(id)
     if (page === undefined) return `No page buffer with id "${id}"`
     page.pending = null
@@ -621,15 +648,17 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   }
 
   async open(url: string, newBuffer = false): Promise<void> {
-    if (this.allowed(url) === null) return
     const current = this.options.buffers.current
-    if (!newBuffer && current !== null && this.pages.has(current.id)) {
-      await this.load(current.id, url)
+    const reuse = !newBuffer && current !== null && this.pages.has(current.id)
+    const target = this.dispatch(url, reuse ? current.id : null, 'cockpit')
+    if (target === null || this.allowed(target) === null) return
+    if (reuse) {
+      await this.go(current.id, target)
       return
     }
     const buffer = this.createPage()
     this.options.buffers.switchTo(buffer.id)
-    await this.load(buffer.id, url)
+    await this.go(buffer.id, target)
   }
 
   /**
@@ -638,10 +667,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
    * opens nothing.
    */
   async openNew(url: string, focus: boolean): Promise<void> {
-    if (this.allowed(url) === null) return
+    const target = this.dispatch(url, null, 'cockpit')
+    if (target === null || this.allowed(target) === null) return
     const buffer = this.createPage()
     if (focus) this.options.buffers.switchTo(buffer.id)
-    await this.load(buffer.id, url)
+    await this.go(buffer.id, target)
   }
 
   blank(): void {
@@ -654,7 +684,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const contents = page.view.webContents
     const target = this.allowed(contents.getURL())
     if (target === null) return
-    if (target !== contents.getURL()) void this.load(page.id, target)
+    if (target !== contents.getURL()) void this.go(page.id, target)
     else contents.reload()
   }
 
@@ -899,7 +929,7 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const entry = history.getEntryAtIndex(history.getActiveIndex() + by)
     const target = this.allowed(entry?.url ?? '')
     if (target === null) return 'refused'
-    if (target !== entry?.url) void this.load(page.id, target)
+    if (target !== entry?.url) void this.go(page.id, target)
     else if (by === -1) history.goBack()
     else history.goForward()
     return 'moved'
@@ -911,6 +941,25 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const page = current === null ? undefined : this.pages.get(current.id)
     if (page === undefined) throw new CommandError('The current buffer is not a page')
     return page
+  }
+
+  /**
+   * `before-load` (#179): the URL to go on with, `url` itself or a handler's
+   * rewrite, or null when a handler blocked it (the registry says so in a
+   * notice). A URL the page policy refuses is not shown to the handlers; the
+   * caller's `allowed` refuses it, and a rewrite goes through `allowed` too.
+   */
+  private dispatch(
+    url: string,
+    bufferId: string | null,
+    from: HookEvents['before-load']['from'],
+  ): string | null {
+    const hooks = this.options.hooks
+    if (hooks === undefined || !hooks.has('before-load')) return url
+    if (url.length > MAX_URL || !navigationAllowed('page', url)) return url
+    const answer = hooks.dispatch({ url, bufferId, from })
+    if (answer === null) return url
+    return 'rewrite' in answer ? answer.rewrite : null
   }
 
   /**
@@ -1032,6 +1081,24 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     }
     contents.on('did-redirect-navigation', redirected)
     add('did-redirect-navigation', redirected)
+
+    // A link or a script of the page (#179): `before-load` answers before the
+    // event returns. No change lets the navigation go on untouched, a form's
+    // body included; a block stops it; a rewrite stops it and loads the new
+    // URL through `go`, under the policies, without dispatching it again. The
+    // navigation policy's own listener sees every navigation as before.
+    const navigating = (
+      event: { preventDefault(): void; readonly isSameDocument?: boolean },
+      raw: string,
+    ): void => {
+      if (event.isSameDocument === true || typeof raw !== 'string') return
+      const target = this.dispatch(raw, pageId, 'page')
+      if (target === raw) return
+      event.preventDefault()
+      if (target !== null) void this.go(pageId, target)
+    }
+    contents.on('will-navigate', navigating)
+    add('will-navigate', navigating)
 
     // The cockpit's keys first (#120): a key bound in the page's modes never
     // reaches the page. The listener runs in the main process; nothing of

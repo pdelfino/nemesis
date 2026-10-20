@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { WebPreferences } from 'electron'
 import type { AgentEvent } from '../../src/main/agent/events'
 import { BufferRegistry } from '../../src/main/buffers'
+import { HookRegistry } from '../../src/main/hooks'
 import {
   installSwipe,
   nextZoomLevel,
@@ -212,6 +213,7 @@ function rig(
   blocker?: PageBlocker,
   console?: (pageId: string, level: string, message: string) => void,
   defaultModes?: () => readonly string[],
+  hooks?: HookRegistry,
 ): Rig {
   const buffers = new BufferRegistry()
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
@@ -239,6 +241,7 @@ function rig(
     ...(blocker === undefined ? {} : { blocker }),
     ...(console === undefined ? {} : { console }),
     ...(defaultModes === undefined ? {} : { defaultModes }),
+    ...(hooks === undefined ? {} : { hooks }),
   })
   const notices: string[] = []
   pages.on((event: AgentEvent) => {
@@ -1004,5 +1007,81 @@ describe('the bounds the renderer reports (#119, #53)', () => {
     expect(() => parsePageBounds({ x: 0, y: 0, width: Number.NaN, height: 1 })).toThrow(/width/)
     expect(() => parsePageBounds({ x: -1, y: 0, width: 1, height: 1 })).toThrow(/x/)
     expect(() => parsePageBounds({ x: 0, y: 0, width: 1e9, height: 1 })).toThrow(/width/)
+  })
+})
+
+describe('before-load on a page buffer (#179)', () => {
+  function dispatching(): { rig: Rig; seen: string[] } {
+    const hooks = new HookRegistry(() => {})
+    const seen: string[] = []
+    hooks.on(
+      'before-load',
+      {
+        name: 'old-reddit',
+        doc: 'Rewrites reddit, blocks the tracker.',
+        run: (event) => {
+          seen.push(`${event.from} ${event.url}`)
+          if (event.url.startsWith('https://www.reddit.com/')) {
+            return { rewrite: event.url.replace('://www.', '://old.') }
+          }
+          if (event.url.includes('tracker')) return { veto: true, reason: 'tracker' }
+          return undefined
+        },
+      },
+      'config',
+    )
+    return { rig: rig(undefined, undefined, undefined, undefined, hooks), seen }
+  }
+
+  function navigate(contents: FakeContents, url: string, isSameDocument = false): boolean {
+    let prevented = false
+    contents.emit(
+      'will-navigate',
+      { preventDefault: () => (prevented = true), isSameDocument },
+      url,
+    )
+    return prevented
+  }
+
+  it('rewrites a link the page follows and loads the target; leaves any other navigation to the page', async () => {
+    const { rig: r, seen } = dispatching()
+    r.pages.createPage()
+    const contents = only(r.views).webContents
+    expect(navigate(contents, 'https://www.reddit.com/r/emacs')).toBe(true)
+    await flush()
+    expect(contents.loads).toEqual(['https://old.reddit.com/r/emacs'])
+    // No change: the page's navigation goes on, a form's body included.
+    expect(navigate(contents, 'https://example.test/form')).toBe(false)
+    expect(navigate(contents, 'https://tracker.test/')).toBe(true)
+    // A same-document move and a scheme the page policy refuses are not dispatched.
+    expect(navigate(contents, 'https://www.reddit.com/#top', true)).toBe(false)
+    expect(navigate(contents, 'mailto:someone@example.test')).toBe(false)
+    await flush()
+    expect(contents.loads).toEqual(['https://old.reddit.com/r/emacs'])
+    expect(seen).toEqual([
+      'page https://www.reddit.com/r/emacs',
+      'page https://example.test/form',
+      'page https://tracker.test/',
+    ])
+  })
+
+  it('dispatches open and openNew before a buffer is made, and a block makes none', async () => {
+    const { rig: r, seen } = dispatching()
+    await r.pages.openNew('https://tracker.test/', true)
+    expect(r.views).toHaveLength(0)
+    await r.pages.open('https://www.reddit.com/')
+    expect(only(r.views).webContents.loads).toEqual(['https://old.reddit.com/'])
+    expect(seen).toEqual(['cockpit https://tracker.test/', 'cockpit https://www.reddit.com/'])
+  })
+
+  it('does not dispatch a reload or a history step again', () => {
+    const { rig: r, seen } = dispatching()
+    const buffer = r.pages.createPage()
+    r.buffers.switchTo(buffer.id)
+    const contents = only(r.views).webContents
+    contents.url = 'https://www.reddit.com/'
+    r.pages.reload()
+    expect(contents.reloads).toBe(1)
+    expect(seen).toEqual([])
   })
 })

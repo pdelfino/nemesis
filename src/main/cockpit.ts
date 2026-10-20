@@ -452,6 +452,8 @@ export function createCockpit(
     // The config's `pageModes`, the registered ones (#168); a name no mode has is ignored.
     defaultModes: () => config.settings.pageModes.filter((name) => cockpitModes.has(name)),
     console: (pageId, level, message) => consoleLog.record(pageId, level, message),
+    // `before-load` (#179): the config's URL rules, ahead of the navigation policy.
+    ...(hooks === null ? {} : { hooks }),
   })
   installPageBridge(pages, contents)
   // The semantic view (#122): each page's snapshot through the door, its

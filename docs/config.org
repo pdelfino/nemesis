@@ -49,6 +49,7 @@ column in an error are the line and column in your file.
 | =nemesis.notice(text)=                      | A notice in the transcript, recorded in the session folder.                                           |
 | =nemesis.on(point, { name, doc, run })=     | A handler at a hook point (ADR 0005), with the source =config=. See Hooks below.                      |
 | =nemesis.off(point, name)=                  | Removes a handler by point and name.                                                                  |
+| =nemesis.dispatchUrl(rule)=                 | A URL rule at =before-load=: rewrite or block the page loads it matches. See URL dispatch below.      |
 | =nemesis.defineMode(spec)=                  | A mode (ADR 0004): a keymap layer, hooks and settings, and =toggle-<name>=. See Modes below.          |
 
 The =user= layer sits above the global map and below the per-buffer maps, so
@@ -135,9 +136,11 @@ nothing wraps a command, a handler runs only where its point fires.
 | =session-started= | observer    | a session's first frame                  | =sessionId=, =model=, =permissionMode=           |
 | =turn-ended=      | observer    | a turn ended                             | =sessionId=, =isError=, =durationMs=, =numTurns= |
 | =before-quit=     | observer    | the app is quitting                      | nothing                                          |
+| =before-load=     | interceptor | a page buffer is about to load a URL     | =url=, =bufferId= (or =null=), =from=            |
 
 An event holds names, ids, counts and buffer records, never prompt text,
-assistant text, tool input or page content.
+assistant text, tool input or page content. =before-load= holds the URL
+about to load, which the history and the bookmarks keep too.
 
 #+begin_src typescript
 // Say which buffer was just made. The name is kebab-case, like a command's:
@@ -185,6 +188,54 @@ The rules:
 - =M-x list-hooks= shows every handler in the help buffer, by point, with its
   source; =M-x remove-hook= removes one chosen in the palette until the next
   reload. =nemesis.on= and =nemesis.off= belong in the file: eval refuses them.
+
+* URL dispatch
+
+=before-load= (#179, the ADR 0005 amendment) fires before a page buffer
+loads a URL: one the cockpit opens (=open-url=, a bookmark, the history, a
+hint, a restored page) with =from= set to =cockpit=, and a link or a script
+of the page with =from= set to =page=. A handler may answer
+={ rewrite: url }= to load another URL instead, or ={ veto: true, reason }=
+to load nothing; the first that answers ends the chain. =nemesis.dispatchUrl=
+writes such a handler from a regular expression:
+
+#+begin_src typescript
+// Nyxt's manual example: reddit.com opens as old.reddit.com, typed or clicked.
+nemesis.dispatchUrl({
+  name: 'old-reddit',
+  match: /^https:\/\/(www\.)?reddit\.com\//,
+  rewrite: (url: string) => url.replace(/^https:\/\/(www\.)?reddit\.com\//, 'https://old.reddit.com/'),
+})
+
+// A block: the reason is the notice.
+nemesis.dispatchUrl({ match: /^https:\/\/tracker\.example\//, block: 'a tracker' })
+#+end_src
+
+A rule takes =match= (a regular expression, tested on the whole URL) and one
+of =rewrite= (a function from URL to URL) or =block= (=true= or a reason).
+=name= and =doc= are optional: an unnamed rule is =dispatch-url-1=,
+=dispatch-url-2= and so on in file order, and =list-hooks= shows each with
+its pattern.
+
+The rules:
+
+- A rule narrows or redirects, never widens. A rewritten URL goes through the
+  same navigation policy as any URL a page loads (http: and https: only, the
+  https: upgrade off loopback), so a rewrite to =file:= or =javascript:= is
+  refused with the usual notice.
+- Only a URL the page policy takes reaches a handler. =mailto:=, =magnet:=
+  and other external schemes keep their own path: the page buffer refuses
+  them, and a link the page follows to one goes to the door of #51, which
+  asks before =mailto:= and =tel:= and refuses the rest. A rule never starts
+  a program.
+- A =before-load= handler answers at once. A handler that returns a promise
+  (an =async= one) is reported in a notice and changes nothing, because a
+  link the page follows must be answered before the navigation goes on.
+- A rewritten URL is loaded without running the rules again, so two rules
+  cannot send a load back and forth. A reload, =back= and =forward= are not
+  dispatched again, and neither is a redirect the server sends.
+- When no rule answers, the page's own navigation goes on untouched, a
+  form's posted body included.
 
 * Modes
 
