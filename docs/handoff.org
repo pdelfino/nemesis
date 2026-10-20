@@ -26,9 +26,7 @@ No session can finish these; each needs Pedro.
 
 Nothing is labeled =queue-ready=. The next batch comes from use: the #44 log, and what hurts while living in Nemesis itself (=make dev=). Each pain becomes an issue with =## Verify=, =## Do not touch= and, when there is a design choice, an =## Approach= table for the maintainer's pick (CONTRIBUTING.org, "Issues are the unit of work").
 
-Noticed on 2026-OCTOBER-19 and not filed yet:
-
-- =make real= leaves one folder per spec under =~/.claude/projects/=, named after the throwaway working folder, because the real CLI writes its transcripts under the user's own Claude configuration. The harness could remove that folder after each spec.
+Noticed on 2026-OCTOBER-19 and since fixed: =make real= left one folder per spec under =~/.claude/projects/=; the harness now removes it after each spec (#153).
 
 * Setting up a fresh machine
 
