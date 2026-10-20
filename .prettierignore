@@ -6,3 +6,4 @@ package-lock.json
 playwright-report/
 test-results/
 *.org
+tests/fixtures/bookmarks.html

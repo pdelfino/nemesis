@@ -30,6 +30,9 @@ export const VERIFY_SOURCE = 'verify'
 /** `rewind` asks before the working tree or the conversation goes back to a checkpoint (#99). */
 export const REWIND_SOURCE = 'rewind'
 
+/** Deleting bookmarks (#175): one yes for the batch. */
+export const DELETE_BOOKMARKS_SOURCE = 'delete-bookmarks'
+
 /** A yes-per-call tool of an MCP client asks before it runs (#28, ADR 0007). */
 export const MCP_SOURCE = 'mcp'
 /** Closing a worktree window asks whether to remove the worktree; keeping it is the highlighted answer (#87). */
@@ -137,6 +140,17 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'End the session',
         doc: 'Its window closes, which stops the session; its folder of events stays on disk.',
+      },
+    ],
+  },
+  {
+    name: DELETE_BOOKMARKS_SOURCE,
+    candidates: () => [
+      { id: NO, label: 'Keep them', doc: 'No bookmark is deleted.' },
+      {
+        id: YES,
+        label: 'Delete them',
+        doc: 'The bookmarks named leave the profile; the history is not touched.',
       },
     ],
   },

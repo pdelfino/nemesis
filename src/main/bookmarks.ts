@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import type { PaletteCandidate } from '../shared/palette'
+import { parseBookmarksHtml } from './bookmarks-html'
 import { formatTime } from './history'
 import type { UrlEntry, UrlStore } from './url-sources'
 
@@ -31,6 +32,9 @@ export interface Bookmark {
 
 /** The export's file name in the sessions folder. */
 export const BOOKMARKS_EXPORT = 'bookmarks.org'
+
+/** The largest bookmark file import-bookmarks-from-html reads. */
+const MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 /** An Org tag: letters, digits and `_`. */
 const TAG = /^[\p{L}\p{N}_]{1,40}$/u
@@ -69,6 +73,12 @@ export function orgTags(tags: readonly string[]): string {
   return tags.length === 0 ? '' : `:${tags.join(':')}:`
 }
 
+/** What an import did: links added, links skipped because they were already bookmarked. */
+export interface ImportReport {
+  readonly added: number
+  readonly skipped: number
+}
+
 export class Bookmarks implements UrlStore {
   constructor(
     private readonly db: DatabaseSync,
@@ -90,6 +100,48 @@ export class Bookmarks implements UrlStore {
       )
       .run(bookmark.url, bookmark.title, bookmark.tags.join(' '), bookmark.createdAt)
     return bookmark
+  }
+
+  /** The bookmark of `url`, or undefined. */
+  get(url: string): Bookmark | undefined {
+    return this.list().find((bookmark) => bookmark.url === url)
+  }
+
+  /** Replaces the title and tags of the bookmark of `url`, keeping its URL and date; false when there is none. */
+  edit(url: string, title: string, tags: readonly string[]): boolean {
+    const result = this.db
+      .prepare('UPDATE bookmarks SET title = ?, tags = ? WHERE url = ?')
+      .run(title.replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE), tags.join(' '), url)
+    return Number(result.changes) > 0
+  }
+
+  /** Deletes the bookmarks of `urls`, and answers how many were there. */
+  remove(urls: readonly string[]): number {
+    const statement = this.db.prepare('DELETE FROM bookmarks WHERE url = ?')
+    let removed = 0
+    for (const url of urls) removed += Number(statement.run(url).changes)
+    return removed
+  }
+
+  /**
+   * Adds the links of a Netscape bookmark file (#175), folders as tags; a URL
+   * already bookmarked is left as it is. Answers the counts.
+   */
+  importHtml(path: string): ImportReport {
+    if (statSync(path).size > MAX_IMPORT_BYTES) throw new Error('That file is over 20 MB')
+    const known = new Set(this.list().map((bookmark) => bookmark.url))
+    let added = 0
+    let skipped = 0
+    for (const entry of parseBookmarksHtml(readFileSync(path, 'utf8'))) {
+      if (known.has(entry.url)) {
+        skipped += 1
+        continue
+      }
+      known.add(entry.url)
+      this.add(entry.url, entry.title, entry.tags.slice(0, MAX_TAGS))
+      added += 1
+    }
+    return { added, skipped }
   }
 
   /** Every bookmark, the newest first. */

@@ -34,7 +34,7 @@ import { formatRef, parseRef, type SemanticNode, type SemanticSnapshot } from '.
  */
 
 /** What a typed label does: follow (or focus) its target, or copy the target's URL. */
-export type HintAction = 'follow' | 'copy'
+export type HintAction = 'follow' | 'copy' | 'bookmark'
 
 /** One labelled target. */
 export interface HintTarget {
@@ -72,6 +72,8 @@ export interface PageHintsOptions {
   readonly click: (pageId: string, x: number, y: number) => void
   /** The system clipboard's text. */
   readonly copy: (text: string) => void
+  /** Keeps a link of the page as a bookmark (#175); says why it did not on its own. */
+  readonly bookmark?: (pageId: string, url: string) => void
   readonly notify: (text: string) => void
   /** Every page's event stream: a committed navigation ends hint mode on that page. */
   readonly events: (listener: (event: PageEvent) => void) => unknown
@@ -139,7 +141,7 @@ export function hintTargets(
   const found = answer.nodes.flatMap((node) => {
     const known = byElement.get(node.id)
     if (known === undefined) return []
-    if (action === 'copy' && node.href.length === 0) return []
+    if (action !== 'follow' && node.href.length === 0) return []
     return [{ node, ref: formatRef(document, node.id), role: known.role }]
   })
   const labels = hintLabels(found.length, settings.alphabet, settings.maxLength)
@@ -195,7 +197,9 @@ export class PageHints {
     const targets = hintTargets(snapshot, answer, action, this.options.settings())
     const first = targets[0]
     if (first === undefined) {
-      this.options.notify(action === 'copy' ? 'No links to copy here' : 'No hints on this page')
+      this.options.notify(
+        action === 'follow' ? 'No hints on this page' : `No links to ${action} here`,
+      )
       return
     }
     if (this.options.semantic.resolve(first.ref) === null) {
@@ -243,6 +247,14 @@ export class PageHints {
   async activate(pageId: string, target: HintTarget, action: HintAction): Promise<void> {
     if (this.options.semantic.resolve(target.ref)?.pageId !== pageId) {
       this.options.notify('The page navigated; that hint is gone')
+      return
+    }
+    if (action === 'bookmark') {
+      if (target.href.length === 0) {
+        this.options.notify('That element has no URL to bookmark')
+        return
+      }
+      this.options.bookmark?.(pageId, target.href)
       return
     }
     if (action === 'copy') {

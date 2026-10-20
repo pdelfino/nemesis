@@ -90,3 +90,56 @@ describe('bookmarks', () => {
     expect(bookmarksText(bookmarks.list())).toContain('Alpha  https://a.test/  :zebra:')
   })
 })
+
+describe('editing, deleting and importing bookmarks (#175)', () => {
+  let dir: string
+  let db: DatabaseSync
+  let bookmarks: Bookmarks
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'nemesis-bookmarks-'))
+    db = openStore(join(dir, STORE_FILE))
+    bookmarks = new Bookmarks(db, () => 1000)
+  })
+
+  afterEach(() => {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('edit changes the title and tags and keeps the URL and the date', () => {
+    bookmarks.add('https://a.test/', 'A', ['x'])
+    expect(bookmarks.edit('https://a.test/', 'Alpha', ['y', 'z'])).toBe(true)
+    expect(bookmarks.list()).toEqual([
+      { url: 'https://a.test/', title: 'Alpha', tags: ['y', 'z'], createdAt: 1000 },
+    ])
+    expect(bookmarks.edit('https://none.test/', 'N', [])).toBe(false)
+  })
+
+  it('remove of two removes two and leaves the rest', () => {
+    for (const name of ['a', 'b', 'c']) bookmarks.add(`https://${name}.test/`, name, [])
+    expect(bookmarks.remove(['https://a.test/', 'https://c.test/', 'https://zzz.test/'])).toBe(2)
+    expect(bookmarks.list().map((bookmark) => bookmark.url)).toEqual(['https://b.test/'])
+  })
+
+  it('imports the Chrome export: folders as tags, duplicates skipped, other schemes dropped', () => {
+    bookmarks.add('https://example.com/docs', 'Mine', ['mine'])
+    const report = bookmarks.importHtml(join(__dirname, '../fixtures/bookmarks.html'))
+    expect(report).toEqual({ added: 2, skipped: 1 })
+    const byUrl = new Map(bookmarks.list().map((bookmark) => [bookmark.url, bookmark]))
+    expect(byUrl.get('https://example.com/docs')?.title).toBe('Mine')
+    expect(byUrl.get('https://www.rust-lang.org/')).toMatchObject({
+      title: 'Rust',
+      tags: ['bookmarks_bar', 'rust_lang'],
+    })
+    expect(byUrl.get('https://new.example.org/page')).toMatchObject({
+      title: 'Added from Chrome',
+      tags: [],
+    })
+    expect(byUrl.size).toBe(3)
+    expect(bookmarks.importHtml(join(__dirname, '../fixtures/bookmarks.html'))).toEqual({
+      added: 0,
+      skipped: 3,
+    })
+  })
+})

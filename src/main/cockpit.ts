@@ -468,6 +468,16 @@ export function createCockpit(
     open: (pageId, url) => pages.load(pageId, url),
     click: (pageId, x, y) => pages.clickAt(pageId, x, y),
     copy: shared.writeClipboardText,
+    bookmark: (pageId, url) => {
+      const say = (text: string): void => {
+        for (const listener of hintListeners) listener({ type: 'notice', text })
+      }
+      if (shared.stores === null) return say('Not bookmarked: the profile database is not open')
+      if (pages.partitionOf(pageId) === 'ephemeral')
+        return say('Not bookmarked: an ephemeral page leaves nothing in the profile.')
+      shared.stores.bookmarks.add(url, '', [])
+      say('Bookmarked the link')
+    },
     notify: (text) => {
       for (const listener of hintListeners) listener({ type: 'notice', text })
     },

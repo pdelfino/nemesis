@@ -49,6 +49,7 @@ import { DEFAULT_URL_SOURCES, resolveUrl, urlCandidates, type UrlSources } from 
 import {
   bookmarkCandidates,
   bookmarksText,
+  orgTags,
   parseTags,
   tagCandidates,
   type Bookmarks,
@@ -83,7 +84,14 @@ import {
   screenshotPrompt,
   SYMPTOM_TEMPLATE,
 } from './guide-prompts'
-import { BACKGROUND_SOURCE, confirm, FAN_OUT_SOURCE, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
+import {
+  BACKGROUND_SOURCE,
+  confirm,
+  DELETE_BOOKMARKS_SOURCE,
+  FAN_OUT_SOURCE,
+  REWIND_SOURCE,
+  VERIFY_SOURCE,
+} from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -299,7 +307,10 @@ export interface CockpitDeps {
 /** The history and the bookmarks of the profile's database (#125), and where the export goes. */
 export interface PageStores {
   readonly history: Pick<History, 'visits' | 'entries'>
-  readonly bookmarks: Pick<Bookmarks, 'add' | 'list' | 'tags' | 'exportOrg'>
+  readonly bookmarks: Pick<
+    Bookmarks,
+    'add' | 'get' | 'edit' | 'remove' | 'importHtml' | 'list' | 'tags' | 'exportOrg'
+  >
   /** The Org file export-bookmarks writes, in the sessions folder. */
   readonly exportPath: string
 }
@@ -1544,6 +1555,99 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'edit-bookmark',
+      mcp: 'never',
+      doc: 'Pick a bookmark and edit its title and tags in the prompt; an empty answer keeps what is there, a lone - clears the tags.',
+      run: () => {
+        const store = profile().bookmarks
+        prompter.read({ source: 'bookmarks', prompt: 'Edit bookmark:' }, (url) => {
+          const bookmark = store.get(url)
+          if (bookmark === undefined) throw new CommandError('That bookmark is gone')
+          prompter.read(
+            {
+              source: 'bookmark-title',
+              prompt: `Title (now "${bookmark.title}"):`,
+              freeText: true,
+            },
+            (title) => {
+              prompter.read(
+                {
+                  source: 'bookmark-tags',
+                  prompt: `Tags (now "${orgTags(bookmark.tags)}"):`,
+                  freeText: true,
+                },
+                (text) => {
+                  let tags = bookmark.tags
+                  try {
+                    if (text.trim() === '-') tags = []
+                    else if (text.trim().length > 0) tags = parseTags(text)
+                  } catch (error) {
+                    help.show(
+                      `Not edited: ${error instanceof Error ? error.message : String(error)}`,
+                    )
+                    return
+                  }
+                  store.edit(url, title.trim().length > 0 ? title : bookmark.title, tags)
+                },
+              )
+            },
+          )
+        })
+      },
+    }),
+    defineCommand({
+      name: 'delete-bookmark',
+      mcp: 'never',
+      doc: 'Read bookmarks, marking several with M-SPC, and delete them all after one yes.',
+      run: () => {
+        const store = profile().bookmarks
+        const urls: string[] = []
+        prompter.read(
+          {
+            source: 'bookmarks',
+            prompt: 'Delete bookmark:',
+            multiple: true,
+            after: () => {
+              const picked = [...urls]
+              urls.length = 0
+              const question =
+                picked.length === 1
+                  ? `Delete the bookmark ${picked[0] ?? ''}?`
+                  : `Delete ${picked.length} bookmarks?`
+              confirm(prompter, DELETE_BOOKMARKS_SOURCE, question)
+                .then((yes) => {
+                  if (yes) help.show(`Deleted ${store.remove(picked)} bookmarks`)
+                })
+                .catch(report('delete-bookmark'))
+            },
+          },
+          (url) => {
+            urls.push(url)
+          },
+        )
+      },
+    }),
+    defineCommand({
+      name: 'import-bookmarks-from-html',
+      mcp: 'never',
+      doc: "Read the path of a browser's exported bookmarks file (Netscape HTML) and add the links not yet bookmarked, each folder as a tag; the counts are shown.",
+      run: () => {
+        const store = profile().bookmarks
+        prompter.read(
+          { source: 'import-path', prompt: 'Bookmarks HTML file:', freeText: true },
+          (text) => {
+            const path = text.trim().replace(/^~(?=\/)/, homedir())
+            try {
+              const { added, skipped } = store.importHtml(path)
+              help.show(`Imported ${added} bookmarks, skipped ${skipped} already there.`)
+            } catch (error) {
+              help.show(`Not imported: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          },
+        )
+      },
+    }),
+    defineCommand({
       name: 'export-bookmarks',
       mcp: 'never',
       doc: 'Write every bookmark to bookmarks.org in the sessions folder, one Org heading each with its tags.',
@@ -1607,6 +1711,12 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         if (context.chord === undefined) throw new CommandError('type-hint-key runs from a key')
         return hints.type(context.chord)
       },
+    }),
+    defineCommand({
+      name: 'bookmark-hint',
+      mcp: 'never',
+      doc: 'Label the links of the current page; the one typed is kept as a bookmark, without tags (edit-bookmark adds them).',
+      run: () => hints.start('bookmark'),
     }),
     defineCommand({
       name: 'quit-hints',
@@ -1971,6 +2081,14 @@ export function cockpitSources(
     {
       name: 'bookmark-tags',
       candidates: () => tagCandidates(stores?.bookmarks.tags() ?? []),
+    },
+    {
+      name: 'bookmark-title',
+      candidates: () => [],
+    },
+    {
+      name: 'import-path',
+      candidates: () => [],
     },
     {
       name: 'bookmarks',
