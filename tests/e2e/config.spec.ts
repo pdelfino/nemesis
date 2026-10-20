@@ -183,7 +183,9 @@ test('a config on(buffer-created) handler runs, and after a reload it runs once'
       .poll(() => transcriptLines(page))
       .toContain(`Config reloaded from ${path}: 0 commands, 0 bindings, 0 settings overridden.`)
     // The help buffer goes, so the next list-hooks makes it again.
-    await runCommand(page, 'kill-buffer')
+    // C-x k kills the current buffer; kill-buffer from M-x reads which ones (#167).
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('k')
     await expect(page.locator('#help')).toBeHidden()
     await runCommand(page, 'list-hooks')
     await expect(page.locator('#help')).toBeVisible()

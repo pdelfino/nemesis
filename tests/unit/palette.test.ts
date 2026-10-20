@@ -61,6 +61,47 @@ describe('the prompter', () => {
     expect(instance.pending).toBeNull()
   })
 
+  it('answers a multiple read with every marked id, or one choice when none is marked (#167)', async () => {
+    const instance = prompter()
+    const consume = vi.fn()
+    const request = instance.read({ source: 'letters', prompt: 'Kill:', multiple: true }, consume)
+    expect(request.multiple).toBe(true)
+    await instance.answer({
+      id: request.id,
+      choice: null,
+      ids: ['search-buffer', 'switch-buffer', 'search-buffer'],
+    })
+    expect(consume.mock.calls).toEqual([['search-buffer'], ['switch-buffer']])
+
+    // No marks: the window answers with the highlighted one, as a single read does.
+    const second = instance.read({ source: 'letters', prompt: 'Kill:', multiple: true }, consume)
+    await instance.answer({ id: second.id, choice: 'switch-buffer' })
+    expect(consume).toHaveBeenLastCalledWith('switch-buffer')
+  })
+
+  it('refuses marks on a single read, a confirmation and an id that is no candidate (#167)', async () => {
+    const instance = prompter()
+    const consume = vi.fn()
+    const single = instance.read({ source: 'letters', prompt: 'M-x' }, consume)
+    expect(single.multiple).toBeUndefined()
+    await expect(
+      instance.answer({ id: single.id, choice: null, ids: ['search-buffer'] }),
+    ).rejects.toThrow(/one candidate/)
+
+    const confirm = instance.read(
+      { source: 'letters', prompt: 'Sure?', confirm: true, multiple: true },
+      consume,
+    )
+    expect(confirm.multiple).toBeUndefined()
+    instance.withdraw(confirm.id)
+
+    const many = instance.read({ source: 'letters', prompt: 'Kill:', multiple: true }, consume)
+    await expect(instance.answer({ id: many.id, choice: null, ids: ['nope'] })).rejects.toThrow(
+      /not among/,
+    )
+    expect(consume).not.toHaveBeenCalled()
+  })
+
   it('cancels on null, ignores a stale answer and refuses a stranger', async () => {
     const instance = prompter()
     const first = vi.fn()
@@ -155,6 +196,15 @@ describe('the prompter', () => {
       choice: null,
       text: 'tomato',
     })
+    // The marked ids of a multiple read (#167): a bounded, non-empty list of strings.
+    expect(parsePaletteAnswer({ id: 'p1', ids: ['a', 'b'] })).toEqual({
+      id: 'p1',
+      choice: null,
+      ids: ['a', 'b'],
+    })
+    expect(() => parsePaletteAnswer({ id: 'p1', ids: [] })).toThrow(/usable ids/)
+    expect(() => parsePaletteAnswer({ id: 'p1', ids: [3] })).toThrow(/usable ids/)
+    expect(() => parsePaletteAnswer({ id: 'p1', ids: 'a' })).toThrow(/usable ids/)
     expect(() => parsePaletteAnswer({ id: 'p1', text: 3 })).toThrow(/usable text/)
     expect(() => parsePaletteAnswer({ id: 'p1', text: '' })).toThrow(/usable text/)
     expect(() => parsePaletteAnswer({ id: 'p1', text: 'x'.repeat(201) })).toThrow(/usable text/)

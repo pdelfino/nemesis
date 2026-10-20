@@ -1515,10 +1515,12 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     defineCommand({
       name: 'open-bookmark',
       mcp: 'never',
-      doc: 'Read a bookmark, filtered by its title, URL or tags, and open it as open-url does.',
+      doc: 'Read a bookmark, filtered by its title, URL or tags, and open it as open-url does; with several marked (M-SPC), open each in its own buffer.',
       run: () => {
         profile()
-        prompter.read({ source: 'bookmarks', prompt: 'Open bookmark:' }, (url) => pages.open(url))
+        prompter.read({ source: 'bookmarks', prompt: 'Open bookmark:', multiple: true }, (url) =>
+          pages.open(url),
+        )
       },
     }),
     defineCommand({
@@ -1708,9 +1710,16 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     }),
     defineCommand({
       name: 'kill-buffer',
-      doc: 'Kill the current buffer.',
-      run: () => {
-        buffers.kill()
+      doc: 'Kill the current buffer; from M-x, read the buffers to kill, several at once when marked (M-SPC marks, M-a marks all shown, M-u clears).',
+      run: (context) => {
+        if (context.source !== 'palette') {
+          buffers.kill()
+          return
+        }
+        prompter.read({ source: 'buffers', prompt: 'Kill buffer:', multiple: true }, (id) => {
+          // A buffer of another window is that window's to kill; skip it, and one already gone.
+          if (parseForeignBufferId(id) === null && buffers.get(id) !== undefined) buffers.kill(id)
+        })
       },
     }),
     defineCommand({

@@ -3,7 +3,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { emacs } from '@replit/codemirror-emacs'
 import type { BufferType, KeyOutcome } from '../shared/keys'
 import type { PaletteAnswer, PaletteCandidate, PaletteRequest } from '../shared/palette'
-import { FREE_TEXT_DOC, rankCandidates } from '../shared/palette'
+import { FREE_TEXT_DOC, MARK_GLYPH, rankCandidates } from '../shared/palette'
 import { followAppearance } from './theme'
 
 /**
@@ -44,6 +44,8 @@ export function installPalette(): Palette {
   let request: PaletteRequest | null = null
   let ranked: readonly PaletteCandidate[] = []
   let selected = 0
+  /** The marked ids of a `multiple` read (#167); the query changing never clears them. */
+  const marks = new Set<string>()
   /** Where the point was, to go back to. */
   let returnTo: Element | null = null
   let openedFrom: BufferType | null = null
@@ -62,6 +64,9 @@ export function installPalette(): Palette {
             { key: 'Ctrl-p', run: () => move(-1) },
             { key: 'Shift-Tab', run: () => move(-1) },
             { key: 'Escape', run: () => cancel() },
+            { key: 'Alt-Space', run: () => toggleMark() },
+            { key: 'Alt-a', run: () => markAll() },
+            { key: 'Alt-u', run: () => unmarkAll() },
           ]),
         ),
         emacs(),
@@ -111,7 +116,7 @@ export function installPalette(): Palette {
       host.hidden = false
     }
     request = next
-    promptLabel.textContent = next.prompt
+    marks.clear()
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '' } })
     rank()
     view.focus()
@@ -120,6 +125,7 @@ export function installPalette(): Palette {
   function close(): void {
     request = null
     ranked = []
+    marks.clear()
     host.hidden = true
     promptSection.classList.remove('palette-open')
     list.replaceChildren()
@@ -149,11 +155,47 @@ export function installPalette(): Palette {
     return true
   }
 
+  function toggleMark(): boolean {
+    if (request?.multiple !== true) return false
+    const current = ranked[selected]
+    if (current === undefined) return true
+    if (!marks.delete(current.id)) marks.add(current.id)
+    render()
+    return true
+  }
+
+  function markAll(): boolean {
+    if (request?.multiple !== true) return false
+    for (const candidate of ranked) marks.add(candidate.id)
+    render()
+    return true
+  }
+
+  function unmarkAll(): boolean {
+    if (request?.multiple !== true) return false
+    marks.clear()
+    render()
+    return true
+  }
+
   function render(): void {
+    promptLabel.textContent =
+      request === null
+        ? ''
+        : marks.size > 0
+          ? `${request.prompt} ${MARK_GLYPH}${marks.size}`
+          : request.prompt
     list.replaceChildren(
       ...ranked.map((candidate, index) => {
         const item = document.createElement('li')
-        item.textContent = candidate.label
+        if (marks.has(candidate.id)) {
+          const glyph = document.createElement('span')
+          glyph.className = 'palette-mark'
+          glyph.textContent = MARK_GLYPH
+          item.setAttribute('data-marked', 'true')
+          item.append(glyph, ' ')
+        }
+        item.append(candidate.label)
         if (candidate.detail !== undefined && candidate.detail.length > 0) {
           const detail = document.createElement('span')
           detail.className = 'palette-detail'
@@ -171,6 +213,12 @@ export function installPalette(): Palette {
 
   function accept(): boolean {
     if (request === null) return true
+    if (request.multiple === true && marks.size > 0) {
+      // Every marked id, in the source's order, whether or not the query still shows it.
+      const ids = request.candidates.filter((c) => marks.has(c.id)).map((c) => c.id)
+      answer({ id: request.id, choice: null, ids })
+      return true
+    }
     const choice = ranked[selected]
     if (choice !== undefined) {
       answer({ id: request.id, choice: choice.id })

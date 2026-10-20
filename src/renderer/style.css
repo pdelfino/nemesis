@@ -480,6 +480,9 @@ main {
 #palette-candidates li[aria-selected='true'] {
   background: color-mix(in srgb, var(--ink) 12%, transparent);
 }
+.palette-mark {
+  color: var(--ink);
+}
 .palette-detail {
   color: var(--muted);
 }

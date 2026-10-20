@@ -134,3 +134,47 @@ test('M-x reads a command, describe-command and describe-key answer in a help bu
     await app.close()
   }
 })
+
+test('marks: M-SPC marks buffers, the marks survive the query, kill-buffer kills them all (#167)', async () => {
+  const app = await launchNemesis()
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    for (const title of ['Extra A', 'Extra B']) {
+      await page.evaluate(
+        async (name) =>
+          void (await (
+            globalThis as unknown as {
+              nemesis: { createBuffer?: (spec: object) => Promise<unknown> }
+            }
+          ).nemesis.createBuffer?.({ kind: 'transcript', title: name })),
+        title,
+      )
+    }
+    const modeline = page.locator('#buffer-list')
+    await expect(modeline).toContainText('Extra B')
+
+    await page.keyboard.press('Alt+x')
+    await page.keyboard.type('kill-buffer')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#palette-prompt')).toHaveText('Kill buffer:')
+
+    // Mark Extra A, narrow to Extra B and mark it: the first mark is kept.
+    await page.keyboard.type('Extra A')
+    await page.keyboard.press('Alt+Space')
+    await expect(page.locator('#palette-prompt')).toHaveText('Kill buffer: ●1')
+    await page.keyboard.press('Control+a')
+    await page.keyboard.press('Control+k')
+    await page.keyboard.type('Extra B')
+    await page.keyboard.press('Alt+Space')
+    await expect(page.locator('#palette-prompt')).toHaveText('Kill buffer: ●2')
+    await expect(page.locator('#palette-candidates li[data-marked]')).toHaveCount(1)
+
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#palette')).toBeHidden()
+    await expect(modeline).not.toContainText('Extra')
+    await expect(modeline).toContainText('Transcript')
+  } finally {
+    await app.close()
+  }
+})

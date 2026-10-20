@@ -4,7 +4,7 @@ import type {
   PaletteOutcome,
   PaletteRequest,
 } from '../../shared/palette'
-import { MAX_QUERY_LENGTH } from '../../shared/palette'
+import { MAX_MARKED, MAX_QUERY_LENGTH } from '../../shared/palette'
 import { CommandError } from './registry'
 
 /**
@@ -44,6 +44,13 @@ export interface ReadSpec {
    * source that lists nothing.
    */
   readonly freeText?: true | undefined
+  /**
+   * The answer is every marked candidate, or the highlighted one when none is
+   * marked (#167). The consumer runs once per id, in the source's order, and
+   * what the last one returns goes back to the window. A confirmation never
+   * takes marks.
+   */
+  readonly multiple?: true | undefined
   /**
    * A yes or no of confirm.ts: the user's to give, so it always goes to the
    * window, even inside a run whose reads are answered in advance (#28).
@@ -112,6 +119,7 @@ export class Prompter {
       prompt: spec.prompt,
       candidates: source.candidates(),
       ...(spec.freeText === true ? { freeText: true as const } : {}),
+      ...(spec.multiple === true && spec.confirm !== true ? { multiple: true as const } : {}),
     }
     if (this.script !== null && spec.confirm !== true) {
       this.readScripted(this.script, request, spec, consume)
@@ -207,6 +215,15 @@ export class Prompter {
       }
       return (await read.consume(answer.text)) ?? {}
     }
+    if (answer.ids !== undefined) {
+      if (read.request.multiple !== true) throw new CommandError('This read takes one candidate')
+      const known = new Set(read.request.candidates.map((candidate) => candidate.id))
+      const unknown = answer.ids.find((id) => !known.has(id))
+      if (unknown !== undefined) throw new CommandError(`"${unknown}" is not among the candidates`)
+      let outcome: PaletteOutcome = {}
+      for (const id of new Set(answer.ids)) outcome = (await read.consume(id)) ?? outcome
+      return outcome
+    }
     if (answer.choice === null) {
       read.cancel?.()
       return {}
@@ -240,6 +257,18 @@ export function parsePaletteAnswer(payload: unknown): PaletteAnswer {
   }
   if (choice !== null && (typeof choice !== 'string' || choice.length > MAX_QUERY_LENGTH)) {
     throw new TypeError('Palette answer has no usable choice')
+  }
+  const ids = value['ids']
+  if (ids !== undefined) {
+    if (
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      ids.length > MAX_MARKED ||
+      ids.some((item) => typeof item !== 'string' || item.length > MAX_QUERY_LENGTH)
+    ) {
+      throw new TypeError('Palette answer has no usable ids')
+    }
+    return { id, choice: null, ids: ids as string[] }
   }
   const text = value['text']
   if (text === undefined) return { id, choice: choice as string | null }

@@ -33,6 +33,11 @@ export interface PaletteRequest {
    * the doc line says what `RET` does.
    */
   readonly freeText?: true
+  /**
+   * The read takes several (#167): the window marks candidates and answers
+   * with every marked id, or the highlighted one when nothing is marked.
+   */
+  readonly multiple?: true
 }
 
 /**
@@ -43,7 +48,15 @@ export interface PaletteAnswer {
   readonly id: string
   readonly choice: string | null
   readonly text?: string
+  /** The marked ids of a `multiple` read (#167), in the source's order; `choice` is null then. */
+  readonly ids?: readonly string[]
 }
+
+/** More marked candidates than this is not an answer; the palette shows far fewer. */
+export const MAX_MARKED = 500
+
+/** The glyph before a marked candidate, and the note in the prompt line. */
+export const MARK_GLYPH = '●'
 
 /** The doc line of a free-text read while no candidate is highlighted. */
 export const FREE_TEXT_DOC = 'RET answers with the text typed.'
