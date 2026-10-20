@@ -64,13 +64,13 @@ Nemesis is Nyxt's daughter, so this is less a rivalry than a family dinner.
 
 |                                       | Emacs + agent-shell            | Nemesis                                       |
 |---------------------------------------+--------------------------------+-----------------------------------------------|
-| Emacs keys                            | ✅ the real ones               | 🟡 a good impression (CodeMirror's keymap)    |
 | The transcript is a searchable buffer | ✅                             | ✅                                            |
-| Which agents                          | ✅ 23, over ACP                | 🟡 Claude only                                |
 | A web browser next to the session     | 🟡 eww, text only              | ✅ Chromium page buffers                      |
+| An MCP server over its commands       | ❌                             | ✅                                            |
+| Emacs keys                            | ✅ the real ones               | 🟡 a good impression (CodeMirror's keymap)    |
+| Which agents                          | ✅ 23, over ACP                | 🟡 Claude only                                |
 | Org-mode                              | ✅ it is home                  | 🟡 transcripts are saved as Org, that is all  |
 | Your configuration                    | ✅ Elisp, decades of it        | 🟡 TypeScript, days of it                     |
-| An MCP server over its commands       | ❌                             | ✅                                            |
 
 ** vs the Claude desktop app
 
@@ -78,24 +78,24 @@ Anthropic's own app. Nemesis is that idea rebuilt by someone who refuses to touc
 
 |                                                  | Claude desktop app                     | Nemesis                                      |
 |--------------------------------------------------+----------------------------------------+----------------------------------------------|
-| Made by the people who make Claude               | ✅                                     | ❌ made by one user and Claude Code          |
-| Signed, notarized, updates itself                | ✅                                     | ❌ built from source; signing is #36         |
 | A browser inside                                 | ✅ sandboxed, its own profile          | ✅ page buffers, their own profile           |
 | Every action a named command you can rebind      | 🟡 shortcuts                           | ✅                                           |
 | The transcript is text you can search and edit   | 🟡                                     | ✅                                           |
 | Change the app at runtime                        | 🟡 CLAUDE.md, hooks, skills, plugins   | ✅ =init.ts=, live reload, eval              |
 | Other agents can drive it over MCP               | ❌ it is a client                      | ✅                                           |
 | A stated safety posture with tests behind it     | ✅ sandbox and classifiers             | ✅ one spec per promise in [[./SECURITY.org][SECURITY.org]]   |
+| Made by the people who make Claude               | ✅                                     | ❌ made by one user and Claude Code          |
+| Signed, notarized, updates itself                | ✅                                     | ❌ built from source; signing is #36         |
 
 ** vs Zed
 
 |                              | [[https://zed.dev][Zed]]                      | Nemesis                                 |
 |------------------------------+---------------------------+-----------------------------------------|
-| A real code editor           | ✅ a fast one, in Rust    | ❌ it is a cockpit; keep your editor    |
-| Which agents                 | ✅ many, over ACP         | 🟡 Claude only                          |
 | A key model                  | ✅ vim mode and keymaps   | ✅ Emacs, every action a command        |
 | A browser                    | ❌                        | ✅                                      |
 | MCP                          | 🟡 a client               | ✅ a server over its command table      |
+| Which agents                 | ✅ many, over ACP         | 🟡 Claude only                          |
+| A real code editor           | ✅ a fast one, in Rust    | ❌ it is a cockpit; keep your editor    |
 | Memory                       | ✅ light                  | ❌ Electron; it eats what Electron eats |
 | Stars                        | ✅ 91,864                 | ❌ 0                                    |
 
@@ -105,12 +105,12 @@ Anthropic's own app. Nemesis is that idea rebuilt by someone who refuses to touc
 
 |                                          | BrowserOS                       | Claude in Chrome         | Nemesis                                             |
 |------------------------------------------+---------------------------------+--------------------------+-----------------------------------------------------|
-| A full browser                           | ✅ a Chromium fork              | ✅ your own Chrome       | 🟡 page buffers: no extensions, no password manager |
 | An agent built in                        | ✅ several, local or your keys  | ✅ Claude                | ✅ Claude Code                                      |
-| The agent clicks in your logged-in tabs  | ✅                              | ✅ that is the point     | 🟡 only with your yes, per click                    |
 | A key model                              | ❌                              | ❌                       | ✅                                                  |
 | A page's text cannot steer the agent     | 🟡 autonomy first               | 🟡 acts in live sessions | ✅ labeled untrusted, with specs (T4)               |
 | A coding agent in your repo, same window | ❌                              | ❌                       | ✅                                                  |
+| A full browser                           | ✅ a Chromium fork              | ✅ your own Chrome       | 🟡 page buffers: no extensions, no password manager |
+| The agent clicks in your logged-in tabs  | ✅                              | ✅ that is the point     | 🟡 only with your yes, per click                    |
 
 ** So, should you use it?
 
