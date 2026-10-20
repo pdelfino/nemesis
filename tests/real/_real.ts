@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { expect, test, type Page } from '../e2e/_test'
 import { launchApp, type LaunchedApp } from '../e2e/_launch'
 
@@ -119,9 +119,30 @@ export async function launchReal(
   return { ...launched, page, work }
 }
 
-/** Deletes what a launch left behind: the profile and, when given, the work folder. */
+/**
+ * The folder where the real CLI keeps the transcripts of sessions run in
+ * `work`: under the user's own Claude configuration, named after the path
+ * with every character that is not a letter or a digit turned into `-`.
+ * Null for anything but a `nemesis-real-` folder in the system temp folder,
+ * so a real project's transcripts are never named here (#153).
+ */
+export function cliProjectFolder(work: string): string | null {
+  if (!basename(work).startsWith('nemesis-real-')) return null
+  if (dirname(work) !== realpathSync(tmpdir())) return null
+  const config = process.env['CLAUDE_CONFIG_DIR'] ?? join(homedir(), '.claude')
+  return join(config, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'))
+}
+
+/**
+ * Deletes what a launch left behind: the profile and, when given, the work
+ * folder, with the transcripts the CLI wrote for it (#153).
+ */
 export function cleanUp(...folders: readonly string[]): void {
-  for (const folder of folders) rmSync(folder, { recursive: true, force: true })
+  for (const folder of folders) {
+    rmSync(folder, { recursive: true, force: true })
+    const transcripts = cliProjectFolder(folder)
+    if (transcripts !== null) rmSync(transcripts, { recursive: true, force: true })
+  }
 }
 
 /** Every event of the session so far, through the public bridge. */
