@@ -1,4 +1,21 @@
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { defineConfig } from '@playwright/test'
+
+// Per-machine opt-out (Pedro, 2026-10-20): every project here opens Electron
+// windows, which flash across the screen. A Mac holding this file skips them
+// all and exits 0 with a loud notice; the other Mac and CI run them. Delete
+// the file, or set NEMESIS_WINDOW_TESTS=1 for one run, to turn them back on.
+const WINDOW_TESTS_OFF = join(homedir(), '.config', 'nemesis', 'no-window-tests')
+if (existsSync(WINDOW_TESTS_OFF) && process.env.NEMESIS_WINDOW_TESTS !== '1') {
+  console.error(
+    `\nWINDOW TESTS SKIPPED on this machine (${WINDOW_TESTS_OFF} exists).\n` +
+      'This gate is partial: run the full gate on the other Mac or in CI before calling it green.\n' +
+      'Turn back on: rm the file, or NEMESIS_WINDOW_TESTS=1 for one run.\n',
+  )
+  process.exit(0)
+}
 
 // Two projects: `app` is the product smoke, `security` holds one spec per
 // non-negotiable in SECURITY.org. Both drive the built app in out/ through
