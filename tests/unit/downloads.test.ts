@@ -70,6 +70,9 @@ function fakeSession(): FakeSession {
 interface FakeItem extends DownloadItemSurface {
   savePath: string | null
   done: ((event: unknown, state: string) => void) | null
+  updated: ((event: unknown, state: string) => void) | null
+  received: number
+  cancelled: number
 }
 
 function fakeItem(
@@ -78,16 +81,27 @@ function fakeItem(
   const item = {
     savePath: null,
     done: null,
+    updated: null,
+    received: 0,
+    cancelled: 0,
     getFilename: () => fields.filename ?? 'report.pdf',
     getTotalBytes: () => fields.bytes ?? 1024,
+    getReceivedBytes: () => item.received,
     getURL: () => fields.url ?? 'https://files.example.org/report.pdf?token=secret',
     getInitiatorOrigin: () => fields.initiator ?? 'https://example.org',
     setSavePath(path: string) {
       item.savePath = path
     },
+    on(event: string, listener: (event: unknown, state: string) => void) {
+      if (event === 'updated') item.updated = listener
+      return item
+    },
     once(event: string, listener: (event: unknown, state: string) => void) {
       if (event === 'done') item.done = listener
       return item
+    },
+    cancel() {
+      item.cancelled += 1
     },
   } as unknown as FakeItem
   return item
@@ -346,6 +360,77 @@ describe('the download policy (SECURITY.org T2)', () => {
     expect(notices).toEqual([
       'Download of report.pdf (1.0 KB) from https://example.org interrupted: nothing was kept',
     ])
+  })
+
+  it('lists an approved download as it moves: started, progress, done (#177)', async () => {
+    const { dir, policy, session } = setUp(true)
+    const url = 'https://files.example.org/report.pdf?token=secret'
+    offer(session, fakeItem({ url }))
+    await tick()
+    // A refused offer is not a download: nothing is listed until the yes's own request runs.
+    expect(policy.list()).toEqual([])
+    const item = fakeItem({ url })
+    offer(session, item)
+    const [started] = policy.list()
+    expect(started).toMatchObject({
+      url,
+      filename: 'report.pdf',
+      path: join(dir, 'report.pdf'),
+      totalBytes: 1024,
+      receivedBytes: 0,
+      state: 'started',
+    })
+
+    item.received = 512
+    item.updated?.(null, 'progressing')
+    expect(policy.list()[0]).toMatchObject({ state: 'progress', receivedBytes: 512 })
+
+    item.received = 1024
+    item.done?.(null, 'completed')
+    await tick()
+    expect(policy.list()[0]).toMatchObject({ state: 'done', receivedBytes: 1024 })
+    // Finished: a cancel reaches nothing.
+    expect(policy.cancel(started?.id ?? '')).toBe(false)
+    expect(item.cancelled).toBe(0)
+  })
+
+  it('cancels a running download from the list, and it ends cancelled (#177)', async () => {
+    const { policy, session, notices } = setUp(true)
+    const url = 'https://files.example.org/big.iso'
+    offer(session, fakeItem({ url, filename: 'big.iso' }))
+    await tick()
+    const item = fakeItem({ url, filename: 'big.iso' })
+    offer(session, item)
+    item.updated?.(null, 'progressing')
+    const id = policy.list()[0]?.id ?? ''
+    expect(policy.cancel(id)).toBe(true)
+    expect(item.cancelled).toBe(1)
+    // Chromium answers a cancel with done, state cancelled.
+    item.done?.(null, 'cancelled')
+    expect(policy.list()[0]?.state).toBe('cancelled')
+    expect(policy.cancel(id)).toBe(false)
+    expect(notices).toContain(
+      'Download of big.iso (1.0 KB) from https://example.org cancelled: nothing was kept',
+    )
+  })
+
+  it('lists a file that could not be quarantined as failed, and an interrupted one too (#177)', async () => {
+    const { policy, session } = setUp(true, fakeAttributes(new Map(), false))
+    const url = 'https://files.example.org/report.pdf'
+    offer(session, fakeItem({ url }))
+    await tick()
+    const item = fakeItem({ url })
+    offer(session, item)
+    item.done?.(null, 'completed')
+    await tick()
+    expect(policy.list()[0]?.state).toBe('failed')
+
+    offer(session, fakeItem({ url }))
+    await tick()
+    const second = fakeItem({ url })
+    offer(session, second)
+    second.done?.(null, 'interrupted')
+    expect(policy.list()[1]?.state).toBe('failed')
   })
 
   it('never lands two downloads on one name', () => {

@@ -1049,6 +1049,7 @@ void app.whenReady().then(() => {
         completed,
         agents: agentsSource,
         hooks,
+        downloads,
       },
       place.cwd,
     )

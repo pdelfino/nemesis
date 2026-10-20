@@ -38,6 +38,7 @@ import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import type { HelpBuffers, HelpListener } from './help'
 import { MessageLog, messagesCommands } from './messages'
+import { downloadsCommands, type DownloadsSource } from './downloads-list'
 import { hookCommands, hooksSource, type HookRegistry } from './hooks'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { BufferTexts, diffText } from './mcp/buffer-texts'
@@ -170,6 +171,8 @@ export interface CockpitShared {
   readonly agents?: AgentsSource
   /** The app's hooks (#165, ADR 0005), fired from this window's buffers, commands and session. */
   readonly hooks?: HookRegistry
+  /** The app's download policy (#177), for list-downloads; without it the commands are not registered. */
+  readonly downloads?: DownloadsSource
 }
 
 /** Without the app there is no other window to list. */
@@ -970,6 +973,16 @@ export function createCockpit(
   installKeyBridge(dispatcher, contents, (type) => modesFor(buffers.snapshot(), type))
   dispatcher.registry.registerAll(shared.commands(deps.help))
   dispatcher.registry.registerAll(messagesCommands(messages, deps.help))
+  if (shared.downloads !== undefined) {
+    // Reveal selects the file in Finder and opens nothing: Gatekeeper decides on open (#177, T2).
+    dispatcher.registry.registerAll(
+      downloadsCommands(shared.downloads, {
+        help: deps.help,
+        prompter,
+        reveal: (path) => shell.showItemInFolder(path),
+      }),
+    )
+  }
   if (hooks !== null) {
     dispatcher.registry.registerAll(hookCommands(hooks, { help: deps.help, prompter }))
     dispatcher.registry.useHooks(hooks)

@@ -39,7 +39,14 @@ import { originOf, type NoticeListener } from './permissions'
  * other place an offer's bytes exist is the staging folder above. On macOS a completed
  * file is checked for the `com.apple.quarantine` attribute Gatekeeper reads;
  * a file that has none is given one, and a file that cannot be marked is
- * removed. Nothing is ever opened: no `shell.openPath`, no `showItemInFolder`.
+ * removed. Nothing is ever opened: no `shell.openPath`. The one door out is
+ * reveal-download (#177): it selects a finished, quarantined file in Finder,
+ * from the downloads list, when the user asks, and opens nothing; Gatekeeper
+ * decides when the user opens it from there.
+ *
+ * Every approved item is listed for the session (#177): its URL, name, size
+ * and state, fed from the item's own `updated` and `done` events, so
+ * list-downloads can show it and cancel-download can stop it while it runs.
  *
  * The policy knows nothing of the palette: `confirm` is a function that
  * answers yes or no, and the cockpit wires it to the prompt buffer
@@ -128,8 +135,34 @@ export type DownloadSurface = Pick<Session, 'on' | 'setDownloadPath' | 'download
 /** The minimum of a DownloadItem the policy reads and steers. */
 export type DownloadItemSurface = Pick<
   DownloadItem,
-  'getFilename' | 'getTotalBytes' | 'getURL' | 'getInitiatorOrigin' | 'setSavePath' | 'once'
+  | 'getFilename'
+  | 'getTotalBytes'
+  | 'getReceivedBytes'
+  | 'getURL'
+  | 'getInitiatorOrigin'
+  | 'setSavePath'
+  | 'on'
+  | 'once'
+  | 'cancel'
 >
+
+/** Where a listed download stands (#177). `done` is a file kept in quarantine; `failed` kept nothing. */
+export type DownloadState = 'started' | 'progress' | 'done' | 'failed' | 'cancelled'
+
+/** One approved download of the session, as list-downloads shows it (#177). */
+export interface DownloadEntry {
+  readonly id: string
+  readonly url: string
+  readonly filename: string
+  /** Inside the quarantine folder; the file exists only while `state` is `done`. */
+  readonly path: string
+  readonly totalBytes: number
+  readonly receivedBytes: number
+  readonly state: DownloadState
+}
+
+/** How many entries the list keeps; the oldest finished ones go first. */
+export const DOWNLOAD_LIST_LIMIT = 200
 
 export interface DownloadPolicyOptions {
   readonly quarantineDir: string
@@ -227,6 +260,11 @@ export class DownloadPolicy {
   private readonly listeners = new Set<NoticeListener>()
   /** The URLs the user said yes to, by URL, each good for the one request the policy makes, for a while. */
   private readonly approved = new Map<string, Approval>()
+  /** The session's downloads, oldest first (#177). */
+  private readonly entries: DownloadEntry[] = []
+  /** The items still running, by entry id, so a cancel reaches them. */
+  private readonly running = new Map<string, DownloadItemSurface>()
+  private counter = 0
 
   constructor(options: DownloadPolicyOptions) {
     this.quarantineDir = options.quarantineDir
@@ -239,6 +277,19 @@ export class DownloadPolicy {
   /** Forgets every approval. The app calls this on quit, the way it empties the permission allow set. */
   clear(): void {
     this.approved.clear()
+  }
+
+  /** The session's downloads, oldest first (#177). */
+  list(): readonly DownloadEntry[] {
+    return [...this.entries]
+  }
+
+  /** Cancels a running download; false when `id` is not running. The `done` event records the end. */
+  cancel(id: string): boolean {
+    const item = this.running.get(id)
+    if (item === undefined) return false
+    item.cancel()
+    return true
   }
 
   /** The transcript subscribes: one line per refusal, per file saved, per file removed. */
@@ -303,13 +354,52 @@ export class DownloadPolicy {
     const path = uniquePath(this.quarantineDir, request.filename)
     item.setSavePath(path)
     const what = `${request.filename} (${formatBytes(request.bytes)}) from ${siteOf(request.origin)}`
+    const id = this.track(item, request, path)
+    item.on('updated', () => {
+      this.update(id, { state: 'progress', receivedBytes: item.getReceivedBytes() })
+    })
     item.once('done', (_event: Event, state: string) => {
+      this.running.delete(id)
       if (state !== 'completed') {
+        this.update(id, { state: state === 'cancelled' ? 'cancelled' : 'failed' })
         this.notify(`Download of ${what} ${state}: nothing was kept`)
         return
       }
-      void this.quarantine(path, what)
+      this.update(id, { receivedBytes: item.getReceivedBytes() })
+      void this.quarantine(path, what).then((kept) => {
+        this.update(id, { state: kept ? 'done' : 'failed' })
+      })
     })
+  }
+
+  /** Lists an approved item as started, dropping the oldest finished entry past the limit. */
+  private track(item: DownloadItemSurface, request: DownloadRequest, path: string): string {
+    this.counter += 1
+    const id = `d${this.counter}`
+    this.entries.push({
+      id,
+      url: item.getURL(),
+      filename: request.filename,
+      path,
+      totalBytes: item.getTotalBytes(),
+      receivedBytes: 0,
+      state: 'started',
+    })
+    this.running.set(id, item)
+    if (this.entries.length > DOWNLOAD_LIST_LIMIT) {
+      const oldest = this.entries.findIndex((entry) => !this.running.has(entry.id))
+      if (oldest !== -1) this.entries.splice(oldest, 1)
+    }
+    return id
+  }
+
+  private update(
+    id: string,
+    change: Partial<Pick<DownloadEntry, 'state' | 'receivedBytes'>>,
+  ): void {
+    const index = this.entries.findIndex((entry) => entry.id === id)
+    const entry = this.entries[index]
+    if (entry !== undefined) this.entries[index] = { ...entry, ...change }
   }
 
   /**
@@ -317,11 +407,11 @@ export class DownloadPolicy {
    * macOS; this reads the mark back rather than trusting that, writes one
    * when it is missing, and removes a file that cannot be marked.
    */
-  private async quarantine(path: string, what: string): Promise<void> {
+  private async quarantine(path: string, what: string): Promise<boolean> {
     const where = `to ${this.quarantineDir}`
     if (this.platform !== 'darwin') {
       this.notify(`Saved ${what} ${where}: not opened`)
-      return
+      return true
     }
     let value = await this.attributes.read(path)
     if (value === null) {
@@ -331,9 +421,10 @@ export class DownloadPolicy {
     if (value === null) {
       rmSync(path, { force: true })
       this.notify(`Removed ${what}: the file could not be quarantined (SECURITY.org, T2)`)
-      return
+      return false
     }
     this.notify(`Saved ${what} ${where}: quarantined, not opened`)
+    return true
   }
 
   private notify(text: string): void {
