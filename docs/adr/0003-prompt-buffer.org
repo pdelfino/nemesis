@@ -3,14 +3,14 @@
 
 - Status: accepted
 - Date: 2026-OCTOBER-17
-- Threat or Pillar: README.org pillar 2, text-driven UX (pillar 1,
+- Threat or Pillar: README.md pillar 2, text-driven UX (pillar 1,
   keyboard-driven, sets the keys; pillar 4, safe by construction, sets which
   process holds what)
 - Issue: #61 and #65 (recorded by #21)
 
 * Context
 
-The prompt buffer is the front door of the cockpit (README.org, pillar 2): the
+The prompt buffer is the front door of the cockpit (README.md, pillar 2): the
 place where a prompt is typed and sent, and, in Nyxt's tradition, the place
 where every command that needs an argument reads it. #61 shipped the editor
 and #65 shipped the palette, on main at 0373d48, without a record of why the

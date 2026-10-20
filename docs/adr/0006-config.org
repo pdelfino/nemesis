@@ -3,7 +3,7 @@
 
 - Status: accepted (picked by Pedro on 2026-OCTOBER-18, in session, on #71 (option A), and #24 closed with it)
 - Date: 2026-OCTOBER-18
-- Threat or Pillar: README.org pillar 2, text-driven, for a configuration
+- Threat or Pillar: README.md pillar 2, text-driven, for a configuration
   that is a file the user edits in their editor and reloads from the
   palette; SECURITY.org T5, supply chain, for the dependency the options
   differ on; the trust statement below for what the file may do

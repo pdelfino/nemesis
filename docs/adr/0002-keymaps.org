@@ -3,13 +3,13 @@
 
 - Status: accepted
 - Date: 2026-OCTOBER-17
-- Threat or Pillar: README.org pillar 1, keyboard-driven (pillar 4, safe by
+- Threat or Pillar: README.md pillar 1, keyboard-driven (pillar 4, safe by
   construction, sets the boundary the renderer half respects)
 - Issue: #59 and #61 (recorded by #20)
 
 * Context
 
-Every action in Nemesis is a named command bound to a key (README.org, pillar
+Every action in Nemesis is a named command bound to a key (README.md, pillar
 1). The command registry and the keymap format are therefore the spine of the
 application and of the later extension door: a user keymap in M3 (#71) and the
 mode system (#22) both have to fit the shape chosen for the first binding, so

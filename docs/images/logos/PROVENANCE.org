@@ -1,0 +1,23 @@
+#+TITLE: Logos of the neighbor projects, and where each came from
+#+OPTIONS: toc:nil
+
+Each file is the project's own icon or its organization's mark, fetched on 2026-OCTOBER-20 and shrunk to 64 px where it was a bitmap. They are trademarks of their owners, used nominatively in the README to identify the project being compared, with no endorsement implied. Nemesis's BSD-3-Clause license does not cover them. Replace a file only from the project's own repository or site, and update its row here in the same commit (=scripts/check-readme-images.mjs= fails on a logo without a row).
+
+| File | Project | Source | Fetched |
+|------+---------+--------+---------|
+| nyxt.png | Nyxt | https://github.com/atlas-engineer/nyxt/blob/master/assets/icons/nyxt_128x128.png | 2026-10-20 |
+| emacs.svg | GNU Emacs (also stands for agent-shell and claude-code-ide.el, both Emacs packages) | https://commons.wikimedia.org/wiki/File:EmacsIcon.svg | 2026-10-20 |
+| claude.svg | Claude (the desktop app) | https://commons.wikimedia.org/wiki/File:Claude_AI_symbol.svg | 2026-10-20 |
+| chrome.svg | Google Chrome (for Claude in Chrome) | https://commons.wikimedia.org/wiki/File:Google_Chrome_icon_(February_2022).svg | 2026-10-20 |
+| zed.png | Zed | https://github.com/zed-industries (organization avatar) | 2026-10-20 |
+| browseros.png | BrowserOS | https://github.com/browseros-ai (organization avatar) | 2026-10-20 |
+| iterm2.png | iTerm2 | https://iterm2.com/favicon.ico | 2026-10-20 |
+| goose.png | Goose | https://github.com/aaif-goose (organization avatar) | 2026-10-20 |
+| min.png | Min | https://github.com/minbrowser (organization avatar) | 2026-10-20 |
+| opcode.png | opcode | https://github.com/winfunc/opcode/blob/main/src-tauri/icons/Square142x142Logo.png | 2026-10-20 |
+| vibe-kanban.png | Vibe Kanban | https://github.com/BloopAI/vibe-kanban/blob/main/crates/tauri-app/icons/Square142x142Logo.png | 2026-10-20 |
+| claude-squad.png | Claude Squad | https://github.com/smtg-ai (organization avatar) | 2026-10-20 |
+| conductor.png | Conductor | https://conductor.build/icon.png | 2026-10-20 |
+| glide.png | Glide | https://github.com/glide-browser (organization avatar) | 2026-10-20 |
+| qutebrowser.svg | qutebrowser | https://github.com/qutebrowser/qutebrowser/blob/main/qutebrowser/icons/qutebrowser.svg | 2026-10-20 |
+| browsermcp.png | Browser MCP | https://github.com/browsermcp (organization avatar) | 2026-10-20 |

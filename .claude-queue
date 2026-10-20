@@ -1,4 +1,4 @@
-Project: Nemesis, a keyboard-driven cockpit for Claude Code on Electron and TypeScript that grows into a Nyxt-style browser. Read CLAUDE.md first, then README.org. Read SECURITY.org before any change under src/main/security/, src/preload/ or src/main/agent/.
+Project: Nemesis, a keyboard-driven cockpit for Claude Code on Electron and TypeScript that grows into a Nyxt-style browser. Read CLAUDE.md first, then README.md. Read SECURITY.org before any change under src/main/security/, src/preload/ or src/main/agent/.
 
 Issue #43 is the plan. Work only issues that carry a milestone, the `queue-ready` label, and no `needs-pedro` label.
 

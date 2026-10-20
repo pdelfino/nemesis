@@ -30,9 +30,10 @@
     "release:check": "npm run test:release && node scripts/release-check.mjs",
     "test": "npm run test:unit && npm run test:e2e && npm run test:security",
     "check-deps": "node scripts/check-deps.mjs",
+    "check-readme": "node scripts/check-readme-images.mjs",
     "agent:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-smoke.mts",
     "peek": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/peek.mts",
-    "gate": "npm run check-deps && npm run typecheck && npm run lint && npm run test:unit && npm run test:e2e && npm run test:security",
+    "gate": "npm run check-deps && npm run check-readme && npm run typecheck && npm run lint && npm run test:unit && npm run test:e2e && npm run test:security",
     "electron:install": "node node_modules/electron/install.js"
   },
   "dependencies": {

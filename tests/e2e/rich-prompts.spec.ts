@@ -148,12 +148,12 @@ test('@ mentions a file at the point, an attached image reaches the SDK as a blo
     await page.keyboard.press('Control+a')
     await page.keyboard.type('@')
     await expect(palette).toBeVisible()
-    await page.keyboard.type('README.org')
-    await expect.poll(async () => (await candidates(page))[0]).toBe('README.org *')
+    await page.keyboard.type('README.md')
+    await expect.poll(async () => (await candidates(page))[0]).toBe('README.md *')
     await page.keyboard.press('Enter')
     await expect
       .poll(() => promptLines(page))
-      .toEqual(['@README.org Read @package.json and mail p@example.org'])
+      .toEqual(['@README.md Read @package.json and mail p@example.org'])
 
     // C-g clears the prompt for the next part.
     await page.keyboard.press('Control+g')
