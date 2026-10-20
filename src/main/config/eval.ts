@@ -114,6 +114,12 @@ export class ConfigEval {
           'nemesis.on and nemesis.off are not applied at eval: put them in init.ts and run reload-config',
         )
       }
+      // An entry from eval would outlive the journal's promote and discard, as a mode would (#180).
+      if (staging.contextMenu.size > 0) {
+        throw new ConfigError(
+          'nemesis.addContextMenuCommand is not applied at eval: put it in init.ts and run reload-config',
+        )
+      }
       for (const binding of staging.bindings.values()) {
         if (!target.registry.has(binding.command) && !staging.commands.has(binding.command)) {
           throw new ConfigError(

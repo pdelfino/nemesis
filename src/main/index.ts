@@ -4,6 +4,7 @@ import {
   clipboard,
   desktopCapturer,
   ipcMain,
+  Menu,
   nativeImage,
   nativeTheme,
   net,
@@ -17,6 +18,7 @@ import type { ClipboardImage } from './agent/images'
 import type { AgentEvent } from '../shared/agent'
 import type { EventSource } from './agent/session-bridge'
 import { createCockpit, mergeNotices, type Cockpit } from './cockpit'
+import type { ContextMenuItem } from './pages/context-menu'
 import { HOOK_COMMAND_DOCS, HookRegistry } from './hooks'
 import type { AgentsSource } from './agents'
 import { confirm, DOWNLOAD_SOURCE, EXTERNAL_SOURCE, WORKTREE_SOURCE } from './commands/confirm'
@@ -261,6 +263,44 @@ const EXTERNAL_LOG = '__nemesisExternal'
  * which a spec cannot pick from. Main process only, under test only.
  */
 const SHARE_LOG = '__nemesisShares'
+
+/**
+ * The page context menus the app would have popped (#180), in place of the
+ * native menu, which a spec cannot pick from: the labels as shown and a
+ * `click` by label. Main process only, under test only.
+ */
+const CONTEXT_MENU_LOG = '__nemesisContextMenus'
+
+/** One context menu as the log records it. */
+interface ContextMenuRecord {
+  readonly labels: readonly { readonly label: string; readonly enabled: boolean }[]
+  click(label: string): void
+}
+
+/** A page's context menu at the pointer over `window` (#180), or a record of it under test. */
+function openContextMenu(window: BrowserWindow, items: readonly ContextMenuItem[]): void {
+  const log = (globalThis as { [CONTEXT_MENU_LOG]?: ContextMenuRecord[] })[CONTEXT_MENU_LOG]
+  if (log !== undefined) {
+    log.push({
+      labels: items.flatMap((item) =>
+        item.type === 'normal' ? [{ label: item.label, enabled: item.enabled }] : [],
+      ),
+      click: (label) => {
+        const item = items.find((one) => one.type === 'normal' && one.label === label)
+        if (item?.type !== 'normal' || !item.enabled) throw new Error(`No enabled entry ${label}`)
+        item.click()
+      },
+    })
+    return
+  }
+  Menu.buildFromTemplate(
+    items.map((item) =>
+      item.type === 'separator'
+        ? { type: 'separator' as const }
+        : { label: item.label, enabled: item.enabled, click: () => item.click() },
+    ),
+  ).popup({ window })
+}
 
 /** One share-page call as the share log records it. */
 interface ShareRecord {
@@ -517,6 +557,7 @@ void app.whenReady().then(() => {
     ;(globalThis as { [REQUEST_LOG]?: readonly RequestRecord[] })[REQUEST_LOG] = log
     ;(globalThis as { [EXTERNAL_LOG]?: readonly string[] })[EXTERNAL_LOG] = external.launched
     ;(globalThis as { [SHARE_LOG]?: ShareRecord[] })[SHARE_LOG] = []
+    ;(globalThis as { [CONTEXT_MENU_LOG]?: ContextMenuRecord[] })[CONTEXT_MENU_LOG] = []
     ;(globalThis as { [PAGE_DOOR]?: unknown })[PAGE_DOOR] = {
       open: async (
         url: string,
@@ -1049,6 +1090,7 @@ void app.whenReady().then(() => {
         completed,
         agents: agentsSource,
         hooks,
+        openContextMenu,
       },
       place.cwd,
     )

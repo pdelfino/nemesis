@@ -3,7 +3,10 @@ import type { WebPreferences } from 'electron'
 import type { AgentEvent } from '../../src/main/agent/events'
 import { BufferRegistry } from '../../src/main/buffers'
 import { HookRegistry } from '../../src/main/hooks'
+import type { AtPoint } from '../../src/main/commands/registry'
 import {
+  atPointOf,
+  MAX_SELECTION,
   installSwipe,
   nextZoomLevel,
   PAGE_PRELOAD,
@@ -214,6 +217,7 @@ function rig(
   console?: (pageId: string, level: string, message: string) => void,
   defaultModes?: () => readonly string[],
   hooks?: HookRegistry,
+  contextMenu?: (atPoint: AtPoint) => void,
 ): Rig {
   const buffers = new BufferRegistry()
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
@@ -242,6 +246,7 @@ function rig(
     ...(console === undefined ? {} : { console }),
     ...(defaultModes === undefined ? {} : { defaultModes }),
     ...(hooks === undefined ? {} : { hooks }),
+    ...(contextMenu === undefined ? {} : { contextMenu }),
   })
   const notices: string[] = []
   pages.on((event: AgentEvent) => {
@@ -1083,5 +1088,61 @@ describe('before-load on a page buffer (#179)', () => {
     r.pages.reload()
     expect(contents.reloads).toBe(1)
     expect(seen).toEqual([])
+  })
+})
+
+describe('the context menu of a page buffer (#180)', () => {
+  it('hands the menu the link, the bounded selection and the committed URL, nothing else', () => {
+    const opened: AtPoint[] = []
+    const { pages, views } = rig(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (atPoint) => {
+        opened.push(atPoint)
+      },
+    )
+    const buffer = pages.createPage()
+    const contents = only(views).webContents
+    contents.emit('did-navigate', {}, 'https://example.test/landed')
+    contents.emit(
+      'context-menu',
+      {},
+      {
+        linkURL: 'https://example.test/next',
+        selectionText: 'x'.repeat(MAX_SELECTION + 5),
+        pageURL: 'https://forged.test/',
+      },
+    )
+    contents.emit('context-menu', {}, { linkURL: '', selectionText: '' })
+    contents.emit('context-menu', {}, { linkURL: 42 })
+    expect(opened).toEqual([
+      {
+        pageId: buffer.id,
+        pageUrl: 'https://example.test/landed',
+        linkUrl: 'https://example.test/next',
+        selection: 'x'.repeat(MAX_SELECTION),
+      },
+      { pageId: buffer.id, pageUrl: 'https://example.test/landed', linkUrl: null, selection: null },
+      { pageId: buffer.id, pageUrl: 'https://example.test/landed', linkUrl: null, selection: null },
+    ])
+    expect(Object.isFrozen(opened[0])).toBe(true)
+  })
+
+  it('leaves a right-click to the page when the window has no menu', () => {
+    const { pages, views } = rig()
+    pages.createPage()
+    expect(() => only(views).webContents.emit('context-menu', {}, {})).not.toThrow()
+  })
+
+  it('reads a link URL as data: bounded, parsed, never more than a string', () => {
+    expect(atPointOf('p', null, { linkURL: `https://a.test/${'a'.repeat(9000)}` }).linkUrl).toBe(
+      null,
+    )
+    expect(atPointOf('p', null, { linkURL: 'javascript:alert(1)' }).linkUrl).toBe(
+      'javascript:alert(1)',
+    )
   })
 })

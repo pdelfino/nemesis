@@ -5,7 +5,7 @@ import type { BufferInfo, PageBounds, PageEvent, PageSpec } from '../shared/buff
 import type { KeyPress } from '../shared/keys'
 import type { BufferRegistry } from './buffers'
 import { DEFAULT_MODES } from './commands/modes'
-import { CommandError } from './commands/registry'
+import { CommandError, type AtPoint } from './commands/registry'
 import type { HookEvents, HookRegistry } from './hooks'
 import type { PageBlocker } from './pages/blocker'
 import { navigationAllowed } from './security/navigation-policy'
@@ -56,6 +56,9 @@ import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
  *   and the buffer carries the mode and the count of requests cancelled
  *   since the page last committed a URL, for the mode line. The first page
  *   starts the blocker's update schedule, so launch fetches nothing.
+ * - Context menu (#180): a page's `context-menu` event is read here into an
+ *   `AtPoint`, the link and the selection bounded, and handed to the
+ *   window's menu; no script runs in the page to find what was clicked.
  *
  * The module holds no Electron value: the view, the window's content view and
  * the policies come in through `PageBuffersOptions`, so the unit tests drive
@@ -107,6 +110,8 @@ const ZOOM_FACTORS = [
 const ZOOM_BASE = 1.2
 /** A find longer than this is not one the user typed. */
 const MAX_FIND = 1000
+/** A selection longer than this reaches a context-menu command cut here (#180). */
+export const MAX_SELECTION = 10_000
 
 /** The part of Electron's `Input` a page's key listener reads. */
 export interface PageInput {
@@ -219,6 +224,14 @@ export interface PageContents {
     event: 'console-message',
     listener: (details: { readonly level: string; readonly message: string }) => void,
   ): unknown
+  /** A right-click in the page (#180); Electron's params carry the link and the selection. */
+  on(
+    event: 'context-menu',
+    listener: (
+      event: unknown,
+      params: { readonly linkURL?: unknown; readonly selectionText?: unknown },
+    ) => void,
+  ): unknown
   off(event: string, listener: (...args: never[]) => void): unknown
   loadURL(url: string): Promise<void>
   reload(): void
@@ -312,6 +325,8 @@ export interface PageBuffersOptions<V extends PageView> {
   readonly console?: (pageId: string, level: string, message: string) => void
   /** The app's hooks, for `before-load` (#179). Absent, no load is dispatched. */
   readonly hooks?: HookRegistry
+  /** Opens the context menu for what is under the pointer (#180). Absent, a right-click is the page's alone. */
+  readonly contextMenu?: (atPoint: AtPoint) => void
 }
 
 /** The current page as bookmark-page reads it (#125). */
@@ -446,6 +461,23 @@ function boundedUrl(raw: unknown): string | null {
 /** A title the page sent, one line and bounded. */
 function boundedTitle(raw: unknown): string {
   return typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE) : ''
+}
+
+/**
+ * What a right-click points at (#180), checked at the boundary (#53): the
+ * link parsed and bounded, the selection bounded, the page URL the buffer's
+ * committed one. Frozen, so no command changes what the next one reads.
+ */
+export function atPointOf(
+  pageId: string,
+  pageUrl: string | null,
+  params: { readonly linkURL?: unknown; readonly selectionText?: unknown },
+): AtPoint {
+  const selection =
+    typeof params.selectionText === 'string' && params.selectionText.length > 0
+      ? params.selectionText.slice(0, MAX_SELECTION)
+      : null
+  return Object.freeze({ pageId, pageUrl, linkUrl: boundedUrl(params.linkURL), selection })
 }
 
 /** The scheme of a URL as a refusal names it; never the rest, which can carry a secret. */
@@ -1111,6 +1143,21 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     }
     contents.on('before-input-event', typed)
     add('before-input-event', typed)
+
+    // A right-click (#180): the menu is the main process's, built from what
+    // Chromium reports is under the pointer; nothing runs in the page.
+    const menu = this.options.contextMenu
+    if (menu !== undefined) {
+      const pointed = (
+        _event: unknown,
+        params: { readonly linkURL?: unknown; readonly selectionText?: unknown },
+      ): void => {
+        if (typeof params !== 'object' || params === null) return
+        menu(atPointOf(pageId, this.options.buffers.get(pageId)?.url ?? null, params))
+      }
+      contents.on('context-menu', pointed)
+      add('context-menu', pointed)
+    }
 
     // The page's console (#138): heard on its WebContents, so nothing is
     // hooked into the page; the text is page content and stays in main.

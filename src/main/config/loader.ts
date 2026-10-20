@@ -9,6 +9,7 @@ import type { Command, CommandRegistry } from '../commands/registry'
 import type { HookPoint, HookRegistry } from '../hooks'
 import type { Mode, ModeRegistry } from '../commands/modes'
 import type { Settings } from '../settings'
+import type { ContextMenuEntry } from '../pages/context-menu'
 import type { CallSite, ConfigApiEnv, StagedHook } from './api'
 import { ConfigError, ConfigStaging, createConfigApi, siteIn, USER_KEYMAP } from './api'
 
@@ -100,6 +101,8 @@ export interface StagedConfig {
   readonly removals: readonly { readonly point: HookPoint; readonly name: string }[]
   /** The file's modes (#166), which a commit swaps for the previous load's. */
   readonly modes: readonly Mode[]
+  /** The file's page context-menu entries (#180), in its order. */
+  readonly contextMenu: readonly ContextMenuEntry[]
 }
 
 export type StageResult =
@@ -235,6 +238,11 @@ export class ConfigLoader {
     return this.current
   }
 
+  /** The page context-menu entries in force (#180): the committed load's, else none. */
+  get contextMenu(): readonly ContextMenuEntry[] {
+    return this.live?.contextMenu ?? []
+  }
+
   /** The settings in force: the committed load's, else the data file's. */
   get settings(): Settings {
     return this.live?.settings ?? this.base ?? this.options.base()
@@ -275,6 +283,7 @@ export class ConfigLoader {
           hooks: [],
           removals: [],
           modes: [],
+          contextMenu: [],
         },
       }
     }
@@ -315,6 +324,14 @@ export class ConfigLoader {
           }
         }
       }
+      for (const entry of staging.contextMenu.values()) {
+        if (!reserved.has(entry.command) && !staging.commands.has(entry.command)) {
+          throw new ConfigError(
+            `Context-menu entry "${entry.label}" runs unknown command "${entry.command}"`,
+            entry.site,
+          )
+        }
+      }
       // A name another source holds on the point would fail the commit half way.
       const held = this.options.hooks?.list().filter((entry) => entry.source !== 'config') ?? []
       for (const hook of staging.hooks.values()) {
@@ -346,6 +363,10 @@ export class ConfigLoader {
         hooks: [...staging.hooks.values()],
         removals: [...staging.removals],
         modes: [...staging.modes.values()].map((staged) => staged.mode),
+        contextMenu: [...staging.contextMenu.values()].map(({ label, command }) => ({
+          label,
+          command,
+        })),
       },
     }
   }

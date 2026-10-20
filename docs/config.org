@@ -51,6 +51,7 @@ column in an error are the line and column in your file.
 | =nemesis.off(point, name)=                  | Removes a handler by point and name.                                                                  |
 | =nemesis.dispatchUrl(rule)=                 | A URL rule at =before-load=: rewrite or block the page loads it matches. See URL dispatch below.      |
 | =nemesis.defineMode(spec)=                  | A mode (ADR 0004): a keymap layer, hooks and settings, and =toggle-<name>=. See Modes below.          |
+| =nemesis.addContextMenuCommand(label, cmd)= | An entry of a page buffer's right-click menu that runs =cmd=. See Context menu below.                 |
 
 The =user= layer sits above the global map and below the per-buffer maps, so
 a chord there wins over the cockpit's global one. A config command cannot take
@@ -236,6 +237,39 @@ The rules:
   dispatched again, and neither is a redirect the server sends.
 - When no rule answers, the page's own navigation goes on untouched, a
   form's posted body included.
+
+* Context menu
+
+A right-click in a page buffer (#180) opens a menu with three entries on the
+link under the pointer, greyed off a link: =Open link in new buffer=, =Copy
+link= and =Bookmark link=. =nemesis.addContextMenuCommand(label, command)=
+adds an entry after them, Nyxt's =ffi-add-context-menu-command=; the command
+reads what was under the pointer from =context.atPoint=, Nyxt's
+=url-at-point=:
+
+#+begin_src typescript
+nemesis.defineCommand({
+  name: 'note-link',
+  doc: 'Says the link under the pointer.',
+  run(context: { atPoint?: { linkUrl: string | null; selection: string | null } }): void {
+    nemesis.notice('link: ' + (context.atPoint?.linkUrl ?? 'none'))
+  },
+})
+nemesis.addContextMenuCommand('Note link', 'note-link')
+#+end_src
+
+- =atPoint= holds =pageId=, =pageUrl= (the buffer's committed URL),
+  =linkUrl= (parsed, at most 8192 characters, or =null=) and =selection= (at
+  most 10000 characters, or =null=). It is frozen.
+- The link and the selection are page content, written by whoever wrote the
+  page. A command reads them as data; never pass them to =eval= or into a
+  prompt for the agent.
+- The command runs with the source =context-menu=, through the registry, so
+  the command hooks fire as for a key. Its MCP class is its own.
+- The label is one line of at most 80 characters, unique in the file. The
+  command is one of the file's or the cockpit's; an unknown name fails the
+  load on the line that added it. Eval refuses the call: it belongs in the
+  file.
 
 * Modes
 

@@ -28,7 +28,7 @@ import { BufferModes } from './commands/modes'
 import { modesFor } from '../shared/buffers'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
-import type { Command, CommandRegistry } from './commands/registry'
+import type { AtPoint, Command, CommandRegistry } from './commands/registry'
 import type { EvalOutcome } from './config/eval'
 import type { Journal } from './config/journal'
 import type { ConfigLoader } from './config/loader'
@@ -56,6 +56,7 @@ import type { PageScriptDoor } from './page-door'
 import { encodeQuery, type PageAnswers, type PageRequestName } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
+import { contextMenuItems, type ContextMenuItem } from './pages/context-menu'
 import { FormGuide } from './pages/form-guide'
 import { FormGuideSession } from './agent/form-guide'
 import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
@@ -170,6 +171,8 @@ export interface CockpitShared {
   readonly agents?: AgentsSource
   /** The app's hooks (#165, ADR 0005), fired from this window's buffers, commands and session. */
   readonly hooks?: HookRegistry
+  /** Pops a page's context menu over the window (#180); a log under test. */
+  readonly openContextMenu?: (window: BrowserWindow, items: readonly ContextMenuItem[]) => void
 }
 
 /** Without the app there is no other window to list. */
@@ -454,6 +457,8 @@ export function createCockpit(
     console: (pageId, level, message) => consoleLog.record(pageId, level, message),
     // `before-load` (#179): the config's URL rules, ahead of the navigation policy.
     ...(hooks === null ? {} : { hooks }),
+    // A right-click in a page (#180): the built-in link entries and the config's.
+    contextMenu: (atPoint) => showContextMenu(atPoint),
   })
   installPageBridge(pages, contents)
   // The semantic view (#122): each page's snapshot through the door, its
@@ -471,6 +476,39 @@ export function createCockpit(
   // Hint mode (#123): labels over the snapshot's targets, drawn by the door's
   // overlay; which label names which ref, and the action on it, stay here.
   const hintListeners = new Set<(event: AgentEvent) => void>()
+  const hintSay = (text: string): void => {
+    for (const listener of hintListeners) listener({ type: 'notice', text })
+  }
+  // A link into the bookmarks, from a hint (#123) or the context menu (#180).
+  const bookmarkLink = (pageId: string, url: string): void => {
+    if (shared.stores === null) return hintSay('Not bookmarked: the profile database is not open')
+    if (pages.partitionOf(pageId) === 'ephemeral')
+      return hintSay('Not bookmarked: an ephemeral page leaves nothing in the profile.')
+    shared.stores.bookmarks.add(url, '', [])
+    hintSay('Bookmarked the link')
+  }
+  // The page context menu (#180), over this window: the link entries act
+  // here; a config entry runs its command with the AtPoint on its context,
+  // data the command reads. A failed command is a notice.
+  const showContextMenu = (atPoint: AtPoint): void => {
+    const open = shared.openContextMenu
+    if (open === undefined || window.isDestroyed()) return
+    open(
+      window,
+      contextMenuItems(atPoint, config.contextMenu, {
+        openNew: (url) => void pages.openNew(url, true),
+        copy: (url) => shared.writeClipboardText(url),
+        bookmark: bookmarkLink,
+        run: (command, point) => {
+          dispatcher.registry
+            .run(command, { source: 'context-menu', bufferType: 'page', atPoint: point })
+            .catch((error: unknown) =>
+              hintSay(`${command}: ${error instanceof Error ? error.message : String(error)}`),
+            )
+        },
+      }),
+    )
+  }
   const askPage = <N extends 'hints' | 'hints-show'>(
     pageId: string,
     name: N,
@@ -490,19 +528,8 @@ export function createCockpit(
     openNew: (url, focus) => pages.openNew(url, focus),
     click: (pageId, x, y) => pages.clickAt(pageId, x, y),
     copy: shared.writeClipboardText,
-    bookmark: (pageId, url) => {
-      const say = (text: string): void => {
-        for (const listener of hintListeners) listener({ type: 'notice', text })
-      }
-      if (shared.stores === null) return say('Not bookmarked: the profile database is not open')
-      if (pages.partitionOf(pageId) === 'ephemeral')
-        return say('Not bookmarked: an ephemeral page leaves nothing in the profile.')
-      shared.stores.bookmarks.add(url, '', [])
-      say('Bookmarked the link')
-    },
-    notify: (text) => {
-      for (const listener of hintListeners) listener({ type: 'notice', text })
-    },
+    bookmark: (pageId, url) => bookmarkLink(pageId, url),
+    notify: hintSay,
     events: (listener) => pages.onPageEvent(listener),
   })
   const hintNotices: EventSource = {

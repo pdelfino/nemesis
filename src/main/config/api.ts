@@ -7,6 +7,7 @@ import { checkHandler, checkPointAndName, HOOK_POINTS, HookError } from '../hook
 import type { Mode, ModeHook } from '../commands/modes'
 import { defineMode, ModeError, togglerName } from '../commands/modes'
 import type { NotifyToggles, Settings } from '../settings'
+import { MAX_CONTEXT_LABEL } from '../pages/context-menu'
 import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } from '../settings'
 
 /**
@@ -18,7 +19,7 @@ import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } fro
  *
  * The object reaches the command registry's shapes, the keymap builder, the
  * settings rules, the hook points (#165), URL dispatch over `before-load`
- * (#179), the mode definition (#166), a read
+ * (#179), the mode definition (#166), the page context menu (#180), a read
  * of the buffer list,
  * `commands.run` and `notice`, and
  * nothing of src/main/agent/, src/main/security/ or src/preload/. The file is
@@ -73,6 +74,13 @@ export interface StagedBinding {
   readonly site: CallSite | null
 }
 
+/** A context-menu entry the file adds, and where, so an unknown command is reported on its line. */
+export interface StagedContextMenuEntry {
+  readonly label: string
+  readonly command: string
+  readonly site: CallSite | null
+}
+
 /**
  * One load's requests. `reserved` is the names the file may not take: the
  * cockpit's commands, which stay whatever the file does.
@@ -87,6 +95,8 @@ export class ConfigStaging {
   readonly removals: { readonly point: HookPoint; readonly name: string }[] = []
   /** Modes by name, in the order the file defined them (#166). */
   readonly modes = new Map<string, StagedMode>()
+  /** Page context-menu entries by label, in the order the file added them (#180). */
+  readonly contextMenu = new Map<string, StagedContextMenuEntry>()
   /** The user layer as built so far, so a conflict between two chords fails on the call that made it. */
   keymap: Keymap | null = null
   /** Set when the file's body has run: a definition from a command body later would be lost. */
@@ -143,6 +153,11 @@ export interface ConfigApi {
   dispatchUrl(spec: unknown): void
   /** A mode (ADR 0004): a keymap layer, hooks and settings, with `toggle-<name>` unless `toggler` is false. */
   defineMode(spec: unknown): void
+  /**
+   * An entry of the page context menu (#180) that runs `command`; the command
+   * reads the link and the selection under the pointer from `context.atPoint`.
+   */
+  addContextMenuCommand(label: unknown, command: unknown): void
   readonly settings: {
     set(key: unknown, value: unknown): void
     get(key: unknown): unknown
@@ -505,6 +520,24 @@ export function createConfigApi(staging: ConfigStaging, env: ConfigApiEnv): Conf
         )
       }
       staging.modes.set(name, { mode, site: staging.site() })
+    },
+    addContextMenuCommand(label, command) {
+      staging.open('addContextMenuCommand')
+      if (typeof label !== 'string' || label.trim().length === 0) {
+        throw new CommandError('addContextMenuCommand: the label is a non-empty string')
+      }
+      if (label.length > MAX_CONTEXT_LABEL || /[\r\n]/.test(label)) {
+        throw new CommandError(
+          `addContextMenuCommand: the label is one line of at most ${MAX_CONTEXT_LABEL} characters`,
+        )
+      }
+      if (typeof command !== 'string') {
+        throw new CommandError(`Context-menu entry "${label}": the command is a name`)
+      }
+      if (staging.contextMenu.has(label)) {
+        throw new CommandError(`Context-menu entry "${label}" is already added in this file`)
+      }
+      staging.contextMenu.set(label, { label, command, site: staging.site() })
     },
     settings: {
       set(key, value) {

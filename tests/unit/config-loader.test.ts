@@ -325,3 +325,69 @@ describe('the config module boundary', () => {
     }
   })
 })
+
+describe('addContextMenuCommand (#180)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = harness()
+  })
+
+  it("adds entries in order, to the file's commands or the cockpit's, and a reload replaces them", () => {
+    h.write(
+      "nemesis.defineCommand({ name: 'note-link', doc: 'Notes the link.', run(context: { atPoint?: { linkUrl: string | null } }) { nemesis.notice('link ' + context.atPoint?.linkUrl) } })\n" +
+        "nemesis.addContextMenuCommand('Note link', 'note-link')\n" +
+        "nemesis.addContextMenuCommand('Search', 'search-buffer')\n",
+    )
+    expect(h.loader.contextMenu).toEqual([])
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    expect(h.loader.contextMenu).toEqual([
+      { label: 'Note link', command: 'note-link' },
+      { label: 'Search', command: 'search-buffer' },
+    ])
+    h.write("nemesis.addContextMenuCommand('Search', 'search-buffer')\n")
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    expect(h.loader.contextMenu).toEqual([{ label: 'Search', command: 'search-buffer' }])
+  })
+
+  it('hands the command the AtPoint of its context, as data', async () => {
+    h.write(
+      "nemesis.defineCommand({ name: 'note-link', doc: 'Notes the link.', run(context: { atPoint?: { linkUrl: string | null; selection: string | null } }) { nemesis.notice('link ' + context.atPoint?.linkUrl + ' ' + context.atPoint?.selection) } })\n" +
+        "nemesis.addContextMenuCommand('Note link', 'note-link')\n",
+    )
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    await h.registry.run('note-link', {
+      source: 'context-menu',
+      bufferType: 'page',
+      atPoint: {
+        pageId: 'p1',
+        pageUrl: 'https://example.test/',
+        linkUrl: 'https://example.test/next',
+        selection: "nemesis.notice('pwned')",
+      },
+    })
+    expect(h.notices).toEqual(["link https://example.test/next nemesis.notice('pwned')"])
+  })
+
+  it('rejects an unknown command on its line, a bad label and a repeated label, committing nothing', () => {
+    h.write("const a = 1\nnemesis.addContextMenuCommand('Nope', 'no-such-command')\n")
+    const unknown = h.loader.reload(h.target)
+    expect(unknown).toMatchObject({ ok: false, problem: { line: 2 } })
+    if (!unknown.ok) expect(unknown.problem.message).toContain('no-such-command')
+    for (const [source, message] of [
+      ["nemesis.addContextMenuCommand('', 'search-buffer')", 'non-empty'],
+      ["nemesis.addContextMenuCommand('two\\nlines', 'search-buffer')", 'one line'],
+      ["nemesis.addContextMenuCommand('x'.repeat(81), 'search-buffer')", 'one line'],
+      ["nemesis.addContextMenuCommand('Go', 42)", 'is a name'],
+      [
+        "nemesis.addContextMenuCommand('Go', 'search-buffer')\nnemesis.addContextMenuCommand('Go', 'search-buffer')",
+        'already added',
+      ],
+    ] as const) {
+      h.write(`${source}\n`)
+      const result = h.loader.reload(h.target)
+      expect(result.ok, source).toBe(false)
+      if (!result.ok) expect(result.problem.message).toContain(message)
+    }
+    expect(h.loader.contextMenu).toEqual([])
+  })
+})

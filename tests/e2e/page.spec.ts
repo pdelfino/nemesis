@@ -2,7 +2,7 @@ import type { ElectronApplication } from '@playwright/test'
 import { expect, test, type Page } from './_test'
 import { launchApp, launchNemesis } from './_launch'
 import { fixtureServer } from './security/_harness'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -295,5 +295,98 @@ test('disable-mode over two marked page buffers turns the blocker off in both (#
   } finally {
     await app.close()
     await fixtures.close()
+  }
+})
+
+/** One page context menu as the main process logged it under test (#180). */
+interface ContextMenuRecord {
+  readonly labels: readonly { readonly label: string; readonly enabled: boolean }[]
+  click(label: string): void
+}
+
+/** The labels of every context menu the app would have popped so far. */
+function contextMenus(app: ElectronApplication): Promise<string[][]> {
+  return app.evaluate(() =>
+    (
+      (globalThis as { __nemesisContextMenus?: ContextMenuRecord[] }).__nemesisContextMenus ?? []
+    ).map((menu) => menu.labels.map((entry) => `${entry.label}${entry.enabled ? '' : ' (off)'}`)),
+  )
+}
+
+// The page context menu (#180): a config entry added with
+// addContextMenuCommand shows after the built-in link entries on a
+// right-click over a fixture link, and its command reads the link's URL from
+// context.atPoint. The native menu is a log under test, as the share menu is.
+test('a right-click on a link offers the config entry, whose command reads the link URL', async () => {
+  const fixtures = await fixtureServer()
+  const dir = mkdtempSync(join(tmpdir(), 'nemesis-e2e-context-menu-'))
+  writeFileSync(
+    join(dir, 'init.ts'),
+    `nemesis.defineCommand({
+  name: 'note-link',
+  doc: 'Says the link under the pointer.',
+  run(context: { atPoint?: { linkUrl: string | null } }): void {
+    nemesis.notice('link at point: ' + context.atPoint?.linkUrl)
+  },
+})
+nemesis.addContextMenuCommand('Note link', 'note-link')
+`,
+  )
+  const { app } = await launchApp('nemesis-e2e-', [], {}, { NEMESIS_CONFIG_DIR: dir })
+  try {
+    const window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+    await window.evaluate(() => {
+      const w = globalThis as unknown as TestWindow & {
+        __notices?: string[]
+        nemesis: { onAgentEvent(listener: (event: { type: string; text?: string }) => void): void }
+      }
+      w.__notices = []
+      w.nemesis.onAgentEvent((event) => {
+        if (event.type === 'notice') w.__notices?.push(event.text ?? '')
+      })
+    })
+    const opened = app.waitForEvent('window')
+    const link = fixtures.url('context-menu.html')
+    const loaded = await app.evaluate(async (_main, url) => {
+      const door = (
+        globalThis as {
+          __nemesisPages?: { open(url: string): Promise<{ loadError: string | null }> }
+        }
+      ).__nemesisPages
+      if (door === undefined) throw new Error('No page door')
+      return door.open(url)
+    }, link)
+    expect(loaded.loadError).toBeNull()
+    const page = await opened
+    await expect(page).toHaveTitle('context menu')
+
+    await page.locator('#plain').click({ button: 'right' })
+    await expect
+      .poll(() => contextMenus(app))
+      .toEqual([['Open link in new buffer', 'Copy link', 'Bookmark link', 'Note link']])
+    await app.evaluate(() =>
+      (globalThis as { __nemesisContextMenus?: ContextMenuRecord[] }).__nemesisContextMenus
+        ?.at(-1)
+        ?.click('Note link'),
+    )
+    await expect
+      .poll(() => window.evaluate(() => (globalThis as { __notices?: string[] }).__notices ?? []))
+      .toContain(`link at point: ${fixtures.url('semantic.html')}`)
+
+    // Off a link the link entries are off; the config entry stays.
+    await page.locator('#text').click({ button: 'right' })
+    await expect
+      .poll(async () => (await contextMenus(app)).at(-1))
+      .toEqual([
+        'Open link in new buffer (off)',
+        'Copy link (off)',
+        'Bookmark link (off)',
+        'Note link',
+      ])
+  } finally {
+    await app.close()
+    await fixtures.close()
+    rmSync(dir, { recursive: true, force: true })
   }
 })

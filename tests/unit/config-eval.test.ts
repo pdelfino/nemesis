@@ -110,6 +110,11 @@ describe('eval in the config scope', () => {
     )
     expect(hook.ok).toBe(false)
     expect(hook.text).toMatch(/nemesis\.on and nemesis\.off are not applied at eval/)
+    const entry = await h.evaluator.evaluate(
+      `${DEFINE}; nemesis.addContextMenuCommand('Say hi', 'say-hi')`,
+    )
+    expect(entry.ok).toBe(false)
+    expect(entry.text).toMatch(/addContextMenuCommand is not applied at eval/)
     expect(h.registry.has('say-hi')).toBe(false)
     expect(h.journal.count).toBe(0)
   })

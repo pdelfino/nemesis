@@ -7,14 +7,32 @@ import type { HookRegistry } from '../hooks'
  * way. Nothing in the app calls an action by any other route.
  */
 
+/**
+ * What was under the pointer when a page buffer's context menu opened (#180),
+ * as Nyxt's `url-at-point` reads it. Every string but `pageId` is page
+ * content: data for a command to read, never code to evaluate and never text
+ * for the agent's prompt (SECURITY.org, T4).
+ */
+export interface AtPoint {
+  readonly pageId: string
+  /** The page buffer's committed URL (T3), not the one the page reported. */
+  readonly pageUrl: string | null
+  /** The link under the pointer, parsed and bounded, or null off a link. */
+  readonly linkUrl: string | null
+  /** The page's selection, bounded, or null when nothing is selected. */
+  readonly selection: string | null
+}
+
 /** Where the invocation came from, for commands that care. */
 export interface CommandContext {
-  readonly source: 'key' | 'palette' | 'menu' | 'config' | 'test' | 'mcp'
+  readonly source: 'key' | 'palette' | 'menu' | 'context-menu' | 'config' | 'test' | 'mcp'
   /** With `mcp`: the name the client gave at initialize (#28), so a command can tell who asked. */
   readonly client?: string
   /** The chord that ran it, in Emacs notation, when a key did. */
   readonly chord?: string
   readonly bufferType?: BufferType | null
+  /** With `context-menu`: the link and the selection under the pointer, frozen (#180). */
+  readonly atPoint?: AtPoint
 }
 
 export interface Command {
