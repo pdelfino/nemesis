@@ -49,11 +49,12 @@ column in an error are the line and column in your file.
 | =nemesis.notice(text)=                      | A notice in the transcript, recorded in the session folder.                                           |
 | =nemesis.on(point, { name, doc, run })=     | A handler at a hook point (ADR 0005), with the source =config=. See Hooks below.                      |
 | =nemesis.off(point, name)=                  | Removes a handler by point and name.                                                                  |
+| =nemesis.defineMode(spec)=                  | A mode (ADR 0004): a keymap layer, hooks and settings, and =toggle-<name>=. See Modes below.          |
 
 The =user= layer sits above the global map and below the per-buffer maps, so
 a chord there wins over the cockpit's global one. A config command cannot take
 a cockpit command's name: to change what a key does, bind it to a new name.
-=nemesis.defineMode= arrives with ADR 0004's mode registry (ADR 0006, step 3).
+A mode's keymap sits above all three in the buffers it is on in.
 
 ** The notification toggles
 
@@ -184,6 +185,66 @@ The rules:
 - =M-x list-hooks= shows every handler in the help buffer, by point, with its
   source; =M-x remove-hook= removes one chosen in the palette until the next
   reload. =nemesis.on= and =nemesis.off= belong in the file: eval refuses them.
+
+* Modes
+
+A mode is a keymap layer, hooks and settings that a buffer is in or not
+(ADR 0004, #166). A buffer's modes are a list, first wins: its keys are
+looked up in each mode in order, then in its kind's map, the =user= layer
+and the global map, which is the =base= mode under every buffer. The mode
+line shows the current buffer's modes. A permission prompt, a diff, a plan
+and a spec buffer each start in the mode of the same name; =M-x enable-mode=
+and =M-x disable-mode= turn a mode on or off in the current buffer, chosen in
+the palette.
+
+#+begin_src typescript
+// n goes to the next buffer and s searches, as single keys, while focus
+// mode is on; M-x toggle-focus turns it on and off in the current buffer.
+// The commands named in the keymap are the cockpit's or the file's own.
+nemesis.defineMode({
+  name: 'focus',
+  doc: 'Bind n to the next buffer and s to search.',
+  keymap: { n: 'switch-buffer', s: 'search-buffer' },
+  // While on, an unmodified key is a command, not text.
+  modal: true,
+  settings: { dim: true },
+  // Attached with the source mode:focus while any buffer is in the mode.
+  hooks: [
+    {
+      point: 'after-command',
+      name: 'focus-count',
+      doc: 'Counts the commands run while focus is on.',
+      run(event) {
+        nemesis.notice(`focus: ${event.command}`)
+      },
+    },
+  ],
+  enable(buffer, state) {
+    nemesis.notice(`focus on in ${buffer.title}, dim ${state.settings.dim}`)
+  },
+  disable(buffer) {
+    nemesis.notice(`focus off in ${buffer.title}`)
+  },
+})
+#+end_src
+
+The rules:
+
+- The name is kebab-case and new: =base=, =permission=, =diff=, =plan=,
+  =spec= and the page buffer's modes are taken.
+- A mode turned on goes first in the buffer's list, so its keys win.
+- =toggle-<name>= is registered with the mode; =toggler: false= leaves it
+  out, and a command of that name already defined is an error.
+- =visible: false= keeps the mode out of the mode line.
+- A chord that does not parse, or a command the cockpit and the file do not
+  define, is an error on the file's line.
+- =reload-config= turns the file's modes off in every buffer and defines
+  them again; turn one back on with its toggle.
+- A page buffer keeps its own modes (=document=, =hint=, =passthrough=,
+  =form-guide=) for now: a config mode is not turned on there.
+- Only a command, the config, or a rule written there switches a mode;
+  nothing a page or an IPC message sends can. Eval refuses
+  =nemesis.defineMode=: it belongs in the file.
 
 * Reload
 

@@ -26,13 +26,6 @@ export type BufferType =
   | 'page'
   | 'reader'
 
-/**
- * Buffer types where an unmodified key is a command, not text (`y`/`n` on a
- * permission prompt). Everywhere else the renderer keeps plain typing local and
- * only reports chords, so typed text never crosses the bridge.
- */
-export const MODAL_BUFFER_TYPES: readonly BufferType[] = ['permission']
-
 /** One key press, as the renderer saw it. `code` is the layout-independent fallback. */
 export interface KeyPress {
   readonly key: string
@@ -179,27 +172,72 @@ export interface KeymapShape {
   readonly prefixes: readonly string[]
 }
 
+/**
+ * What the renderer knows of a mode (ADR 0004, #166): its keys' shape, whether
+ * an unmodified key is a command while it is on (`y`/`n` on a permission
+ * prompt; everywhere else plain typing stays local and only chords are
+ * reported, so typed text never crosses the bridge), and whether the mode
+ * line shows it.
+ */
+export interface ModeShape {
+  readonly keys: KeymapShape
+  readonly modal: boolean
+  readonly visible: boolean
+}
+
 /** The shape of every keymap layer, published to the renderer at load. */
 export interface KeyBindings {
   readonly global: KeymapShape
   readonly byBufferType: Readonly<Partial<Record<BufferType, KeymapShape>>>
+  /** Per mode name; a buffer's modes come with the buffer list (`BufferInfo.modes`). */
+  readonly byMode: Readonly<Record<string, ModeShape>>
+}
+
+/** The layers a buffer's keys are looked up in: its modes, its type, the global map. */
+function layersOf(
+  bindings: KeyBindings,
+  bufferType: BufferType | null,
+  modes: readonly string[],
+): KeymapShape[] {
+  const layers: KeymapShape[] = []
+  for (const name of modes) {
+    const mode = bindings.byMode[name]
+    if (mode !== undefined) layers.push(mode.keys)
+  }
+  const buffer = bufferType === null ? undefined : bindings.byBufferType[bufferType]
+  if (buffer !== undefined) layers.push(buffer)
+  layers.push(bindings.global)
+  return layers
 }
 
 /**
  * Whether a stroke, typed first, is the cockpit's to handle in a buffer of
- * this type. Mirrors the resolver's layering: the buffer-type map and the
- * global map both count, and a prefix counts as much as a whole chord, since
- * the main process decides how the sequence ends.
+ * this type in these modes. Mirrors the resolver's layering: the modes, the
+ * buffer-type map and the global map all count, and a prefix counts as much
+ * as a whole chord, since the main process decides how the sequence ends.
  */
 export function startsCockpitChord(
   token: string,
   bindings: KeyBindings,
   bufferType: BufferType | null,
+  modes: readonly string[] = [],
 ): boolean {
-  const buffer = bufferType === null ? undefined : bindings.byBufferType[bufferType]
-  for (const layer of [buffer, bindings.global]) {
-    if (layer === undefined) continue
-    if (layer.chords.includes(token) || layer.prefixes.includes(token)) return true
-  }
-  return false
+  return layersOf(bindings, bufferType, modes).some(
+    (layer) => layer.chords.includes(token) || layer.prefixes.includes(token),
+  )
+}
+
+/** Whether a stroke is a prefix of a bound sequence in a buffer of this type in these modes. */
+export function isCockpitPrefix(
+  token: string,
+  bindings: KeyBindings,
+  bufferType: BufferType | null,
+  modes: readonly string[] = [],
+): boolean {
+  return layersOf(bindings, bufferType, modes).some((layer) => layer.prefixes.includes(token))
+}
+
+/** Whether any of a buffer's modes makes an unmodified key a command. */
+export function isModal(bindings: KeyBindings, modes: readonly string[]): boolean {
+  return modes.some((name) => bindings.byMode[name]?.modal === true)
 }

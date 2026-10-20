@@ -102,6 +102,12 @@ export class ConfigEval {
           'nemesis.settings.set is not applied at eval: put it in init.ts and run reload-config',
         )
       }
+      // A mode from eval would outlive the journal's promote and discard (#166).
+      if (staging.modes.size > 0) {
+        throw new ConfigError(
+          'nemesis.defineMode is not applied at eval: put it in init.ts and run reload-config',
+        )
+      }
       // A handler from eval would be the `repl` source of ADR 0005, which waits for its own issue.
       if (staging.hooks.size > 0 || staging.removals.length > 0) {
         throw new ConfigError(

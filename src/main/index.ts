@@ -24,6 +24,7 @@ import {
   cockpitKeymapLayers,
   createCockpitRegistry,
   setUserKeymap,
+  cockpitModes,
   type CockpitWindows,
 } from './commands/keyscheme'
 import {
@@ -688,7 +689,19 @@ void app.whenReady().then(() => {
     buffers: () => focusedCockpit()?.buffers.list() ?? [],
     run: runInFocused,
     hooks,
+    // A config mode (#166): defined in the app's registry, toggled in the focused window.
+    modes: cockpitModes,
+    toggleMode: async (name) => {
+      const modes = focusedCockpit()?.modes
+      const buffer = modes?.current
+      if (modes === undefined || buffer === null || buffer === undefined) {
+        throw new CommandError('There is no current buffer')
+      }
+      await modes.toggleMode(buffer.id, name)
+    },
   })
+  // A mode's hooks go to the app's registry while it is on (#166).
+  cockpitModes.useHooks(hooks)
   // The config's commands are committed to a registry of the cockpit's own
   // commands that no window drives, and copied from there into every
   // window's (#70), so a window opened after a reload has them too.

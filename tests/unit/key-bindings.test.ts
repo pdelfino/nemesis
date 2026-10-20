@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { createCockpitDispatcher } from '../../src/main/commands/keyscheme'
 import { defineKeymap } from '../../src/main/commands/keymap'
 import type { KeyBindings } from '../../src/shared/keys'
-import { startsCockpitChord } from '../../src/shared/keys'
+import { isModal, startsCockpitChord } from '../../src/shared/keys'
+import { modesFor } from '../../src/shared/buffers'
 
 // The main process publishes the shape of its keymaps, never the commands, so
 // the renderer can leave every unbound key to the editor under it (#61).
@@ -45,15 +46,20 @@ describe('the shape of a keymap', () => {
       'M-x',
     ])
     expect(bindings.global.prefixes).toEqual(['C-c', 'C-h', 'C-x', 'C-x 5'])
-    expect(bindings.byBufferType.permission).toEqual({
-      chords: ['1', '2', '3', '4', 'a', 'n', 'y'],
-      prefixes: [],
+    // The permission, diff, plan and spec keys are modes since #166.
+    expect(bindings.byBufferType.permission).toBeUndefined()
+    expect(bindings.byMode['permission']).toEqual({
+      keys: { chords: ['1', '2', '3', '4', 'a', 'n', 'y'], prefixes: [] },
+      modal: true,
+      visible: true,
     })
     // The plan buffer's own send and compact keys (#82).
-    expect(bindings.byBufferType.plan).toEqual({
+    expect(bindings.byMode['plan']?.keys).toEqual({
       chords: ['C-c C-c', 'C-c C-k'],
       prefixes: ['C-c'],
     })
+    expect(bindings.byMode['plan']?.modal).toBe(false)
+    expect(Object.keys(bindings.byMode)).toEqual(['permission', 'diff', 'plan', 'spec'])
     expect(JSON.stringify(bindings)).not.toContain('switch-buffer')
   })
 })
@@ -61,7 +67,11 @@ describe('the shape of a keymap', () => {
 describe('what the renderer hands over', () => {
   const bindings: KeyBindings = {
     global: { chords: ['C-c C-c', 'C-g', 'M-x'], prefixes: ['C-c'] },
-    byBufferType: { permission: { chords: ['y'], prefixes: [] } },
+    byBufferType: { prompt: { chords: ['@'], prefixes: [] } },
+    byMode: {
+      permission: { keys: { chords: ['y'], prefixes: [] }, modal: true, visible: true },
+      plan: { keys: { chords: ['C-c C-k'], prefixes: ['C-c'] }, modal: false, visible: true },
+    },
   }
 
   it('takes a bound chord or a prefix of one, in any buffer', () => {
@@ -76,9 +86,32 @@ describe('what the renderer hands over', () => {
     }
   })
 
-  it('consults the buffer-type map before the global one', () => {
-    expect(startsCockpitChord('y', bindings, 'permission')).toBe(true)
+  it("consults the buffer's modes and its type map before the global one", () => {
+    expect(startsCockpitChord('y', bindings, 'permission', ['permission'])).toBe(true)
+    expect(startsCockpitChord('y', bindings, 'permission', [])).toBe(false)
     expect(startsCockpitChord('y', bindings, 'prompt')).toBe(false)
+    expect(startsCockpitChord('@', bindings, 'prompt')).toBe(true)
     expect(startsCockpitChord('y', bindings, null)).toBe(false)
+  })
+
+  it('reads the modal flag from the modes, not the buffer type (#166)', () => {
+    expect(isModal(bindings, ['permission'])).toBe(true)
+    expect(isModal(bindings, ['plan'])).toBe(false)
+    expect(isModal(bindings, [])).toBe(false)
+  })
+
+  it('takes the modes of the current buffer of the type, else the first of it', () => {
+    const plan = (id: string, modes: readonly string[]) => ({
+      id,
+      kind: 'plan' as const,
+      title: id,
+      elementId: 'plan',
+      modes,
+    })
+    const list = { buffers: [plan('b1', ['plan']), plan('b2', ['focus', 'plan'])], currentId: 'b2' }
+    expect(modesFor(list, 'plan')).toEqual(['focus', 'plan'])
+    expect(modesFor({ ...list, currentId: null }, 'plan')).toEqual(['plan'])
+    expect(modesFor(list, 'prompt')).toEqual([])
+    expect(modesFor(list, null)).toEqual([])
   })
 })

@@ -4,6 +4,8 @@ import type { Keymap } from '../commands/keymap'
 import { defineKeymap, KeymapError, normalizeChord } from '../commands/keymap'
 import type { HookHandler, HookPoint } from '../hooks'
 import { checkHandler, checkPointAndName, HookError } from '../hooks'
+import type { Mode, ModeHook } from '../commands/modes'
+import { defineMode, ModeError, togglerName } from '../commands/modes'
 import type { NotifyToggles, Settings } from '../settings'
 import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } from '../settings'
 
@@ -15,7 +17,8 @@ import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } fro
  * until the loader commits the whole load.
  *
  * The object reaches the command registry's shapes, the keymap builder, the
- * settings rules, the hook points (#165), a read of the buffer list,
+ * settings rules, the hook points (#165), the mode definition (#166), a read
+ * of the buffer list,
  * `commands.run` and `notice`, and
  * nothing of src/main/agent/, src/main/security/ or src/preload/. The file is
  * trusted code all the same: node:vm is not a security boundary.
@@ -56,6 +59,12 @@ export interface StagedHook {
   readonly site: CallSite | null
 }
 
+/** A mode the file defines, and where, so an unknown command in its keymap is reported on its line. */
+export interface StagedMode {
+  readonly mode: Mode
+  readonly site: CallSite | null
+}
+
 /** What a binding asked for, and where, so an unknown command is reported on its line. */
 export interface StagedBinding {
   readonly chord: string
@@ -75,6 +84,8 @@ export class ConfigStaging {
   readonly hooks = new Map<string, StagedHook>()
   /** Handlers of another source the file removes with `off`, applied at commit. */
   readonly removals: { readonly point: HookPoint; readonly name: string }[] = []
+  /** Modes by name, in the order the file defined them (#166). */
+  readonly modes = new Map<string, StagedMode>()
   /** The user layer as built so far, so a conflict between two chords fails on the call that made it. */
   keymap: Keymap | null = null
   /** Set when the file's body has run: a definition from a command body later would be lost. */
@@ -84,6 +95,8 @@ export class ConfigStaging {
     readonly file: string,
     readonly base: Settings,
     readonly reserved: ReadonlySet<string>,
+    /** The mode names the file may not take: the cockpit's and the page buffer's. */
+    readonly reservedModes: ReadonlySet<string> = new Set(),
   ) {}
 
   /** The settings this load ends with: the file's overrides on the data file's values. */
@@ -109,6 +122,8 @@ export interface ConfigApiEnv {
   readonly buffers: () => readonly { id: string; kind: string; title: string }[]
   readonly run: (name: string) => Promise<void>
   readonly notice: (text: string) => void
+  /** Turns a mode on or off in the focused window's current buffer, for a config mode's toggle (#166). */
+  readonly toggleMode?: (name: string) => Promise<void>
 }
 
 export interface ConfigApi {
@@ -119,6 +134,8 @@ export interface ConfigApi {
   on(point: unknown, spec: unknown): void
   /** Removes a handler by point and name. */
   off(point: unknown, name: unknown): void
+  /** A mode (ADR 0004): a keymap layer, hooks and settings, with `toggle-<name>` unless `toggler` is false. */
+  defineMode(spec: unknown): void
   readonly settings: {
     set(key: unknown, value: unknown): void
     get(key: unknown): unknown
@@ -146,6 +163,97 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'restore',
   'hints',
 ]
+
+/** `{ [key]: value }` when the value is there, `{}` when it is not, for an optional spec field. */
+function optional<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, V>)
+}
+
+function stringField(spec: Record<string, unknown>, key: string, mode: string): string {
+  const value = spec[key]
+  if (typeof value !== 'string') throw new ModeError(`Mode "${mode}" needs a ${key} line`)
+  return value
+}
+
+function booleanField(
+  spec: Record<string, unknown>,
+  key: string,
+  mode: string,
+): boolean | undefined {
+  const value = spec[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw new ModeError(`Mode "${mode}": ${key} is true or false`)
+  return value
+}
+
+function recordField(
+  spec: Record<string, unknown>,
+  key: string,
+  mode: string,
+): Record<string, unknown> | undefined {
+  const value = spec[key]
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new ModeError(`Mode "${mode}": ${key} is an object`)
+  return { ...value }
+}
+
+function keymapField(
+  spec: Record<string, unknown>,
+  mode: string,
+): Record<string, string> | undefined {
+  const value = recordField(spec, 'keymap', mode)
+  if (value === undefined) return undefined
+  for (const [chord, command] of Object.entries(value)) {
+    if (typeof command !== 'string') {
+      throw new KeymapError(
+        `Mode "${mode}": the command bound to ${chord} is a name, not ${typeof command}`,
+      )
+    }
+  }
+  return value as Record<string, string>
+}
+
+/** The file's hooks of a mode, checked as `on` checks them and wrapped as `on` wraps them. */
+function modeHooks(spec: Record<string, unknown>, mode: string): readonly ModeHook[] | undefined {
+  const value = spec['hooks']
+  if (value === undefined) return undefined
+  if (!Array.isArray(value))
+    throw new ModeError(`Mode "${mode}": hooks is a list of { point, name, doc, run }`)
+  return value.map((hook: unknown): ModeHook => {
+    if (!isRecord(hook)) throw new ModeError(`Mode "${mode}": a hook is { point, name, doc, run }`)
+    const { point, name, doc, run } = hook
+    checkHandler(point, name, doc, run)
+    const body = run as (event: unknown, signal: AbortSignal) => unknown
+    return {
+      point: point as HookPoint,
+      handler: Object.freeze({
+        name: name as string,
+        doc: doc as string,
+        run: async (event: unknown, signal: AbortSignal) => {
+          const result = await body.call(undefined, { ...(event as object) }, signal)
+          return isRecord(result) && result['veto'] === true
+            ? { veto: true as const, reason: String(result['reason'] ?? 'refused by the config') }
+            : undefined
+        },
+      }),
+    }
+  })
+}
+
+/** A mode's enable or disable from the file: it sees copies of the buffer and the state. */
+function transition(
+  spec: Record<string, unknown>,
+  key: 'enable' | 'disable',
+  mode: string,
+): ((buffer: object, state: object) => Promise<void>) | undefined {
+  const value = spec[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'function') throw new ModeError(`Mode "${mode}": ${key} is a function`)
+  const body = value as (buffer: unknown, state: unknown) => unknown
+  return async (buffer, state) => {
+    await body.call(undefined, { ...buffer }, { ...state })
+  }
+}
 
 /** `notify.finished` and the like: one toggle of the `notify` object (#114), or null. */
 function notifyKey(key: unknown): keyof NotifyToggles | null {
@@ -264,6 +372,48 @@ export function createConfigApi(staging: ConfigStaging, env: ConfigApiEnv): Conf
       if (!staging.hooks.delete(`${String(point)} ${String(name)}`)) {
         staging.removals.push({ point: point as HookPoint, name: name as string })
       }
+    },
+    defineMode(spec) {
+      staging.open('defineMode')
+      if (!isRecord(spec)) throw new ModeError('defineMode takes { name, doc, keymap?, ... }')
+      const name = spec['name']
+      if (typeof name !== 'string') throw new ModeError('A mode name is a string')
+      if (staging.reservedModes.has(name)) {
+        throw new ModeError(`Mode "${name}" is the cockpit's; a config mode takes a new name`)
+      }
+      if (staging.modes.has(name))
+        throw new ModeError(`Mode "${name}" is already defined in this file`)
+      const mode = defineMode({
+        name,
+        doc: stringField(spec, 'doc', name),
+        ...optional('keymap', keymapField(spec, name)),
+        ...optional('settings', recordField(spec, 'settings', name)),
+        ...optional('visible', booleanField(spec, 'visible', name)),
+        ...optional('modal', booleanField(spec, 'modal', name)),
+        ...optional('toggler', booleanField(spec, 'toggler', name)),
+        ...optional('hooks', modeHooks(spec, name)),
+        ...optional('enable', transition(spec, 'enable', name)),
+        ...optional('disable', transition(spec, 'disable', name)),
+      })
+      if (mode.toggler !== false) {
+        const toggler = togglerName(name)
+        if (staging.reserved.has(toggler) || staging.commands.has(toggler)) {
+          throw new CommandError(`Command "${toggler}" is already defined; set toggler: false`)
+        }
+        staging.commands.set(
+          toggler,
+          defineCommand({
+            name: toggler,
+            doc: `Turn ${name} mode on or off in the current buffer: ${mode.doc}`,
+            run: async () => {
+              if (env.toggleMode === undefined)
+                throw new CommandError('No window to toggle a mode in')
+              await env.toggleMode(name)
+            },
+          }),
+        )
+      }
+      staging.modes.set(name, { mode, site: staging.site() })
     },
     settings: {
       set(key, value) {

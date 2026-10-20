@@ -1,6 +1,7 @@
 import type { BufferInfo, BufferList, BufferSpec } from '../shared/buffers'
 import type { BufferType } from '../shared/keys'
 import type { HookRegistry } from './hooks'
+import { DEFAULT_MODES } from './commands/modes'
 
 /**
  * The buffer registry (#60). Nyxt and Emacs make everything a buffer, so the
@@ -63,11 +64,14 @@ export class BufferRegistry {
     if (title.length > MAX_TITLE) throw new BufferError('Buffer title is too long')
 
     this.counter += 1
+    // A kind with default modes starts in them, first wins (#166, ADR 0004).
+    const modes = DEFAULT_MODES[spec.kind]
     const buffer: BufferInfo = Object.freeze({
       id: `b${this.counter}`,
       kind: spec.kind,
       title,
       elementId: spec.elementId ?? null,
+      ...(modes === undefined ? {} : { modes: Object.freeze([...modes]) }),
     })
     this.buffers.push(buffer)
     if (this.currentId === null) this.currentId = buffer.id

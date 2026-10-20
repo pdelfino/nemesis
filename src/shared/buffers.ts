@@ -31,9 +31,12 @@ export interface BufferInfo {
    */
   readonly url?: string
   /**
-   * The modes a page buffer is in, first wins (ADR 0004, #120): `document`
-   * always, `passthrough` in front of it while every key but its exit chord
-   * goes to the page. Absent on every other kind.
+   * The modes the buffer is in, first wins (ADR 0004). A kind with default
+   * modes starts in them (`permission`, `diff`, `plan`, `spec`, #166), and
+   * the mode commands change the list. A page buffer's are its own (#120):
+   * `document` always, `passthrough` in front of it while every key but its
+   * exit chord goes to the page. The `base` mode, the global map, is under
+   * every buffer and never listed. Absent on a buffer in no mode.
    */
   readonly modes?: readonly string[]
   /** A page buffer's zoom as a percentage, Chromium's per origin (#120). Absent on every other kind. */
@@ -52,6 +55,21 @@ export interface BufferInfo {
 export interface BufferList {
   readonly buffers: readonly BufferInfo[]
   readonly currentId: string | null
+}
+
+/**
+ * The modes of the buffer a key of this type is for (#166): the current
+ * buffer's when it is of that type, else the first buffer of the type, as
+ * the window shows it. Both sides of the key bridge read it the same way.
+ */
+export function modesFor(list: BufferList, bufferType: BufferType | null): readonly string[] {
+  if (bufferType === null) return []
+  const current = list.buffers.find((buffer) => buffer.id === list.currentId)
+  const buffer =
+    current?.kind === bufferType
+      ? current
+      : list.buffers.find((candidate) => candidate.kind === bufferType)
+  return buffer?.modes ?? []
 }
 
 /** What a caller must say to open a buffer. */

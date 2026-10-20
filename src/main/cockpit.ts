@@ -16,10 +16,13 @@ import { confirm, CONFIRM_SOURCES, OPEN_FILE_SOURCE, VERIFY_SOURCE } from './com
 import type { KeyDispatcher } from './commands/dispatcher'
 import { installKeyBridge } from './commands/key-bridge'
 import {
+  cockpitModes,
   createCockpitDispatcher,
   resolveCockpitDeps,
   type CockpitWindows,
 } from './commands/keyscheme'
+import { BufferModes } from './commands/modes'
+import { modesFor } from '../shared/buffers'
 import { installPaletteBridge } from './commands/palette-bridge'
 import { Prompter } from './commands/prompter'
 import type { Command, CommandRegistry } from './commands/registry'
@@ -94,6 +97,8 @@ export interface Cockpit {
   readonly prompter: Prompter
   readonly help: HelpBuffers
   readonly registry: CommandRegistry
+  /** The modes of this window's buffers (#166); a config mode's toggle acts here. */
+  readonly modes: BufferModes
   readonly agent: SessionManager
   /** This window's MCP server: the catalog an outside client or the in-app session sees (#28). */
   readonly mcp: CockpitMcp
@@ -715,7 +720,11 @@ export function createCockpit(
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
+  // The modes of this window's buffers (#166), over the app's mode registry.
+  const modes = new BufferModes(cockpitModes, buffers, (text) => config.notify(text))
+  onDestroyed(() => modes.dispose())
   const deps = resolveCockpitDeps({
+    modes,
     buffers,
     permissions,
     prompter,
@@ -812,7 +821,7 @@ export function createCockpit(
   texts.follow({ onShown: (listener: HelpListener) => deps.help.on(listener) }, shown)
   // Keys mean nothing until the registry and the keymaps are up (#59).
   const dispatcher: KeyDispatcher = createCockpitDispatcher(deps)
-  installKeyBridge(dispatcher, contents)
+  installKeyBridge(dispatcher, contents, (type) => modesFor(buffers.snapshot(), type))
   dispatcher.registry.registerAll(shared.commands(deps.help))
   if (hooks !== null) {
     dispatcher.registry.registerAll(hookCommands(hooks, { help: deps.help, prompter }))
@@ -826,6 +835,7 @@ export function createCockpit(
     prompter,
     help: deps.help,
     registry: dispatcher.registry,
+    modes,
     agent,
     mcp,
     prompts,

@@ -7,7 +7,7 @@ import { installAgentsBuffer } from './agents-buffer'
 import { installFormGuide } from './form-guide'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
-import { installModeline } from './modeline'
+import { installModeline, modeNames } from './modeline'
 import { installPageBuffer } from './page-buffer'
 import { installPalette } from './palette'
 import { installPlanBuffer } from './plan-buffer'
@@ -88,10 +88,18 @@ void installPromptBuffer().then((prompt) => {
   // `@` mentions a file at the start of a word and stays text inside one (#83).
   keys.keepAsText = (press) => prompt.keepsAsText(press)
 })
+// The current buffer's modes in the mode line (#166), off the buffer list and the bindings.
+const modes = document.getElementById('buffer-modes')
+const showModes = (): void => {
+  if (modes !== null) modes.textContent = modeNames(keys.buffers, keys.bindings)
+}
+// The key capture's own listener, installed first, has the list by now.
+window.nemesis.onBuffersChanged(showModes)
 function readBindings(): void {
   void window.nemesis.bindings().then(
     (bindings) => {
       keys.bindings = bindings
+      showModes()
     },
     (error: unknown) => console.error('Could not read the key bindings:', error),
   )

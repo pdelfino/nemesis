@@ -1,7 +1,10 @@
+import type { BufferList } from '../shared/buffers'
+import { modesFor } from '../shared/buffers'
 import type { BufferType, KeyBindings, KeyOutcome, KeyPress } from '../shared/keys'
 import {
   formatStroke,
-  MODAL_BUFFER_TYPES,
+  isCockpitPrefix,
+  isModal,
   startsCockpitChord,
   strokeFromKeyPress,
 } from '../shared/keys'
@@ -14,7 +17,10 @@ import {
  * the shape of its keymaps at load, and a key is intercepted only when its
  * stroke is a bound chord or the prefix of one for the buffer under the point,
  * when a sequence is half typed, or when the buffer is modal (`y`/`n` on a
- * permission prompt). Every other key, `C-a` and `M-f` included, reaches the
+ * permission prompt). The buffer's keys are its modes' and its type's (#166):
+ * the modes come with the buffer list, which the main process pushes on
+ * every change, so a mode switched there is followed here; nothing here
+ * switches one. Every other key, `C-a` and `M-f` included, reaches the
  * editor under it untouched, and typed text stays in the renderer. Until the
  * shape arrives, every chord is reported, as before #61.
  *
@@ -44,6 +50,8 @@ export type CommandListener = (outcome: KeyOutcome, bufferType: BufferType | nul
 export interface KeyCapture {
   /** The shape of the keymaps, once the main process has answered. */
   bindings: KeyBindings | null
+  /** The buffer list as last pushed, for the modes of the buffer under the point. */
+  buffers: BufferList | null
   onCommand: CommandListener | null
   /**
    * A buffer's say on a bound printable key (#83): `@` is a file mention at
@@ -57,7 +65,13 @@ export interface KeyCapture {
 let pending = false
 
 export function installKeyCapture(): KeyCapture {
-  const capture: KeyCapture = { bindings: null, onCommand: null, keepAsText: null }
+  const capture: KeyCapture = { bindings: null, buffers: null, onCommand: null, keepAsText: null }
+  window.nemesis.onBuffersChanged((list) => {
+    capture.buffers = list
+  })
+  void window.nemesis.buffers().then((list) => {
+    capture.buffers ??= list
+  })
   window.addEventListener(
     'keydown',
     (event) => {
@@ -91,7 +105,7 @@ async function onKeyDown(event: KeyboardEvent, capture: KeyCapture): Promise<voi
   if (
     !pending &&
     capture.bindings !== null &&
-    isPrefix(token, capture.bindings, press.bufferType)
+    isCockpitPrefix(token, capture.bindings, press.bufferType, modesOf(capture, press.bufferType))
   ) {
     pending = true
   }
@@ -116,19 +130,19 @@ function cockpitToken(press: KeyPress, capture: KeyCapture): string | null {
   if (stroke === null) return null
   const token = formatStroke(stroke)
   if (pending) return token
-  if (press.bufferType !== null && MODAL_BUFFER_TYPES.includes(press.bufferType)) return token
   if (capture.bindings === null) {
     return press.ctrlKey || press.altKey || press.metaKey ? token : null
   }
-  if (!startsCockpitChord(token, capture.bindings, press.bufferType)) return null
+  const modes = modesOf(capture, press.bufferType)
+  if (isModal(capture.bindings, modes)) return token
+  if (!startsCockpitChord(token, capture.bindings, press.bufferType, modes)) return null
   const printable = !press.ctrlKey && !press.altKey && !press.metaKey && stroke.key.length === 1
   if (printable && capture.keepAsText?.(press) === true) return null
   return token
 }
 
-function isPrefix(token: string, bindings: KeyBindings, bufferType: BufferType | null): boolean {
-  const buffer = bufferType === null ? undefined : bindings.byBufferType[bufferType]
-  return [buffer, bindings.global].some((layer) => layer?.prefixes.includes(token) === true)
+function modesOf(capture: KeyCapture, bufferType: BufferType | null): readonly string[] {
+  return capture.buffers === null ? [] : modesFor(capture.buffers, bufferType)
 }
 
 function activeBufferType(): BufferType | null {
