@@ -330,6 +330,12 @@ export interface CockpitDeps {
   readonly semanticText: () => Promise<string>
   /** The headings of the page or pages, to jump to (#176). */
   readonly headings: HeadingCommands
+  /**
+   * The current page's focused field in the external editor and back
+   * (#178); it says how it went in a notice, and rejects only when the
+   * current buffer is not a page.
+   */
+  readonly editField: () => Promise<void>
   /** Hint mode on the current page buffer (#123); each rejects when the current buffer is not a page. */
   readonly hints: HintCommands
   /** Reader mode on the current page or reader buffer (#128). */
@@ -556,6 +562,9 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.semanticText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
     headings: partial.headings ?? NO_HEADINGS,
+    editField:
+      partial.editField ??
+      (() => Promise.reject(new CommandError('No page buffers in this window'))),
     hints: partial.hints ?? NO_HINTS,
     reader: partial.reader ?? NO_READER,
     formGuide: partial.formGuide ?? NO_FORM_GUIDE,
@@ -604,6 +613,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     pageText,
     semanticText,
     headings,
+    editField,
     hints,
     reader,
     formGuide,
@@ -1968,6 +1978,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             )
           })
           .catch(report('jump-to-heading-buffers'))
+      },
+    }),
+    defineCommand({
+      name: 'edit-with-external-editor',
+      mcp: 'never',
+      doc: "Edit the page's focused text field in the external editor (externalEditor, emacsclient by default); the text goes back when the editor exits. Password fields are refused.",
+      run: () => {
+        editField().catch(report('edit-with-external-editor'))
       },
     }),
     defineCommand({

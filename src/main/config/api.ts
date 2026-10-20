@@ -163,6 +163,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'restore',
   'hints',
   'pageModes',
+  'externalEditor',
 ]
 
 /** `{ [key]: value }` when the value is there, `{}` when it is not, for an optional spec field. */

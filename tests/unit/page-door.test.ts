@@ -2,8 +2,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  decodeFieldWrite,
   decodeQuery,
+  encodeFieldWrite,
   encodeQuery,
+  MAX_FIELD_WRITE_CHARS,
+  MAX_PAGE_REQUEST_ARGS,
   MAX_MUTATION_SUMMARY,
   MAX_NODE_TEXT,
   MAX_QUERY_HTML,
@@ -301,6 +305,62 @@ describe('the scroll-to answer (#176)', () => {
     for (const bad of [{ status: 'done' }, { status: 'ok', y: 4 }, {}]) {
       expect(() => parsePageAnswer('scroll-to', bad)).toThrow()
     }
+  })
+})
+
+describe("the field and field-write answers (#178, the door's other write)", () => {
+  it('takes a status, the element, the length and the text', () => {
+    const ok = { status: 'ok', element: 7, total: 5, text: 'hello' }
+    expect(parsePageAnswer('field', ok)).toEqual(ok)
+    expect(parsePageAnswer('field', { status: 'masked', element: 0, total: 0, text: '' })).toEqual({
+      status: 'masked',
+      element: 0,
+      total: 0,
+      text: '',
+    })
+    for (const bad of [
+      { ...ok, status: 'secret' },
+      { ...ok, text: 'x'.repeat(MAX_TEXT_CHARS + 1) },
+      { ...ok, element: -1 },
+      { ...ok, value: 'hunter2' },
+      { status: 'ok', element: 7, total: 5 },
+    ]) {
+      expect(() => parsePageAnswer('field', bad)).toThrow()
+    }
+    expect(parsePageAnswer('field-write', { status: 'ok', total: 6 })).toEqual({
+      status: 'ok',
+      total: 6,
+    })
+    for (const bad of [{ status: 'ok' }, { status: 'ok', total: 1.5 }, { status: 'x', total: 0 }]) {
+      expect(() => parsePageAnswer('field-write', bad)).toThrow()
+    }
+  })
+
+  it('carries the text as code units, round trip, within the args bound', () => {
+    const write = { element: 3, from: 0, last: true, text: 'café 😀\nline' }
+    const args = encodeFieldWrite(write)
+    expect(args.every((one) => Number.isSafeInteger(one))).toBe(true)
+    expect(args.slice(0, 3)).toEqual([3, 0, 1])
+    expect(decodeFieldWrite(args)).toEqual(write)
+    const longest = encodeFieldWrite({
+      element: 1,
+      from: 9,
+      last: false,
+      text: 'x'.repeat(MAX_FIELD_WRITE_CHARS),
+    })
+    expect(longest).toHaveLength(MAX_PAGE_REQUEST_ARGS)
+    expect(() =>
+      encodeFieldWrite({
+        element: 1,
+        from: 0,
+        last: true,
+        text: 'x'.repeat(MAX_FIELD_WRITE_CHARS + 1),
+      }),
+    ).toThrow()
+    expect(() => encodeFieldWrite({ element: 0, from: 0, last: true, text: '' })).toThrow()
+    expect(() => decodeFieldWrite([1, 0, 2])).toThrow()
+    expect(() => decodeFieldWrite([1, 0, 1, 0x10000])).toThrow()
+    expect(() => decodeFieldWrite([1])).toThrow()
   })
 })
 

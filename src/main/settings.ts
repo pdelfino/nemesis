@@ -81,6 +81,12 @@ export interface Settings {
    * time a page opens, so a config's own mode may be listed.
    */
   readonly pageModes: readonly string[]
+  /**
+   * The editor edit-with-external-editor runs on a page field's text (#178):
+   * a program, spawned with the path of a temporary file as its only
+   * argument and no shell, whose exit means the edit is done.
+   */
+  readonly externalEditor: string
 }
 
 /** The `hints` object of settings.json. */
@@ -147,6 +153,7 @@ const KNOWN_KEYS: readonly string[] = [
   'restore',
   'hints',
   'pageModes',
+  'externalEditor',
 ]
 
 /** The most modes `pageModes` may list, and the shape of a mode's name (modes.ts). */
@@ -216,6 +223,10 @@ export const SETTING_DOCS: Readonly<Record<keyof Settings, SettingDoc>> = {
     type: 'list of mode names',
     doc: 'The modes a new page buffer starts in besides document; a name no mode has is ignored.',
   },
+  externalEditor: {
+    type: 'program',
+    doc: 'The editor edit-with-external-editor runs on a page field, with a file path as its one argument.',
+  },
 }
 
 export class SettingsError extends Error {
@@ -238,6 +249,7 @@ export function defaultSettings(documentsDir: string): Settings {
     restore: true,
     hints: DEFAULT_HINT_SETTINGS,
     pageModes: ['blocker'],
+    externalEditor: 'emacsclient',
   }
 }
 
@@ -344,6 +356,11 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     )
   }
 
+  const externalEditor = value['externalEditor'] ?? defaults.externalEditor
+  if (typeof externalEditor !== 'string' || externalEditor.trim().length === 0) {
+    throw new SettingsError('Setting "externalEditor" is not a program')
+  }
+
   return {
     sessionsDir: expanded,
     model,
@@ -358,6 +375,7 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     restore,
     hints,
     pageModes: pageModes as string[],
+    externalEditor,
   }
 }
 
@@ -463,6 +481,7 @@ export function serializeSettings(settings: Settings): string {
     restore: settings.restore,
     hints: settings.hints,
     pageModes: settings.pageModes,
+    externalEditor: settings.externalEditor,
     ...(settings.notify === null ? {} : { notify: settings.notify }),
   }
   return `${JSON.stringify(body, null, 2)}\n`

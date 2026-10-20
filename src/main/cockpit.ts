@@ -54,6 +54,7 @@ import {
   type PagePolicies,
 } from './page-buffer'
 import type { PageScriptDoor } from './page-door'
+import { editExternally, editFocusedField } from './external-editor'
 import { encodeQuery, type PageAnswers, type PageRequestName } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
@@ -917,6 +918,31 @@ export function createCockpit(
         const { answer } = await askDocument(resolved.pageId, 'scroll-to', [resolved.element])
         if (answer.status !== 'ok') throw new CommandError('That heading is gone from the page')
       },
+    },
+    // edit-with-external-editor (#178): the focused field through the door,
+    // edited in a file of the profile. Under test NEMESIS_EXTERNAL_EDITOR
+    // stands in for the setting, so a spec runs a script of its own.
+    editField: async () => {
+      const pageId = currentPageId()
+      const say = (text: string): void => {
+        for (const listener of hintListeners) listener({ type: 'notice', text })
+      }
+      const standIn =
+        process.env['NODE_ENV'] === 'test' ? process.env['NEMESIS_EXTERNAL_EDITOR'] : undefined
+      const editor = standIn || config.settings.externalEditor
+      try {
+        say(
+          await editFocusedField({
+            field: () => askDocument(pageId, 'field', []),
+            text: (element, from, chars) => askDocument(pageId, 'text', [element, from, chars]),
+            write: (args) => askDocument(pageId, 'field-write', args),
+            document: () => semantic.currentDocument(pageId),
+            edit: (text) => editExternally(text, { profileDir: app.getPath('userData'), editor }),
+          }),
+        )
+      } catch (error) {
+        say(error instanceof Error ? error.message : String(error))
+      }
     },
     hints: {
       start: async (action) => hints.start(currentPageId(), action),
