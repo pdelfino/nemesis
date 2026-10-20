@@ -34,6 +34,7 @@ import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import type { HelpBuffers, HelpListener } from './help'
+import { MessageLog, messagesCommands } from './messages'
 import { hookCommands, hooksSource, type HookRegistry } from './hooks'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { BufferTexts, diffText } from './mcp/buffer-texts'
@@ -599,6 +600,7 @@ export function createCockpit(
     void formGuide.stopAll()
     pages.destroyAll()
   })
+  const messages = new MessageLog()
   const notices = mergeNotices(
     shared.notices,
     diffs,
@@ -765,7 +767,7 @@ export function createCockpit(
     agent,
     permissions,
     recorder,
-    notices: mergeNotices(notices, mcp),
+    notices: messages.watch(mergeNotices(notices, mcp)),
   })
   // The palette reads a choice for a command, and help answers in a buffer (#65);
   // the same prompter reads the yes or no of a download or an external link (#51).
@@ -868,6 +870,7 @@ export function createCockpit(
   const dispatcher: KeyDispatcher = createCockpitDispatcher(deps)
   installKeyBridge(dispatcher, contents, (type) => modesFor(buffers.snapshot(), type))
   dispatcher.registry.registerAll(shared.commands(deps.help))
+  dispatcher.registry.registerAll(messagesCommands(messages, deps.help))
   if (hooks !== null) {
     dispatcher.registry.registerAll(hookCommands(hooks, { help: deps.help, prompter }))
     dispatcher.registry.useHooks(hooks)

@@ -176,6 +176,8 @@ export interface AgentPermissionAnsweredEvent {
 export interface AgentNoticeEvent {
   readonly type: 'notice'
   readonly text: string
+  /** Where it came from (config, hook, download, permission); the messages log (#170) reads it. */
+  readonly source?: string
 }
 
 /**

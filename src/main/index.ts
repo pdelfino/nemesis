@@ -671,7 +671,7 @@ void app.whenReady().then(() => {
     },
   }
   const hooks = new HookRegistry((text) => {
-    for (const listener of [...hookListeners]) listener({ type: 'notice', text })
+    for (const listener of [...hookListeners]) listener({ type: 'notice', text, source: 'hook' })
   })
   // before-quit waits on its handlers: the first quit is held, the handlers
   // run each within its timeout, and the quit is asked again. The app's
@@ -787,13 +787,18 @@ void app.whenReady().then(() => {
   // The app's own notices, a refused site permission or download, a
   // certificate error, a config load, go to the focused window's session
   // (#70), shown and recorded like any event there.
+  // Each source stamps its notices, for the messages log (#170).
+  const stamped = (source: string, from: EventSource): EventSource => ({
+    on: (listener) =>
+      from.on((event) => listener(event.type === 'notice' ? { ...event, source } : event)),
+  })
   const appNotices = mergeNotices(
-    permissionPolicy,
-    downloads,
-    external,
-    transport,
-    config,
-    blocker,
+    stamped('permission', permissionPolicy),
+    stamped('download', downloads),
+    stamped('app', external),
+    stamped('app', transport),
+    stamped('config', config),
+    stamped('app', blocker),
     hookNotices,
   )
   const noticesFor = (id: number): EventSource => ({
