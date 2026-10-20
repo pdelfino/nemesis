@@ -68,6 +68,16 @@ bumps produce a broken tree. Major bumps of =@types/node= are ignored (types
 track the Node pinned in =.nvmrc=) and of =typescript= (typescript-eslint pins
 it below 6.1). Every Dependabot pull request is merged only on a green gate.
 
+*** Amendment, 2026-OCTOBER-19: Dependabot is off (#155)
+
+The repository takes no pull requests (Pedro, 2026-OCTOBER-19), and
+Dependabot's only output is pull requests, so =.github/dependabot.yml= is
+removed and its automated security fixes stay off. Bumps are made by hand
+in the interactive session: =npm outdated= and the Electron releases page
+are checked at the start of each work session, the Electron packages still
+move together in one commit, and the same ignores hold (majors of
+=@types/node= and =typescript=). The section above is kept for the record.
+
 * Consequences
 
 - A dependency that needs a build step at install time cannot be used here. The

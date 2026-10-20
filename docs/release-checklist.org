@@ -5,7 +5,7 @@ How a version of Nemesis leaves this machine (#74). The security promise in =SEC
 
 * When to cut a release
 
-- An Electron or Chromium security release: the Electron bump is the next thing merged, within a week of the upstream release (=SECURITY.org=, supply chain). Watch the Electron releases page and the Dependabot pull request that groups Electron.
+- An Electron or Chromium security release: the Electron bump is the next thing merged, within a week of the upstream release (=SECURITY.org=, supply chain). Watch the Electron releases page, checked with =npm outdated= at the start of each interactive work session; Dependabot is off (#155).
 - Otherwise, whenever =main= has something worth shipping. A release with no security reason may wait; a security bump may not.
 
 * Steps
