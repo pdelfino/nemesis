@@ -146,7 +146,7 @@ Five keys work on a page buffer and nowhere else. Each is a command too, so =C-h
 
 ** Hints: =f= and =F=
 
-In a page buffer, =f= (=follow-hint=) puts a short label on every interactive element in view; type the letters of a label and a link is followed, a button pressed and a field focused. =F= (=copy-hint-url=) does the same but copies the link's URL. =C-g= takes the labels down. The labels come from the =hints.alphabet= setting (the home row by default) and are at most =hints.maxLength= long (=docs/config.org=). While the labels are up every key is a label key: nothing else gets it.
+In a page buffer, =f= (=follow-hint=) puts a short label on every interactive element in view; type the letters of a label and a link is followed, a button pressed and a field focused. =F= (=copy-hint-url=) does the same but copies the link's URL. =M-g= (=follow-hint-new-buffer=) and =M-f= (=follow-hint-new-buffer-focus=) label the links and open the one typed in a new page buffer, in the background or switched to. =C-g= takes the labels down. The labels come from the =hints.alphabet= setting (the home row by default) and are at most =hints.maxLength= long (=docs/config.org=). While the labels are up every key is a label key: nothing else gets it.
 
 ** Reader mode: =C-c C-r=, export and attach
 

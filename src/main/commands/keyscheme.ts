@@ -1689,6 +1689,18 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       run: () => hints.start('copy'),
     }),
     defineCommand({
+      name: 'follow-hint-new-buffer',
+      mcp: 'never',
+      doc: "Label the links in the current page buffer's view; typing a label opens that link in a new page buffer in the background, C-g leaves.",
+      run: () => hints.start('new-buffer'),
+    }),
+    defineCommand({
+      name: 'follow-hint-new-buffer-focus',
+      mcp: 'never',
+      doc: "Label the links in the current page buffer's view; typing a label opens that link in a new page buffer and switches to it, C-g leaves.",
+      run: () => hints.start('new-buffer-focus'),
+    }),
+    defineCommand({
       name: 'type-hint-key',
       mcp: 'never',
       doc: 'Type one key of a hint label, in hint mode; the last key of a label runs the hint.',
@@ -2258,6 +2270,9 @@ export const MODE_KEYMAPS: ModeKeymaps = {
       // Nyxt's hint keys (#123).
       f: 'follow-hint',
       F: 'copy-hint-url',
+      // Nyxt's new-buffer variants (#174): M-g in the background, M-f focused.
+      'M-g': 'follow-hint-new-buffer',
+      'M-f': 'follow-hint-new-buffer-focus',
     }),
   },
   // Hint mode (#123) is sealed while its labels are up: every label key

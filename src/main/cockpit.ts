@@ -445,6 +445,7 @@ export function createCockpit(
     settings: () => config.settings.hints,
     mode: (pageId, on) => pages.setHintMode(pageId, on),
     open: (pageId, url) => pages.load(pageId, url),
+    openNew: (url, focus) => pages.openNew(url, focus),
     click: (pageId, x, y) => pages.clickAt(pageId, x, y),
     copy: shared.writeClipboardText,
     notify: (text) => {

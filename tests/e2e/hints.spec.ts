@@ -74,7 +74,7 @@ async function press(
   app: ElectronApplication,
   contentsId: number,
   keyCode: string,
-  modifiers: readonly ('control' | 'shift')[] = [],
+  modifiers: readonly ('control' | 'shift' | 'alt')[] = [],
 ): Promise<void> {
   await app.evaluate(
     ({ webContents }, { contentsId, keyCode, modifiers }) => {
@@ -85,6 +85,31 @@ async function press(
     },
     { contentsId, keyCode, modifiers },
   )
+}
+
+/** The page buffers and the current one, as the buffer list carries them. */
+async function pageBuffers(
+  nemesis: Nemesis,
+): Promise<{ urls: readonly string[]; currentId: string | null; ids: readonly string[] }> {
+  return nemesis.window.evaluate(async () => {
+    const api = (
+      globalThis as unknown as {
+        nemesis: {
+          buffers(): Promise<{
+            currentId: string | null
+            buffers: { id: string; kind: string; url?: string }[]
+          }>
+        }
+      }
+    ).nemesis
+    const list = await api.buffers()
+    const pages = list.buffers.filter((buffer) => buffer.kind === 'page')
+    return {
+      urls: pages.map((buffer) => buffer.url ?? ''),
+      currentId: list.currentId,
+      ids: pages.map((buffer) => buffer.id),
+    }
+  })
 }
 
 /** The page's modes, as the buffer list carries them. */
@@ -199,6 +224,44 @@ test('labels go up over the links, out of reach of the page, and typing one foll
     await expect.poll(() => buffer.page.url()).toBe(fixtures.secureUrl('semantic.html'))
     await expect.poll(() => modes(nemesis, ids)).toEqual(['document'])
     expect(await targets(app, ids)).toEqual([])
+  } finally {
+    await nemesis.close()
+    await fixtures.close()
+  }
+})
+
+test('M-g opens the typed link in a background buffer and M-f in a focused one', async () => {
+  const fixtures = await fixtureServer()
+  const nemesis = await launchNemesis()
+  const { app } = nemesis
+  try {
+    const url = fixtures.secureUrl('hints.html')
+    const buffer = await nemesis.openPageBuffer(url)
+    expect(buffer.loadError).toBeNull()
+    const ids = buffer.ids
+    if (ids === undefined) throw new Error('The page buffer has no ids')
+
+    await press(app, buffer.contentsId, 'g', ['alt'])
+    await expect.poll(async () => (await targets(app, ids)).length).toBe(2)
+    await press(app, buffer.contentsId, 'a')
+    await expect
+      .poll(async () => (await pageBuffers(nemesis)).urls)
+      .toContain(fixtures.secureUrl('semantic.html'))
+    const background = await pageBuffers(nemesis)
+    expect(background.urls).toHaveLength(2)
+    expect(background.currentId).toBe(ids.bufferId)
+    expect(buffer.page.url()).toBe(url)
+
+    await press(app, buffer.contentsId, 'f', ['alt'])
+    await expect.poll(async () => (await targets(app, ids)).length).toBe(2)
+    await press(app, buffer.contentsId, 's')
+    await expect
+      .poll(async () => (await pageBuffers(nemesis)).urls)
+      .toContain(fixtures.secureUrl('injection.html'))
+    const focused = await pageBuffers(nemesis)
+    expect(focused.currentId).not.toBe(ids.bufferId)
+    expect(focused.urls).toHaveLength(3)
+    expect(buffer.page.url()).toBe(url)
   } finally {
     await nemesis.close()
     await fixtures.close()

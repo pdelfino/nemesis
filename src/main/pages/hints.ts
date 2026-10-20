@@ -33,8 +33,11 @@ import { formatRef, parseRef, type SemanticNode, type SemanticSnapshot } from '.
  * the clipboard come in through `PageHintsOptions`.
  */
 
-/** What a typed label does: follow (or focus) its target, or copy the target's URL. */
-export type HintAction = 'follow' | 'copy'
+/**
+ * What a typed label does: follow (or focus) its target, copy the target's
+ * URL, or open the link in a new page buffer, in the background or focused (#174).
+ */
+export type HintAction = 'follow' | 'copy' | 'new-buffer' | 'new-buffer-focus'
 
 /** One labelled target. */
 export interface HintTarget {
@@ -68,6 +71,8 @@ export interface PageHintsOptions {
   readonly mode: (pageId: string, on: boolean) => void
   /** Opens a URL in the page buffer, under the page policy. */
   readonly open: (pageId: string, url: string) => Promise<unknown>
+  /** Opens a URL in a new page buffer under the page policy, made current when `focus` is set. */
+  readonly openNew: (url: string, focus: boolean) => Promise<unknown>
   /** A click at a point of the page's viewport, synthesized in main. */
   readonly click: (pageId: string, x: number, y: number) => void
   /** The system clipboard's text. */
@@ -119,7 +124,8 @@ function flatten(nodes: readonly SemanticNode[]): SemanticNode[] {
 /**
  * The targets of one `f` or `F`: the elements the `hints` read found that the
  * snapshot also holds, in the read's order, each with the next label. `copy`
- * labels links only, since nothing else has a URL to copy.
+ * labels links only (an `href` on the element), since nothing else has a URL
+ * to copy or to open in a buffer.
  */
 export function hintTargets(
   snapshot: SemanticSnapshot,
@@ -139,7 +145,7 @@ export function hintTargets(
   const found = answer.nodes.flatMap((node) => {
     const known = byElement.get(node.id)
     if (known === undefined) return []
-    if (action === 'copy' && node.href.length === 0) return []
+    if (action !== 'follow' && node.href.length === 0) return []
     return [{ node, ref: formatRef(document, node.id), role: known.role }]
   })
   const labels = hintLabels(found.length, settings.alphabet, settings.maxLength)
@@ -195,7 +201,13 @@ export class PageHints {
     const targets = hintTargets(snapshot, answer, action, this.options.settings())
     const first = targets[0]
     if (first === undefined) {
-      this.options.notify(action === 'copy' ? 'No links to copy here' : 'No hints on this page')
+      this.options.notify(
+        action === 'copy'
+          ? 'No links to copy here'
+          : action === 'follow'
+            ? 'No hints on this page'
+            : 'No links to open here',
+      )
       return
     }
     if (this.options.semantic.resolve(first.ref) === null) {
@@ -237,7 +249,7 @@ export class PageHints {
 
   /**
    * The action on one target, by ref: a link's URL opened in the page or
-   * copied, any other target clicked at its centre. A ref whose document is
+   * copied, opened in a new buffer, any other target clicked at its centre. A ref whose document is
    * gone is refused.
    */
   async activate(pageId: string, target: HintTarget, action: HintAction): Promise<void> {
@@ -253,6 +265,14 @@ export class PageHints {
       this.options.copy(target.href)
       // The URL is the page's and can carry a secret: the notice does not repeat it.
       this.options.notify("Copied the link's URL")
+      return
+    }
+    if (action === 'new-buffer' || action === 'new-buffer-focus') {
+      if (target.href.length === 0) {
+        this.options.notify('That element has no URL to open')
+        return
+      }
+      await this.options.openNew(target.href, action === 'new-buffer-focus')
       return
     }
     if (target.role === 'link' && target.href.length > 0) {

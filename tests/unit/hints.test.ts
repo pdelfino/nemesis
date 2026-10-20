@@ -205,6 +205,7 @@ interface Fakes {
   readonly shown: (readonly number[])[]
   readonly modes: [string, boolean][]
   readonly opened: [string, string][]
+  readonly openedNew: [string, boolean][]
   readonly clicked: [string, number, number][]
   readonly copied: string[]
   readonly notices: string[]
@@ -216,6 +217,7 @@ function fakes(answer: HintsAnswer): Fakes {
   const shown: (readonly number[])[] = []
   const modes: [string, boolean][] = []
   const opened: [string, string][] = []
+  const openedNew: [string, boolean][] = []
   const clicked: [string, number, number][] = []
   const copied: string[] = []
   const notices: string[] = []
@@ -246,6 +248,10 @@ function fakes(answer: HintsAnswer): Fakes {
       opened.push([pageId, url])
       return Promise.resolve(null)
     },
+    openNew: (url, focus) => {
+      openedNew.push([url, focus])
+      return Promise.resolve(null)
+    },
     click: (pageId, x, y) => clicked.push([pageId, x, y]),
     copy: (text) => copied.push(text),
     notify: (text) => notices.push(text),
@@ -258,6 +264,7 @@ function fakes(answer: HintsAnswer): Fakes {
     shown,
     modes,
     opened,
+    openedNew,
     clicked,
     copied,
     notices,
@@ -312,6 +319,23 @@ describe('hint mode', () => {
     expect(f.copied).toEqual(['https://a.test/next'])
     expect(f.opened).toEqual([])
     expect(f.notices.join(' ')).not.toContain('https://a.test/next')
+  })
+
+  it('the new-buffer variants label links only and open the URL in a new buffer', async () => {
+    const f = fakes(ANSWER)
+    const hints = new PageHints(f.options)
+    await hints.start('p1', 'new-buffer')
+    expect(decodeHintLabels(f.shown[0] ?? [])).toEqual([{ id: 1, label: 'a' }])
+    await hints.type('p1', 'a')
+    expect(f.openedNew).toEqual([['https://a.test/next', false]])
+    await hints.start('p1', 'new-buffer-focus')
+    await hints.type('p1', 'a')
+    expect(f.openedNew).toEqual([
+      ['https://a.test/next', false],
+      ['https://a.test/next', true],
+    ])
+    expect(f.opened).toEqual([])
+    expect(f.clicked).toEqual([])
   })
 
   it('a key no label continues with does nothing, so a label the page draws itself means nothing', async () => {
@@ -396,10 +420,10 @@ describe('the hints setting', () => {
 })
 
 describe('the hint layer', () => {
-  const stroke = (key: string, control = false): KeyStroke => ({
+  const stroke = (key: string, control = false, meta = false): KeyStroke => ({
     key,
     control,
-    meta: false,
+    meta,
     shift: false,
     super: false,
   })
@@ -413,6 +437,14 @@ describe('the hint layer', () => {
     expect(resolver.resolve(stroke('F'), 'page', ['document'])).toMatchObject({
       kind: 'command',
       command: 'copy-hint-url',
+    })
+    expect(resolver.resolve(stroke('g', false, true), 'page', ['document'])).toMatchObject({
+      kind: 'command',
+      command: 'follow-hint-new-buffer',
+    })
+    expect(resolver.resolve(stroke('f', false, true), 'page', ['document'])).toMatchObject({
+      kind: 'command',
+      command: 'follow-hint-new-buffer-focus',
     })
   })
 

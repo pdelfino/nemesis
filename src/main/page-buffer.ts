@@ -627,6 +627,18 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     await this.load(buffer.id, url)
   }
 
+  /**
+   * `url` in a new page buffer under the same policy as `open` (#174): made
+   * current when `focus` is set, else left in the background. A refused URL
+   * opens nothing.
+   */
+  async openNew(url: string, focus: boolean): Promise<void> {
+    if (this.allowed(url) === null) return
+    const buffer = this.createPage()
+    if (focus) this.options.buffers.switchTo(buffer.id)
+    await this.load(buffer.id, url)
+  }
+
   blank(): void {
     const buffer = this.createPage()
     this.options.buffers.switchTo(buffer.id)
