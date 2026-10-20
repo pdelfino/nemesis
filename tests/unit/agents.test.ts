@@ -171,6 +171,7 @@ function line(overrides: Partial<AgentLine> = {}): AgentLine {
     cwd: '/Users/me/projects/nemesis',
     targetBufferId: 'b2',
     background: false,
+    run: null,
     session: 'Nemesis',
     state: 'idle',
     turnStartedAt: null,
@@ -226,6 +227,34 @@ describe('renderAgents', () => {
       { here: 1, home: '', now: 0 },
     )
     expect(text.split('\n')[4]).toMatch(/^Window 2 \(background\) {2}Nemesis {2}idle$/)
+  })
+
+  it('groups a fan-out run under a heading with its counts, after the other sessions (#160)', () => {
+    const text = renderAgents(
+      [
+        line({
+          windowId: 2,
+          windowName: 'Window 2',
+          background: true,
+          run: 'Fix it',
+          state: 'finished',
+        }),
+        line(),
+        line({
+          windowId: 3,
+          windowName: 'Window 3',
+          background: true,
+          run: 'Fix it',
+          state: 'error',
+        }),
+      ],
+      { here: 1, home: '/Users/me', now: 0 },
+    ).split('\n')
+    expect(text[2]).toMatch(/^Window 1 \(here\) +Nemesis {2}idle$/)
+    expect(text[4]).toBe('')
+    expect(text[5]).toBe('Fan-out "Fix it": 2 sessions, 1 finished, 0 waiting, 1 failed')
+    expect(text[6]).toMatch(/^Window 2 \(background\) {2}Nemesis {2}finished$/)
+    expect(text[8]).toMatch(/^Window 3 \(background\) {2}Nemesis {2}error$/)
   })
 
   it('counts the working sessions, and says so when there is none', () => {

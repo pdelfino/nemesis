@@ -710,6 +710,7 @@ export function createCockpit(
     environment,
     agents,
     replies,
+    fanOutMax: () => config.settings.fanOutMax,
     repl,
     windows: shared.windows,
     cwd,

@@ -127,7 +127,8 @@ dropped, the new ones registered, the palette and the menu bar follow, and
 one line in the transcript gives the counts. =theme= applies at once,
 =model= on the next session, =verify= on the next check and
 =searchEngines= on the next =open-url=; =stopGateRetries= applies at the next
-gated turn end, =notify= at the next notification and =restore= at the
+gated turn end, =fanOutMax= (1 to 30, 5 by default, #160) at the next
+=fan-out=, =notify= at the next notification and =restore= at the
 next quit (#127: off, no window is saved or reopened; a start with
 =--no-restore= skips the reopening once), and =hints= at the next =f= in a
 page buffer (#123: =hints.alphabet=, two or more distinct lowercase letters

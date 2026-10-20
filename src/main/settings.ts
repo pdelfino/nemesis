@@ -46,6 +46,11 @@ export interface Settings {
    */
   readonly stopGateRetries: number
   /**
+   * The most sessions one `fan-out` may start (#160), each a background
+   * session in a worktree of its own; a longer list is refused whole.
+   */
+  readonly fanOutMax: number
+  /**
    * The notification toggles (#90, #114), or `null` when the file has no
    * `notify` key: then, for one release, the NEMESIS_NOTIFY_* variables are
    * read instead. The Telegram token is a secret and never a setting.
@@ -130,11 +135,15 @@ const KNOWN_KEYS: readonly string[] = [
   'verify',
   'searchEngines',
   'stopGateRetries',
+  'fanOutMax',
   'notify',
   'blockerUpdates',
   'restore',
   'hints',
 ]
+
+/** The most sessions `fanOutMax` may allow: the top of the official /batch range (#160). */
+export const MAX_FAN_OUT = 30
 
 /** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
 export const MAX_STOP_GATE_RETRIES = 20
@@ -153,6 +162,7 @@ export function defaultSettings(documentsDir: string): Settings {
     verify: null,
     searchEngines: DEFAULT_SEARCH_ENGINES,
     stopGateRetries: 3,
+    fanOutMax: 5,
     notify: null,
     blockerUpdates: 'weekly',
     restore: true,
@@ -225,6 +235,16 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     )
   }
 
+  const fanOutMax = value['fanOutMax'] ?? defaults.fanOutMax
+  if (
+    typeof fanOutMax !== 'number' ||
+    !Number.isInteger(fanOutMax) ||
+    fanOutMax < 1 ||
+    fanOutMax > MAX_FAN_OUT
+  ) {
+    throw new SettingsError(`Setting "fanOutMax" is not a whole number from 1 to ${MAX_FAN_OUT}`)
+  }
+
   const notify = parseNotify(value['notify'] ?? defaults.notify)
 
   const blockerUpdates = value['blockerUpdates'] ?? defaults.blockerUpdates
@@ -250,6 +270,7 @@ export function parseSettings(payload: unknown, defaults: Settings): Settings {
     verify,
     searchEngines,
     stopGateRetries,
+    fanOutMax,
     notify,
     blockerUpdates: blockerUpdates as BlockerUpdates,
     restore,

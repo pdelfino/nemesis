@@ -36,6 +36,8 @@ export const MCP_SOURCE = 'mcp'
 export const WORKTREE_SOURCE = 'worktree'
 /** Ending a background session and closing its window (#158). */
 export const BACKGROUND_SOURCE = 'background'
+/** Starting a fan-out's sessions (#160). */
+export const FAN_OUT_SOURCE = 'fan-out'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -135,6 +137,17 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'End the session',
         doc: 'Its window closes, which stops the session; its folder of events stays on disk.',
+      },
+    ],
+  },
+  {
+    name: FAN_OUT_SOURCE,
+    candidates: () => [
+      { id: NO, label: 'Start nothing', doc: 'No worktree is made and no session starts.' },
+      {
+        id: YES,
+        label: 'Start the sessions',
+        doc: 'Each item gets a worktree beside this folder on a new branch and a background session there; each asks for permission as any other.',
       },
     ],
   },

@@ -122,6 +122,7 @@ const SETTING_KEYS: readonly (keyof Settings)[] = [
   'verify',
   'searchEngines',
   'stopGateRetries',
+  'fanOutMax',
   'notify',
   'blockerUpdates',
   'restore',

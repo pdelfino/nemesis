@@ -21,6 +21,7 @@ import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
 import { AgentsBuffers } from '../agents'
 import { quoteFromSession, quoteSource, RecentReplies, replyLabel } from '../replies'
+import { FAN_OUT_USAGE, fanOutPrompt, parseFanOut, runLabel } from '../fan-out'
 import { EnvironmentBuffers } from '../environment'
 import { UrlFetcher, type FetchedPage } from '../fetch-url'
 import { WorkingFiles } from '../files'
@@ -72,7 +73,7 @@ import {
   screenshotPrompt,
   SYMPTOM_TEMPLATE,
 } from './guide-prompts'
-import { BACKGROUND_SOURCE, confirm, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
+import { BACKGROUND_SOURCE, confirm, FAN_OUT_SOURCE, REWIND_SOURCE, VERIFY_SOURCE } from './confirm'
 import { Prompter, type PaletteSource } from './prompter'
 import type { Command } from './registry'
 import { CommandError, CommandRegistry, defineCommand } from './registry'
@@ -253,6 +254,8 @@ export interface CockpitDeps {
   readonly agents: AgentsBuffers
   /** The session's last replies, which send-to-session quotes in another window (#159). */
   readonly replies: RecentReplies
+  /** The `fanOutMax` setting in force, read at each fan-out (#160). */
+  readonly fanOutMax: () => number
   /** Eval in the config scope, the `*repl*` buffer and the journal (#72). */
   readonly repl: Repl
   /** The other windows, as `new-window` opens one and the palette lists their buffers (#70). */
@@ -325,8 +328,14 @@ export interface CockpitWindows {
   toggleFullScreen(): void
   /** Pops the system's share menu (macOS) over this window for `urls`, with `title` as the text (#34). */
   openShareMenu(urls: readonly string[], title: string): void
-  /** Opens a hidden window in this window's folder whose session starts with `prompt`; its name (#158). */
-  openBackground(prompt: string): string
+  /**
+   * Opens a hidden window whose session starts with `prompt`, in this
+   * window's folder or in `worktree`, under a fan-out `run` (#160); its name (#158).
+   */
+  openBackground(
+    prompt: string,
+    options?: { readonly worktree?: Worktree; readonly run?: string },
+  ): string
   /** Closes a window, which stops its session (#158). */
   close(windowId: number): void
   /** Appends text to another window's prompt buffer, unsent (#159). */
@@ -469,6 +478,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         tickMs: 0,
       }),
     replies: partial.replies ?? new RecentReplies(),
+    fanOutMax: partial.fanOutMax ?? (() => 5),
     // Without the app there is no config scope: every form is refused.
     repl: partial.repl ?? new Repl(buffers),
     windows: partial.windows ?? ONE_WINDOW,
@@ -527,6 +537,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     environment,
     agents,
     replies,
+    fanOutMax,
     repl,
     windows,
     cwd,
@@ -1162,6 +1173,43 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             )
           })
         })
+      },
+    }),
+    defineCommand({
+      name: 'fan-out',
+      doc: "One instruction over many items: the prompt buffer's first line is the instruction, each line after it an item; each item becomes a background session in a worktree of its own, after one yes.",
+      run: () => {
+        const plan = parseFanOut(prompts.draft)
+        if (plan === null) {
+          help.show(FAN_OUT_USAGE)
+          return
+        }
+        const count = plan.items.length
+        const max = fanOutMax()
+        if (count > max) {
+          help.show(
+            `No sessions started: ${count} items is more than the fanOutMax setting allows (${max}). Shorten the list, or raise fanOutMax in the settings (at most 30).`,
+          )
+          return
+        }
+        const question = `Start ${count} session${count === 1 ? '' : 's'}, each in its own worktree?`
+        confirm(prompter, FAN_OUT_SOURCE, question)
+          .then(async (yes) => {
+            if (!yes) return
+            const run = runLabel(plan.instruction)
+            // One at a time: each worktree's branch is made before the next
+            // is asked for, so two items never race for a name.
+            for (const [index, item] of plan.items.entries()) {
+              const worktree = await worktrees.create(cwd, item)
+              if (worktree === null) continue
+              windows.openBackground(fanOutPrompt(plan.instruction, item, index, count), {
+                worktree,
+                run,
+              })
+            }
+            agents.show()
+          })
+          .catch(report('fan-out'))
       },
     }),
     defineCommand({

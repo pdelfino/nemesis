@@ -23,6 +23,7 @@ describe('the settings schema', () => {
       verify: null,
       searchEngines: [{ keyword: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s' }],
       stopGateRetries: 3,
+      fanOutMax: 5,
       notify: null,
       blockerUpdates: 'weekly',
       restore: true,
@@ -53,6 +54,7 @@ describe('the settings schema', () => {
     // How many red checks the stop gate sends back before the turn ends (#113).
     expect(parseSettings({ stopGateRetries: 0 }, defaults).stopGateRetries).toBe(0)
     expect(parseSettings({ stopGateRetries: 5 }, defaults).stopGateRetries).toBe(5)
+    expect(parseSettings({ fanOutMax: 30 }, defaults).fanOutMax).toBe(30)
     expect(parseSettings({ blockerUpdates: 'off' }, defaults).blockerUpdates).toBe('off')
     expect(parseSettings({ restore: false }, defaults).restore).toBe(false)
   })
@@ -137,6 +139,9 @@ describe('the settings schema', () => {
     expect(() => parseSettings({ stopGateRetries: 1.5 }, defaults)).toThrow(/"stopGateRetries"/)
     expect(() => parseSettings({ stopGateRetries: 21 }, defaults)).toThrow(/"stopGateRetries"/)
     expect(() => parseSettings({ stopGateRetries: '3' }, defaults)).toThrow(/"stopGateRetries"/)
+    expect(() => parseSettings({ fanOutMax: 0 }, defaults)).toThrow(/"fanOutMax"/)
+    expect(() => parseSettings({ fanOutMax: 31 }, defaults)).toThrow(/"fanOutMax"/)
+    expect(() => parseSettings({ fanOutMax: 2.5 }, defaults)).toThrow(/"fanOutMax"/)
     expect(() => parseSettings({ blockerUpdates: 'hourly' }, defaults)).toThrow(/"blockerUpdates"/)
     expect(() => parseSettings({ blockerUpdates: false }, defaults)).toThrow(/"blockerUpdates"/)
     expect(() => parseSettings({ restore: 'no' }, defaults)).toThrow(/"restore"/)

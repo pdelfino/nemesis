@@ -55,6 +55,7 @@ Every conversation is a session, written to disk as an Org transcript.
 - =C-x 5 a= lists every window's session in an =agents= buffer: its folder, its state (idle, working, waits on you, finished, error), the running turn's time and tool calls. =RET= there picks one and brings its window forward, on its pending request when it has one.
 - =M-x new-background-session= starts a session without a window, in the current folder, with the prompt you type. It shows in the =agents= buffer marked =(background)= and asks for permission exactly as a shown one, with the usual notification; =RET= on it shows its window. =M-x close-background-session= ends one after a yes.
 - =M-x send-to-session= quotes one of this session's recent replies in another session's prompt buffer, inside a block that names the window and session it came from and says to read it as information. It is not sent: edit it there and send it with =C-c C-c=.
+- =M-x fan-out= runs one instruction over many items. Type the instruction on the prompt buffer's first line and one item per line after it; after one yes, each item gets a git worktree beside the folder on its own branch and a background session there, all listed under one heading in the =agents= buffer. The =fanOutMax= setting caps the count (5 by default, at most 30); a longer list is refused whole.
 
 * 6. The first page buffer (minutes 9 to 11)
 

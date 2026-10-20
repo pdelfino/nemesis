@@ -427,6 +427,8 @@ interface CockpitPlace {
   readonly hidden?: boolean
   /** Sent as the session's first prompt once the page listens, as the reviewer's is (#87). */
   readonly firstPrompt?: string
+  /** The fan-out run the session belongs to (#160). */
+  readonly run?: string
 }
 
 /**
@@ -794,6 +796,8 @@ void app.whenReady().then(() => {
   const agentsListeners = new Set<() => void>()
   // The windows opened hidden by new-background-session and not shown since (#158).
   const background = new Set<number>()
+  // The fan-out run of each window fan-out opened (#160).
+  const runs = new Map<number, string>()
   const agentsChanged = (): void => {
     for (const listener of [...agentsListeners]) listener()
   }
@@ -810,6 +814,7 @@ void app.whenReady().then(() => {
             cockpit.buffers.list().find((buffer) => buffer.kind === 'prompt')
           )?.id ?? null,
         background: background.has(cockpit.id),
+        run: runs.get(cockpit.id) ?? null,
       })),
     onChange: (listener) => {
       agentsListeners.add(listener)
@@ -877,11 +882,15 @@ void app.whenReady().then(() => {
     // A background session (#158): a window of its own, hidden, in this
     // window's folder, whose first prompt is sent once its page listens. It
     // asks exactly as a shown one; showing it makes it an ordinary window.
-    openBackground: (prompt) =>
+    openBackground: (prompt, options = {}) =>
       openCockpit({
-        cwd: cockpits.get(id)?.cwd ?? process.cwd(),
+        cwd: options.worktree?.path ?? cockpits.get(id)?.cwd ?? process.cwd(),
+        ...(options.worktree === undefined
+          ? {}
+          : { worktree: { worktree: options.worktree, opener: id } }),
         hidden: true,
         firstPrompt: prompt,
+        ...(options.run === undefined ? {} : { run: options.run }),
       }).name,
     close: (windowId) => {
       const cockpit = cockpits.get(windowId)
@@ -927,6 +936,16 @@ void app.whenReady().then(() => {
     let state: 'open' | 'asking' | 'closing' = 'open'
     win.on('close', (event) => {
       if (quitting || state === 'closing') return
+      // A hidden window cannot show the question (#160): it closes, and the
+      // worktree is kept, as a no would keep it.
+      if (!win.isVisible()) {
+        state = 'closing'
+        win.once('closed', () => {
+          const notices = (cockpits.get(opener) ?? focusedCockpit())?.worktrees ?? new Worktrees()
+          notices.kept(worktree)
+        })
+        return
+      }
       event.preventDefault()
       if (state === 'asking') return
       state = 'asking'
@@ -978,6 +997,7 @@ void app.whenReady().then(() => {
     }
     syncConfigCommands(cockpit.registry)
     cockpits.set(id, cockpit)
+    if (place.run !== undefined) runs.set(id, place.run)
     if (hidden) {
       background.add(id)
       // Shown by open-agent or a notification's click, it is an ordinary window.
@@ -1004,6 +1024,7 @@ void app.whenReady().then(() => {
     win.on('closed', () => {
       cockpits.delete(id)
       background.delete(id)
+      runs.delete(id)
       if (lastFocused === id) lastFocused = null
       agentsChanged()
     })

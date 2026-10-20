@@ -152,6 +152,8 @@ export interface AgentLine extends AgentSnapshot {
   readonly targetBufferId: string | null
   /** The window was opened hidden by `new-background-session` and not shown since (#158). */
   readonly background: boolean
+  /** The fan-out run the session belongs to, by its label (#160); null for any other session. */
+  readonly run: string | null
 }
 
 /** Every window's session, and a word when any of them changes. */
@@ -208,11 +210,25 @@ export function renderAgents(
   )
   const windowWidth = Math.max(...windows.map((name) => name.length))
   const sessionWidth = Math.max(...lines.map((line) => line.session.length))
-  const rows = lines.map((line, index) => {
+  const row = (line: AgentLine, index: number): string => {
     const state = [line.state, detail(line, options.now)].filter((part) => part !== '').join(', ')
     const first = `${(windows[index] ?? '').padEnd(windowWidth)}  ${line.session.padEnd(sessionWidth)}  ${state}`
     return `${first}\n${' '.repeat(windowWidth + 2)}${shortFolder(line.cwd, options.home)}`
-  })
+  }
+  // The sessions of no run first, then each fan-out run under its heading (#160).
+  const rows = lines.flatMap((line, index) => (line.run === null ? [row(line, index)] : []))
+  const runs = [...new Set(lines.flatMap((line) => (line.run === null ? [] : [line.run])))]
+  for (const run of runs) {
+    const members = lines.filter((line) => line.run === run)
+    const count = (state: AgentState): number =>
+      members.filter((line) => line.state === state).length
+    rows.push(
+      `\nFan-out "${run}": ${members.length} session${members.length === 1 ? '' : 's'}, ${count('finished')} finished, ${count('waits on you')} waiting, ${count('error')} failed`,
+    )
+    lines.forEach((line, index) => {
+      if (line.run === run) rows.push(row(line, index))
+    })
+  }
   return `${header}\n\n${rows.join('\n')}\n`
 }
 
