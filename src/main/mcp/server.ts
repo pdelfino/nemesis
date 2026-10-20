@@ -419,6 +419,14 @@ export class CockpitMcp {
       throw new McpToolError(`"${name}" would replace the session that called it`)
     }
     if (cost === 'yes' && call.door === 'socket') {
+      // The question is the user's only view of what will run: an answer it
+      // would cut (eval-expression's form, #182) is refused, so no yes covers
+      // text past the cut.
+      if (answers.some((answer) => !fitsQuestion(answer))) {
+        throw new McpToolError(
+          `An answer to "${name}" is longer than the question can show (${QUESTION_PART} characters); nothing was asked or run`,
+        )
+      }
       const given = answers.length === 0 ? '' : ` with ${answers.map(quote).join(', ')}`
       await this.ask(call, `cockpit_run_command: run ${name}${given}?`)
     }
@@ -678,6 +686,11 @@ function clip(text: string): string {
 
 function quote(text: string): string {
   return `"${clip(text)}"`
+}
+
+/** Whether the question shows `text` whole: `clip` leaves it uncut. */
+function fitsQuestion(text: string): boolean {
+  return text.replace(/\s+/g, ' ').trim().length <= QUESTION_PART
 }
 
 function optionalString(value: unknown): string | undefined {

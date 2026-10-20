@@ -47,7 +47,7 @@ The agent inside the cockpit needs none of this. Its session is given the same s
 
 ** From a terminal: bin/nemesis-eval
 
-=bin/nemesis-eval= runs one command, or evaluates one form, in the running app, as Nyxt's =--remote --eval= does (#182). It is a tiny MCP client of the same socket, with the same token, found the same way (=--socket <path>=, =NEMESIS_USER_DATA=), plain Node with no dependency. It calls only =cockpit_run_command=, so a =yes= command asks in the prompt buffer as =nemesis-eval asks cockpit_run_command: run eval-expression with "..."?= and runs only on the yes; a =never= command is refused.
+=bin/nemesis-eval= runs one command, or evaluates one form, in the running app, as Nyxt's =--remote --eval= does (#182). It is a tiny MCP client of the same socket, with the same token, found the same way (=--socket <path>=, =NEMESIS_USER_DATA=), plain Node with no dependency. It calls only =cockpit_run_command=, so a =yes= command asks in the prompt buffer as =nemesis-eval asks cockpit_run_command: run eval-expression with "..."?= and runs only on the yes; a =never= command is refused. A form or an answer longer than the question can show whole (200 characters, whitespace folded) is refused before anything is asked, so a yes never covers text you did not see; put a longer form in a file and load it with =--load=, whose question shows the path.
 
 #+begin_src sh
 node <checkout>/bin/nemesis-eval 'nemesis.buffers.list().length'

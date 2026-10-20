@@ -321,6 +321,23 @@ describe('the MCP door (#28, ADR 0007)', () => {
     expect(prompter.pending).toBeNull()
   })
 
+  it('refuses a run_command whose answer the question would cut, before asking (#182)', async () => {
+    const registry = new CommandRegistry()
+    const run = vi.fn()
+    registry.register(defineCommand({ name: 'eval-expression', doc: 'Eval.', run }))
+    const { mcp, prompter } = fakeCockpit(registry)
+    const hidden = `${'1 + '.repeat(60)}1; /* past the cut */ 0`
+    const result = await mcp.call(
+      'cockpit_run_command',
+      { name: 'eval-expression', answers: [hidden] },
+      { door: 'socket', client: 'nemesis-eval' },
+    )
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('longer than the question can show')
+    expect(prompter.pending).toBeNull()
+    expect(run).not.toHaveBeenCalled()
+  })
+
   it('makes a yes-per-call tool wait for the prompter, the client named, the no first', async () => {
     const { mcp, prompter, submit } = fakeCockpit()
     const call = mcp.call(
