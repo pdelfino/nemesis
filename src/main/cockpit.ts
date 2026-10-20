@@ -71,7 +71,7 @@ import {
   type ReaderDocument,
 } from './pages/reader'
 import { Repl } from './repl'
-import { SETTINGS_FILE } from './settings'
+import { defaultSettings, SETTINGS_FILE } from './settings'
 import { systemInformationText } from './system-information'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -939,6 +939,12 @@ export function createCockpit(
       shared.stores === null
         ? null
         : { ...shared.stores, exportPath: join(settings.sessionsDir, BOOKMARKS_EXPORT) },
+    // What describe-setting shows (#171): the settings read at use time, and the first run's.
+    settings: {
+      current: () => config.settings,
+      defaults: defaultSettings(app.getPath('documents')),
+    },
+    hooks,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   if (hooks !== null) prompter.addSource(hooksSource(hooks))

@@ -1,12 +1,18 @@
 import type { BufferType } from '../../shared/keys'
+import type { PaletteCandidate } from '../../shared/palette'
+import { HOOK_POINT_DOCS, HOOK_POINTS, isHookPoint, type HookListing } from '../hooks'
+import { SETTING_DOCS, type Settings } from '../settings'
 import type { KeyReading } from './dispatcher'
 import type { Keymap } from './keymap'
+import { BASE_MODE, togglerName, type ModeRegistry } from './modes'
 import type { CommandRegistry } from './registry'
 
 /**
  * The text of describe-command and describe-key (#65): a command's doc line
  * and the keys that run it, as the help buffer shows them. Pure functions over
- * the registry and the keymaps; the unit tests read them straight.
+ * the registry and the keymaps; the unit tests read them straight. The same
+ * for describe-setting, describe-mode, describe-hook and describe-any (#171),
+ * over the settings' doc lines, the mode registry and the hook points.
  */
 
 /**
@@ -106,4 +112,157 @@ export function describeKey(registry: CommandRegistry, reading: KeyReading): str
   if (reading.command === null) return `${reading.chord} is not bound${where}.`
   const doc = registry.get(reading.command)?.doc ?? ''
   return `${reading.chord} runs ${reading.command}${where}.\n${doc}`.trimEnd()
+}
+
+/** The settings described, each the one in force and the one on the first run. */
+export interface SettingsInForce {
+  readonly current: () => Settings
+  readonly defaults: Settings
+}
+
+function isSettingKey(key: string): key is keyof Settings {
+  return Object.hasOwn(SETTING_DOCS, key)
+}
+
+/** describe-setting: the doc line, the type, the default and the value in force. */
+export function describeSetting(settings: SettingsInForce, key: string): string {
+  if (!isSettingKey(key)) return `There is no setting named ${key}.`
+  const { type, doc } = SETTING_DOCS[key]
+  const show = (value: unknown): string => JSON.stringify(value) ?? 'absent'
+  return [
+    key,
+    doc,
+    `Type: ${type}`,
+    `Default: ${show(settings.defaults[key])}`,
+    `Current: ${show(settings.current()[key])}`,
+  ].join('\n')
+}
+
+/** describe-mode: the doc line, the buffers it applies to, its toggler, keys and hooks. */
+export function describeMode(
+  modes: ModeRegistry,
+  layers: readonly KeymapLayer[],
+  name: string,
+): string {
+  const mode = modes.get(name)
+  if (mode === undefined) return `There is no mode named ${name}.`
+  const lines = [`${mode.name} mode`, mode.doc]
+  lines.push(
+    mode.kinds === undefined
+      ? 'It applies to any buffer.'
+      : `It applies to ${mode.kinds.join(', ')} buffers.`,
+  )
+  if (mode.name !== BASE_MODE && mode.toggler !== false) {
+    lines.push(`${mode.command ?? togglerName(mode.name)} turns it on and off.`)
+  }
+  for (const layer of layers) {
+    if (layer.mode !== mode.name) continue
+    for (const { chord, command } of layer.keymap.entries()) {
+      lines.push(`While on, ${chord} runs ${command}.`)
+    }
+  }
+  for (const { point, handler } of mode.hooks ?? []) {
+    lines.push(`While on, ${handler.name} handles ${point}.`)
+  }
+  return lines.join('\n')
+}
+
+/** describe-hook: the point's doc line, its kind and timeout, and every handler on it. */
+export function describeHook(listing: readonly HookListing[], point: string): string {
+  if (!isHookPoint(point)) return `There is no hook point named ${point}.`
+  const { kind, timeoutMs } = HOOK_POINTS[point]
+  const lines = [
+    point,
+    HOOK_POINT_DOCS[point],
+    `It is an ${kind} point; each handler has ${timeoutMs} ms.`,
+  ]
+  const handlers = listing.filter((entry) => entry.point === point)
+  if (handlers.length === 0) lines.push('No handler is registered.')
+  for (const entry of handlers) lines.push(`  ${entry.name} (${entry.source}): ${entry.doc}`)
+  return lines.join('\n')
+}
+
+/** What describe-any lists, each tag the describe RET opens. */
+export type DescribeKind = 'command' | 'setting' | 'mode' | 'hook' | 'key'
+
+/** One binding as describe-any carries it in a candidate's id. */
+export interface Binding {
+  readonly chord: string
+  readonly command: string
+  readonly bufferType: BufferType | null
+  readonly mode?: string
+}
+
+/** describe-any's id for a candidate: the kind, a colon, then the name or the binding as JSON. */
+export function describeAnyId(kind: DescribeKind, name: string | Binding): string {
+  return `${kind}:${typeof name === 'string' ? name : JSON.stringify(name)}`
+}
+
+/** describe-any (#171): one candidate per command, setting, mode, hook point and binding. */
+export function describeAnyCandidates(
+  registry: CommandRegistry,
+  layers: readonly KeymapLayer[],
+  modes: ModeRegistry,
+): readonly PaletteCandidate[] {
+  const candidates: PaletteCandidate[] = []
+  for (const command of registry.list()) {
+    candidates.push({
+      id: describeAnyId('command', command.name),
+      label: command.name,
+      doc: command.doc,
+      detail: 'command',
+    })
+  }
+  for (const [key, { doc }] of Object.entries(SETTING_DOCS)) {
+    candidates.push({ id: describeAnyId('setting', key), label: key, doc, detail: 'setting' })
+  }
+  for (const mode of modes.list()) {
+    candidates.push({
+      id: describeAnyId('mode', mode.name),
+      label: mode.name,
+      doc: mode.doc,
+      detail: 'mode',
+    })
+  }
+  for (const [point, doc] of Object.entries(HOOK_POINT_DOCS)) {
+    candidates.push({ id: describeAnyId('hook', point), label: point, doc, detail: 'hook' })
+  }
+  for (const layer of layers) {
+    for (const { chord, command } of layer.keymap.entries()) {
+      const binding: Binding = {
+        chord,
+        command,
+        bufferType: layer.bufferType,
+        ...(layer.mode === undefined ? {} : { mode: layer.mode }),
+      }
+      candidates.push({
+        id: describeAnyId('key', binding),
+        label: chord,
+        doc: `${command}${whereBound(binding)}`,
+        detail: 'key',
+      })
+    }
+  }
+  return candidates
+}
+
+/** The answer to a key a describe-any candidate names, as describe-key words it. */
+export function describeBinding(registry: CommandRegistry, binding: Binding): string {
+  const doc = registry.get(binding.command)?.doc ?? ''
+  return `${binding.chord} runs ${binding.command}${whereBound(binding)}.\n${doc}`.trimEnd()
+}
+
+function whereBound(binding: Binding): string {
+  if (binding.bufferType !== null) return ` in ${binding.bufferType} buffers`
+  if (binding.mode !== undefined) return ` in ${binding.mode} mode`
+  return ''
+}
+
+/** Splits a describe-any id into its kind and the rest, or null when it is not one. */
+export function parseDescribeAnyId(id: string): { kind: DescribeKind; name: string } | null {
+  const colon = id.indexOf(':')
+  if (colon < 0) return null
+  const kind = id.slice(0, colon)
+  if (!['command', 'setting', 'mode', 'hook', 'key'].includes(kind)) return null
+  return { kind: kind as DescribeKind, name: id.slice(colon + 1) }
 }

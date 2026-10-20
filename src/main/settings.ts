@@ -159,6 +159,65 @@ export const MAX_FAN_OUT = 30
 /** The most retries a gate may be set to: past this a red check wants a person, not another turn. */
 export const MAX_STOP_GATE_RETRIES = 20
 
+/** What describe-setting shows for a key (#171): its type as settings.json writes it, and one doc line. */
+export interface SettingDoc {
+  readonly type: string
+  readonly doc: string
+}
+
+/** One doc line per key of settings.json; the type makes a missing key a compile error. */
+export const SETTING_DOCS: Readonly<Record<keyof Settings, SettingDoc>> = {
+  sessionsDir: {
+    type: 'path',
+    doc: 'Where sessions are kept, one folder per session: absolute, or starting with ~.',
+  },
+  model: {
+    type: 'model name or null',
+    doc: 'The model a new session asks for; null leaves the choice to the claude CLI.',
+  },
+  keyscheme: { type: 'cockpit', doc: 'The keyscheme the keymaps are built from.' },
+  theme: {
+    type: 'system, light or dark',
+    doc: 'The appearance: system follows the OS, light and dark pin it.',
+  },
+  verify: {
+    type: 'command or null',
+    doc: 'The check the verify key runs when no attached issue names one; null runs npm run gate.',
+  },
+  searchEngines: {
+    type: 'list of {keyword, name, url}',
+    doc: 'The search engines open-url offers: "kw query" searches engine kw, a bare word the first; %s takes the query.',
+  },
+  stopGateRetries: {
+    type: `whole number from 0 to ${MAX_STOP_GATE_RETRIES}`,
+    doc: 'How many times the stop gate sends a red check back to the session before the turn ends anyway.',
+  },
+  fanOutMax: {
+    type: `whole number from 1 to ${MAX_FAN_OUT}`,
+    doc: 'The most sessions one fan-out may start; a longer list is refused whole.',
+  },
+  notify: {
+    type: 'object of true or false, or absent',
+    doc: 'The notification toggles: finished, finishedOnlyWhenUnfocused, needsYou, error and sound.',
+  },
+  blockerUpdates: {
+    type: 'daily, weekly, monthly or off',
+    doc: "How often the blocker's lists are downloaded again; off keeps the lists already on disk.",
+  },
+  restore: {
+    type: 'true or false',
+    doc: "Whether each window's page buffers and folder are saved at quit and reopened at the next start.",
+  },
+  hints: {
+    type: '{alphabet, maxLength}',
+    doc: 'Hint mode: the characters labels are made of, and the longest label.',
+  },
+  pageModes: {
+    type: 'list of mode names',
+    doc: 'The modes a new page buffer starts in besides document; a name no mode has is ignored.',
+  },
+}
+
 export class SettingsError extends Error {
   override readonly name = 'SettingsError'
 }
