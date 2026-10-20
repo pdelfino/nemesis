@@ -3,6 +3,7 @@ import type { WebPreferences } from 'electron'
 import type { AgentEvent, AgentEventListener } from './agent/events'
 import type { BufferInfo, PageBounds, PageEvent, PageSpec } from '../shared/buffers'
 import type { KeyPress } from '../shared/keys'
+import { parseUserPageUrl } from '../shared/user-pages'
 import type { BufferRegistry } from './buffers'
 import { DEFAULT_MODES } from './commands/modes'
 import { CommandError, type AtPoint } from './commands/registry'
@@ -59,6 +60,12 @@ import { HARDENED_WEB_PREFERENCES } from './security/web-preferences'
  * - Context menu (#180): a page's `context-menu` event is read here into an
  *   `AtPoint`, the link and the selection bounded, and handed to the
  *   window's menu; no script runs in the page to find what was clicked.
+ * - Config pages (#181): `openUserPage` loads a `nemesis://app/user/<name>`
+ *   URL in a new persistent page buffer, the one load that is not `http:` or
+ *   `https:`. It goes straight to `loadURL`, past `before-load`, because no
+ *   web page asked for it; the page itself still navigates under the page
+ *   policy, so a link on it reaches the web and never another internal URL,
+ *   and no web page can navigate to it. Its reload is its own.
  *
  * The module holds no Electron value: the view, the window's content view and
  * the policies come in through `PageBuffersOptions`, so the unit tests drive
@@ -706,6 +713,27 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     await this.go(buffer.id, target)
   }
 
+  /**
+   * A config page (#181) in a new page buffer made current, in the
+   * persistent partition, the one whose session serves user pages. Any URL
+   * that is not a user page opens nothing.
+   */
+  async openUserPage(url: string): Promise<void> {
+    if (parseUserPageUrl(url) === null) {
+      this.notify('Not opened: not a config page URL')
+      return
+    }
+    const buffer = this.createPage()
+    this.options.buffers.switchTo(buffer.id)
+    const page = this.pages.get(buffer.id)
+    if (page === undefined) return
+    try {
+      await page.view.webContents.loadURL(url)
+    } catch {
+      // A failed load says so through its `failed` event.
+    }
+  }
+
   blank(): void {
     const buffer = this.createPage()
     this.options.buffers.switchTo(buffer.id)
@@ -714,6 +742,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
   reload(): void {
     const page = this.current()
     const contents = page.view.webContents
+    // A config page (#181) renders again in place; it is no page URL to check.
+    if (parseUserPageUrl(contents.getURL()) !== null) {
+      contents.reload()
+      return
+    }
     const target = this.allowed(contents.getURL())
     if (target === null) return
     if (target !== contents.getURL()) void this.go(page.id, target)

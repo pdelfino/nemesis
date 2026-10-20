@@ -8,6 +8,8 @@ import type { Mode, ModeHook } from '../commands/modes'
 import { defineMode, ModeError, togglerName } from '../commands/modes'
 import type { NotifyToggles, Settings } from '../settings'
 import { MAX_CONTEXT_LABEL } from '../pages/context-menu'
+import type { UserPage } from '../pages/user-pages'
+import { isUserPageName, MAX_USER_PAGE_TITLE } from '../../shared/user-pages'
 import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } from '../settings'
 
 /**
@@ -19,7 +21,8 @@ import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } fro
  *
  * The object reaches the command registry's shapes, the keymap builder, the
  * settings rules, the hook points (#165), URL dispatch over `before-load`
- * (#179), the mode definition (#166), the page context menu (#180), a read
+ * (#179), the mode definition (#166), the page context menu (#180), the
+ * config's own pages (#181), a read
  * of the buffer list,
  * `commands.run` and `notice`, and
  * nothing of src/main/agent/, src/main/security/ or src/preload/. The file is
@@ -81,6 +84,17 @@ export interface StagedContextMenuEntry {
   readonly site: CallSite | null
 }
 
+/** A page the file defines, and where. */
+export interface StagedPage {
+  readonly page: UserPage
+  readonly site: CallSite | null
+}
+
+/** The command that opens a config page (#181). */
+export function pageCommandName(name: string): string {
+  return `page-${name}`
+}
+
 /**
  * One load's requests. `reserved` is the names the file may not take: the
  * cockpit's commands, which stay whatever the file does.
@@ -97,6 +111,8 @@ export class ConfigStaging {
   readonly modes = new Map<string, StagedMode>()
   /** Page context-menu entries by label, in the order the file added them (#180). */
   readonly contextMenu = new Map<string, StagedContextMenuEntry>()
+  /** The file's pages by name, in the order the file defined them (#181). */
+  readonly pages = new Map<string, StagedPage>()
   /** The user layer as built so far, so a conflict between two chords fails on the call that made it. */
   keymap: Keymap | null = null
   /** Set when the file's body has run: a definition from a command body later would be lost. */
@@ -135,6 +151,8 @@ export interface ConfigApiEnv {
   readonly notice: (text: string) => void
   /** Turns a mode on or off in the focused window's current buffer, for a config mode's toggle (#166). */
   readonly toggleMode?: (name: string) => Promise<void>
+  /** Opens a config page in a new page buffer of the focused window, for `page-<name>` (#181). */
+  readonly openPage?: (name: string) => Promise<void>
 }
 
 export interface ConfigApi {
@@ -158,6 +176,12 @@ export interface ConfigApi {
    * reads the link and the selection under the pointer from `context.atPoint`.
    */
   addContextMenuCommand(label: unknown, command: unknown): void
+  /**
+   * A page at `nemesis://app/user/<name>` (#181): `render(params)` returns its
+   * HTML, which runs no script; a `<button data-command="...">` on it runs a
+   * registered command. `page-<name>` opens it.
+   */
+  definePage(name: unknown, spec: unknown): void
   readonly settings: {
     set(key: unknown, value: unknown): void
     get(key: unknown): unknown
@@ -538,6 +562,57 @@ export function createConfigApi(staging: ConfigStaging, env: ConfigApiEnv): Conf
         throw new CommandError(`Context-menu entry "${label}" is already added in this file`)
       }
       staging.contextMenu.set(label, { label, command, site: staging.site() })
+    },
+    definePage(name, spec) {
+      staging.open('definePage')
+      if (!isUserPageName(name)) {
+        throw new CommandError('definePage: the name is kebab-case, at most 64 characters')
+      }
+      if (!isRecord(spec))
+        throw new CommandError(`Page "${name}": definePage takes { title, render }`)
+      const { title, render } = spec
+      if (
+        typeof title !== 'string' ||
+        title.trim().length === 0 ||
+        title.length > MAX_USER_PAGE_TITLE ||
+        /[\r\n]/.test(title)
+      ) {
+        throw new CommandError(
+          `Page "${name}": the title is one line of at most ${MAX_USER_PAGE_TITLE} characters`,
+        )
+      }
+      if (typeof render !== 'function') {
+        throw new CommandError(`Page "${name}": render is a function from params to HTML`)
+      }
+      if (staging.pages.has(name)) {
+        throw new CommandError(`Page "${name}" is already defined in this file`)
+      }
+      const opener = pageCommandName(name)
+      if (staging.reserved.has(opener) || staging.commands.has(opener)) {
+        throw new CommandError(`Command "${opener}" is already defined; a page takes a new name`)
+      }
+      const body = render as (params: unknown) => unknown
+      staging.commands.set(
+        opener,
+        defineCommand({
+          name: opener,
+          doc: `Open the page ${title}.`,
+          run: async () => {
+            if (env.openPage === undefined) throw new CommandError('No window to open a page in')
+            await env.openPage(name)
+          },
+        }),
+      )
+      staging.pages.set(name, {
+        page: Object.freeze({
+          name,
+          title,
+          // A copy of the params, as a command body sees a copy of its context.
+          render: (params: Readonly<Record<string, string>>) =>
+            body.call(undefined, { ...params }) as string,
+        }),
+        site: staging.site(),
+      })
     },
     settings: {
       set(key, value) {

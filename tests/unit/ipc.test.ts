@@ -42,6 +42,11 @@ describe('what counts as an internal page (SECURITY.org, T1)', () => {
     expect(isInternalPage('not a url')).toBe(false)
   })
 
+  it('rejects a config page, which shares the origin but is a page buffer (#181)', () => {
+    expect(isInternalPage('nemesis://app/user/tools')).toBe(false)
+    expect(isInternalPage('nemesis://app/user/tools?q=1')).toBe(false)
+  })
+
   it('accepts the Vite dev server only when its URL is given', () => {
     const page = 'http://localhost:5173/index.html'
     expect(isInternalPage(page, 'http://localhost:5173')).toBe(true)

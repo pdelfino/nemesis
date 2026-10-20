@@ -1,5 +1,6 @@
 import { app, ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { InvokeAnswer, InvokeChannel, InvokePayload } from '../shared/ipc'
+import { USER_PAGE_PATH } from '../shared/user-pages'
 import { INTERNAL_ORIGIN } from './security/internal-scheme'
 import { warnLimited } from './security/warn-limited'
 
@@ -31,7 +32,9 @@ export function parseNothing(payload: unknown): undefined {
 /**
  * Whether a top frame at this URL is an internal page. The Vite dev server
  * counts only in a development run, when electron-vite set
- * ELECTRON_RENDERER_URL; a packaged app ignores the variable.
+ * ELECTRON_RENDERER_URL; a packaged app ignores the variable. A config page
+ * (#181) shares the internal origin but is the web's kind of page, in a page
+ * buffer: its path is never an internal page's.
  */
 export function isInternalPage(url: string, devServerUrl?: string): boolean {
   let parsed: URL
@@ -43,7 +46,7 @@ export function isInternalPage(url: string, devServerUrl?: string): boolean {
   if (devServerUrl !== undefined && devServerUrl.length > 0 && url.startsWith(devServerUrl)) {
     return true
   }
-  return INTERNAL_ORIGINS.includes(originOf(parsed))
+  return INTERNAL_ORIGINS.includes(originOf(parsed)) && !parsed.pathname.startsWith(USER_PAGE_PATH)
 }
 
 /**

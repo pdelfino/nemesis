@@ -1146,3 +1146,46 @@ describe('the context menu of a page buffer (#180)', () => {
     )
   })
 })
+
+describe('a config page (#181)', () => {
+  it('opens a user page URL in a new persistent page buffer, made current, past the page policy', async () => {
+    const { pages, buffers, views, notices } = rig()
+    await pages.openUserPage('nemesis://app/user/tools?q=1')
+    const view = only(views)
+    expect(view.webContents.loads).toEqual(['nemesis://app/user/tools?q=1'])
+    expect(view.webPreferences.partition).toBe('persist:default')
+    expect(view.webPreferences.preload).toBe(PAGE_PRELOAD)
+    expect(buffers.current?.kind).toBe('page')
+    expect(notices).toEqual([])
+  })
+
+  it('opens nothing for a URL that is not a user page', async () => {
+    const { pages, views, notices } = rig()
+    for (const url of [
+      'nemesis://app/',
+      'nemesis://app/user/%2e%2e/index.html',
+      'https://example.test/',
+      'file:///etc/passwd',
+    ]) {
+      await pages.openUserPage(url)
+    }
+    expect(views).toHaveLength(0)
+    expect(notices).toHaveLength(4)
+  })
+
+  it('stays refused on every other path: load, open and a reload of a web page', async () => {
+    const { pages, views } = rig()
+    const buffer = pages.createPage()
+    await expect(pages.load(buffer.id, 'nemesis://app/user/tools')).resolves.toBe('refused')
+    await pages.open('nemesis://app/user/tools')
+    expect(only(views).webContents.loads).toEqual([])
+  })
+
+  it('reloads a user page in place', async () => {
+    const { pages, views } = rig()
+    await pages.openUserPage('nemesis://app/user/tools')
+    pages.reload()
+    expect(only(views).webContents.reloads).toBe(1)
+    expect(only(views).webContents.loads).toEqual(['nemesis://app/user/tools'])
+  })
+})

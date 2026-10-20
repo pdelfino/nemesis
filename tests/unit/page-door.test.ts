@@ -62,10 +62,15 @@ describe('the door never evaluates text', () => {
     expect(source).not.toMatch(/contextBridge/)
     expect(source).not.toMatch(/exposeInMainWorld|exposeInIsolatedWorld/)
     expect(source).not.toMatch(/\bwindow\s*\./)
-    // It speaks on the door's two channels and no other.
+    // It speaks on the door's two channels and, on a config page, the
+    // button route's one (#181, ADR 0009 amendment), and no other.
     const channels = source.match(/[A-Z_]+_CHANNEL\b/g) ?? []
     expect(new Set(channels)).toEqual(
-      new Set(['PAGE_DOOR_REQUEST_CHANNEL', 'PAGE_DOOR_REPLY_CHANNEL']),
+      new Set([
+        'PAGE_DOOR_REQUEST_CHANNEL',
+        'PAGE_DOOR_REPLY_CHANNEL',
+        'USER_PAGE_COMMAND_CHANNEL',
+      ]),
     )
   })
 })

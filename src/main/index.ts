@@ -42,6 +42,8 @@ import type { HelpBuffers } from './help'
 import { McpDoor } from './mcp/socket'
 import type { PagePolicies } from './page-buffer'
 import { installPageDoor, PageScriptDoor, pingPrompt } from './page-door'
+import { pressButton, renderUserPage } from './pages/user-pages'
+import { USER_PAGE_COMMAND_CHANNEL } from '../shared/user-pages'
 import { snapshotPrompt } from './pages/semantic'
 import { installMenu } from './menu'
 import { Blocker, SYSTEM_HOSTS } from './pages/blocker'
@@ -62,6 +64,8 @@ import {
   INTERNAL_ORIGIN,
   registerInternalScheme,
   serveInternalPages,
+  serveUserPages,
+  userPageUrl,
 } from './security/internal-scheme'
 import { applyNavigationPolicy } from './security/navigation-policy'
 import {
@@ -511,6 +515,14 @@ function rebuildMenu(): void {
 
 void app.whenReady().then(() => {
   installPageDoor(ipcMain, pageDoor)
+  // A config page's button (#181): kept only from a page buffer some window
+  // holds, on a config page, naming one command; pages/user-pages.ts checks.
+  ipcMain.on(USER_PAGE_COMMAND_CHANNEL, (event, payload: unknown) => {
+    void pressButton(event, payload, (contentsId) => {
+      const owner = pageBufferOf(contentsId)
+      return owner === null ? null : owner.cockpit.buttonOwner(owner.bufferId)
+    })
+  })
   // T3 (#50): the built renderer is served on nemesis://app before the
   // cockpit window asks for it. The dev server path above skips this origin.
   serveInternalPages(join(__dirname, '../renderer'))
@@ -740,7 +752,16 @@ void app.whenReady().then(() => {
       }
       await modes.toggleMode(buffer.id, name)
     },
+    // A config page (#181): `page-<name>` opens it in the focused window.
+    openPage: async (name) => {
+      const cockpit = focusedCockpit()
+      if (cockpit === undefined) throw new CommandError('No window to open a page in')
+      await cockpit.pages.openUserPage(userPageUrl(name))
+    },
   })
+  // The config's pages (#181) on the page partition user pages open in, never
+  // on the cockpit's session; the render in force answers at each request.
+  serveUserPages(partitions.persistent, (request) => renderUserPage(config.pages, request))
   // A mode's hooks go to the app's registry while it is on (#166).
   cockpitModes.useHooks(hooks)
   // The config's commands are committed to a registry of the cockpit's own

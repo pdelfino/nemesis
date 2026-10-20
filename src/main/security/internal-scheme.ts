@@ -1,6 +1,8 @@
 import { net, protocol } from 'electron'
 import { join, normalize, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import type { Session } from 'electron'
+import { parseUserPageUrl, USER_PAGE_PATH, type UserPageRequest } from '../../shared/user-pages'
 import { INTERNAL_SCHEME } from './navigation-policy'
 
 /**
@@ -130,4 +132,83 @@ export function internalRequestHandler(
 /** Serves `root` (the built renderer) on the internal origin. After `whenReady`. */
 export function serveInternalPages(root: string): void {
   protocol.handle(SCHEME, internalRequestHandler(root))
+}
+
+/*
+ * User pages (#181): the pages a config defines with `definePage`, at
+ * `nemesis://app/user/<name>?<params>`. They are served on the page
+ * partition, never on the session the cockpit runs on, so a user page and the
+ * app's own pages never share a handler: the app's pages above are untouched,
+ * and a user page path on the cockpit's session is a missing file. The HTML
+ * is the config's `render`, answered under USER_PAGE_CSP, which runs no
+ * script at all; a button reaches a command through the page preload, not
+ * through anything the page runs.
+ */
+
+/**
+ * The policy on every user page: no script of any kind, nothing fetched, no
+ * form posted, no base element, no framing. Inline style only, so a page can
+ * look like something; images only as data: URLs, so rendering one reaches
+ * no network.
+ */
+export const USER_PAGE_CSP = [
+  "default-src 'none'",
+  "script-src 'none'",
+  "style-src 'unsafe-inline'",
+  'img-src data:',
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ')
+
+/** A user page request: the page's name and its query, one value per key. */
+export type { UserPageRequest }
+
+/**
+ * The user page a URL names, or null when it names none: a kebab-case name
+ * right under `/user/` on the internal origin, read as sent, so no traversal
+ * can be spelled. The parser is shared with the page preload and the page
+ * buffers, which import no Electron.
+ */
+export function resolveUserPage(url: string): UserPageRequest | null {
+  return parseUserPageUrl(url)
+}
+
+/** The URL of a user page, with its params as the query. */
+export function userPageUrl(name: string, params: Readonly<Record<string, string>> = {}): string {
+  const query = new URLSearchParams(params).toString()
+  return `${INTERNAL_ORIGIN}${USER_PAGE_PATH}${name}${query.length > 0 ? `?${query}` : ''}`
+}
+
+/**
+ * The handler for one user page request: the HTML `render` answers, under
+ * USER_PAGE_CSP, or a 404 when the URL names no page or `render` knows none.
+ */
+export function userPageRequestHandler(
+  render: (page: UserPageRequest) => string | null,
+): (request: Request) => Promise<Response> {
+  return (request) => {
+    const page = resolveUserPage(request.url)
+    const html = page === null ? null : render(page)
+    if (html === null) return Promise.resolve(notFound())
+    return Promise.resolve(
+      new Response(html, {
+        status: 200,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'content-security-policy': USER_PAGE_CSP,
+          'x-content-type-options': 'nosniff',
+        },
+      }),
+    )
+  }
+}
+
+/** Serves the config's pages on a page partition's session. After `whenReady`. */
+export function serveUserPages(
+  target: Pick<Session, 'protocol'>,
+  render: (page: UserPageRequest) => string | null,
+): void {
+  target.protocol.handle(SCHEME, userPageRequestHandler(render))
 }

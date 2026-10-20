@@ -26,6 +26,8 @@ interface Harness {
   readonly registry: CommandRegistry
   readonly notices: string[]
   readonly applied: Settings[]
+  /** The config pages `page-<name>` opened (#181). */
+  readonly opened: string[]
   keymap(): Keymap | null
   rebuilds(): number
   write(source: string): void
@@ -40,11 +42,16 @@ function harness(): Harness {
   let rebuilds = 0
   const applied: Settings[] = []
   const notices: string[] = []
+  const opened: string[] = []
   const loader = new ConfigLoader({
     path,
     base: () => defaultSettings('/documents'),
     buffers: () => [{ id: 'b1', kind: 'prompt', title: 'Prompt', elementId: null }],
     run: (name) => registry.run(name, { source: 'config' }),
+    openPage: (name) => {
+      opened.push(name)
+      return Promise.resolve()
+    },
   })
   loader.on((event) => notices.push(event.text))
   const target: ConfigTarget = {
@@ -64,6 +71,7 @@ function harness(): Harness {
     registry,
     notices,
     applied,
+    opened,
     keymap: () => keymap,
     rebuilds: () => rebuilds,
     write: (source) => writeFileSync(path, source, 'utf8'),
@@ -389,5 +397,56 @@ describe('addContextMenuCommand (#180)', () => {
       if (!result.ok) expect(result.problem.message).toContain(message)
     }
     expect(h.loader.contextMenu).toEqual([])
+  })
+})
+
+describe('definePage (#181)', () => {
+  let h: Harness
+  beforeEach(() => {
+    h = harness()
+  })
+
+  it('defines a page whose render reads its params, and a page-<name> command that opens it', async () => {
+    h.write(
+      "nemesis.definePage('word-count', { title: 'Word count', render(params: { text?: string }): string { return '<p>' + String((params.text ?? '').split(' ').length) + '</p>' } })\n",
+    )
+    expect(h.loader.pages).toEqual([])
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    expect(h.loader.pages.map(({ name, title }) => ({ name, title }))).toEqual([
+      { name: 'word-count', title: 'Word count' },
+    ])
+    expect(h.loader.pages[0]?.render({ text: 'a b c' })).toBe('<p>3</p>')
+    expect(h.registry.has('page-word-count')).toBe(true)
+    await h.registry.run('page-word-count', { source: 'palette' })
+    expect(h.opened).toEqual(['word-count'])
+    h.write('const nothing = 1\n')
+    expect(h.loader.reload(h.target).ok).toBe(true)
+    expect(h.loader.pages).toEqual([])
+    expect(h.registry.has('page-word-count')).toBe(false)
+  })
+
+  it('rejects a bad name, title or render, a repeat and a page-<name> taken, committing nothing', () => {
+    for (const [source, message] of [
+      ["nemesis.definePage('Tools', { title: 'T', render: () => '' })", 'kebab-case'],
+      ["nemesis.definePage('../x', { title: 'T', render: () => '' })", 'kebab-case'],
+      ["nemesis.definePage('tools', 'html')", 'takes { title, render }'],
+      ["nemesis.definePage('tools', { title: '', render: () => '' })", 'one line'],
+      ["nemesis.definePage('tools', { title: 'a\\nb', render: () => '' })", 'one line'],
+      ["nemesis.definePage('tools', { title: 'T', render: '<p>' })", 'render is a function'],
+      [
+        "nemesis.definePage('tools', { title: 'T', render: () => '' })\nnemesis.definePage('tools', { title: 'T', render: () => '' })",
+        'already defined',
+      ],
+      [
+        "nemesis.defineCommand({ name: 'page-tools', doc: 'Mine.', run() {} })\nnemesis.definePage('tools', { title: 'T', render: () => '' })",
+        'page-tools',
+      ],
+    ] as const) {
+      h.write(`${source}\n`)
+      const result = h.loader.reload(h.target)
+      expect(result.ok, source).toBe(false)
+      if (!result.ok) expect(result.problem.message, source).toContain(message)
+    }
+    expect(h.loader.pages).toEqual([])
   })
 })

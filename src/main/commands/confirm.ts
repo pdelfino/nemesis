@@ -41,6 +41,8 @@ export const WORKTREE_SOURCE = 'worktree'
 export const BACKGROUND_SOURCE = 'background'
 /** Starting a fan-out's sessions (#160). */
 export const FAN_OUT_SOURCE = 'fan-out'
+/** A button of a config page runs a yes-class command (#181). */
+export const USER_PAGE_SOURCE = 'user-page'
 
 /** What a yes answers with; anything else is a no. */
 const YES = 'yes'
@@ -162,6 +164,17 @@ export const CONFIRM_SOURCES: readonly PaletteSource[] = [
         id: YES,
         label: 'Start the sessions',
         doc: 'Each item gets a worktree beside this folder on a new branch and a background session there; each asks for permission as any other.',
+      },
+    ],
+  },
+  {
+    name: USER_PAGE_SOURCE,
+    candidates: () => [
+      { id: NO, label: 'Do not run', doc: 'Nothing runs.' },
+      {
+        id: YES,
+        label: 'Run it once',
+        doc: 'The command runs once, as from the palette; the next click asks again.',
       },
     ],
   },

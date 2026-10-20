@@ -115,6 +115,12 @@ describe('eval in the config scope', () => {
     )
     expect(entry.ok).toBe(false)
     expect(entry.text).toMatch(/addContextMenuCommand is not applied at eval/)
+    const page = await h.evaluator.evaluate(
+      "nemesis.definePage('tools', { title: 'Tools', render: () => '<p>hi</p>' })",
+    )
+    expect(page.ok).toBe(false)
+    expect(page.text).toMatch(/definePage is not applied at eval/)
+    expect(h.registry.has('page-tools')).toBe(false)
     expect(h.registry.has('say-hi')).toBe(false)
     expect(h.journal.count).toBe(0)
   })

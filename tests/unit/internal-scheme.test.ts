@@ -27,7 +27,12 @@ const {
   internalRequestHandler,
   registerInternalScheme,
   resolveInternalPath,
+  resolveUserPage,
   serveInternalPages,
+  serveUserPages,
+  USER_PAGE_CSP,
+  userPageRequestHandler,
+  userPageUrl,
 } = await import('../../src/main/security/internal-scheme')
 const { INTERNAL_SCHEME } = await import('../../src/main/security/navigation-policy')
 const { INTERNAL_ORIGINS } = await import('../../src/main/ipc')
@@ -175,5 +180,92 @@ describe('the handler', () => {
       expect(response.status, url).toBe(404)
       expect(response.headers.get('content-security-policy'), url).toBe(INTERNAL_CSP)
     }
+  })
+})
+
+describe('config pages (#181)', () => {
+  it('resolves a user page path to its name and its params', () => {
+    expect(resolveUserPage('nemesis://app/user/tools')).toEqual({ name: 'tools', params: {} })
+    expect(resolveUserPage('nemesis://app/user/word-count?text=a%20b&n=2&n=3')).toEqual({
+      name: 'word-count',
+      params: { text: 'a b', n: '2' },
+    })
+    expect(resolveUserPage(userPageUrl('tools', { q: 'x&y' }))).toEqual({
+      name: 'tools',
+      params: { q: 'x&y' },
+    })
+  })
+
+  it('resolves no traversal, no other path, no other host and no name that is not kebab-case', () => {
+    for (const url of [
+      'nemesis://app/user/../index.html',
+      'nemesis://app/user/%2e%2e/index.html',
+      'nemesis://app/user/..%2findex.html',
+      'nemesis://app/user/%2E%2E%2Fpackage.json',
+      'nemesis://app/user/tools/../../index.html',
+      'nemesis://app/user/tools/extra',
+      'nemesis://app/user/',
+      'nemesis://app/user/Tools',
+      'nemesis://app/user/tools%00',
+      'nemesis://app/index.html',
+      'nemesis://app/',
+      'nemesis://evil/user/tools',
+      'https://app/user/tools',
+      'not a url',
+      `nemesis://app/user/${'a'.repeat(65)}`,
+      `nemesis://app/user/tools?q=${'a'.repeat(8192)}`,
+    ]) {
+      expect(resolveUserPage(url), url).toBeNull()
+    }
+  })
+
+  it('serves what render answers under the user page policy, which runs no script', async () => {
+    const render = vi.fn((page: { name: string }) =>
+      page.name === 'tools' ? '<button data-command="x">x</button>' : null,
+    )
+    const handler = userPageRequestHandler(render)
+    const response = await handler(new Request('nemesis://app/user/tools?q=1'))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-security-policy')).toBe(USER_PAGE_CSP)
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(await response.text()).toBe('<button data-command="x">x</button>')
+    expect(render).toHaveBeenCalledWith({ name: 'tools', params: { q: '1' } })
+    const directives = USER_PAGE_CSP.split('; ')
+    expect(directives).toContain("script-src 'none'")
+    expect(directives).toContain("default-src 'none'")
+    expect(directives).toContain("form-action 'none'")
+    expect(directives).toContain("frame-ancestors 'none'")
+    expect(USER_PAGE_CSP).not.toContain("'self'")
+    expect(USER_PAGE_CSP).not.toContain('unsafe-eval')
+  })
+
+  it('answers 404 for a page render knows nothing of, and never asks render for a traversal', async () => {
+    const render = vi.fn(() => null)
+    const handler = userPageRequestHandler(render)
+    expect((await handler(new Request('nemesis://app/user/missing'))).status).toBe(404)
+    expect(render).toHaveBeenCalledTimes(1)
+    for (const url of ['nemesis://app/user/%2e%2e/index.html', 'nemesis://app/index.html']) {
+      expect((await handler(new Request(url))).status, url).toBe(404)
+    }
+    expect(render).toHaveBeenCalledTimes(1)
+  })
+
+  it('installs its handler on the session it is given, not on the default protocol', () => {
+    const own = vi.fn()
+    handled.mockClear()
+    serveUserPages({ protocol: { handle: own } } as never, () => null)
+    expect(own).toHaveBeenCalledWith('nemesis', expect.any(Function))
+    expect(handled).not.toHaveBeenCalled()
+  })
+
+  it('reads the same scheme and host as the shared parser the preload uses', async () => {
+    const shared = await import('../../src/shared/user-pages')
+    expect(shared.USER_PAGE_SCHEME).toBe(INTERNAL_SCHEME)
+    expect(shared.USER_PAGE_HOST).toBe(INTERNAL_HOST)
+  })
+
+  it('leaves the app pages and their policy as they were', () => {
+    expect(USER_PAGE_CSP).not.toBe(INTERNAL_CSP)
+    expect(resolveInternalPath('nemesis://app/', ROOT)).toBe(resolve(ROOT, 'index.html'))
   })
 })

@@ -120,6 +120,12 @@ export class ConfigEval {
           'nemesis.addContextMenuCommand is not applied at eval: put it in init.ts and run reload-config',
         )
       }
+      // A page from eval would outlive the journal's promote and discard, as an entry would (#181).
+      if (staging.pages.size > 0) {
+        throw new ConfigError(
+          'nemesis.definePage is not applied at eval: put it in init.ts and run reload-config',
+        )
+      }
       for (const binding of staging.bindings.values()) {
         if (!target.registry.has(binding.command) && !staging.commands.has(binding.command)) {
           throw new ConfigError(

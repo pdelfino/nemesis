@@ -15,7 +15,13 @@ import { RecentReplies } from './replies'
 import { SessionManager } from './agent/session-manager'
 import { installBufferBridge, installPageBridge } from './buffer-bridge'
 import { createCockpitBuffers, type BufferRegistry } from './buffers'
-import { confirm, CONFIRM_SOURCES, OPEN_FILE_SOURCE, VERIFY_SOURCE } from './commands/confirm'
+import {
+  confirm,
+  CONFIRM_SOURCES,
+  OPEN_FILE_SOURCE,
+  USER_PAGE_SOURCE,
+  VERIFY_SOURCE,
+} from './commands/confirm'
 import type { KeyDispatcher } from './commands/dispatcher'
 import { installKeyBridge } from './commands/key-bridge'
 import {
@@ -58,6 +64,7 @@ import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
 import { contextMenuItems, type ContextMenuItem } from './pages/context-menu'
 import { FormGuide } from './pages/form-guide'
+import type { ButtonOwner } from './pages/user-pages'
 import { FormGuideSession } from './agent/form-guide'
 import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { capturePage, captureFullPage } from './pages/capture'
@@ -133,6 +140,8 @@ export interface Cockpit {
   readonly formGuide: FormGuide
   /** The session's state, as the `agents` buffer of every window lists it (#157). */
   readonly status: AgentStatus
+  /** What a config page's button in one of this window's page buffers runs through (#181). */
+  buttonOwner(bufferId: string): ButtonOwner
 }
 
 export interface CockpitShared {
@@ -1017,5 +1026,14 @@ export function createCockpit(
     readers,
     formGuide,
     status,
+    // A config page's button (#181): this window's commands, its prompt
+    // buffer for a yes-class command, its notices, and the buffer's
+    // committed URL, read at the press.
+    buttonOwner: (bufferId) => ({
+      registry: dispatcher.registry,
+      confirm: (question) => confirm(prompter, USER_PAGE_SOURCE, question),
+      notice: hintSay,
+      committedUrl: buffers.get(bufferId)?.url ?? null,
+    }),
   }
 }

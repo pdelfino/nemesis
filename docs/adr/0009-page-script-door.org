@@ -347,3 +347,22 @@ element's number, and calls =scrollIntoView= with the block at the start, as
 nothing in the document changes, and the answer is =ok= or =gone=. Main
 makes the element's number from a ref of the page's current document, so a
 heading of a document that has since navigated is refused before the request.
+
+Amendment of 2026-OCTOBER-20 (#181, option A, picked by Pedro in session on
+#163): the door gains one route in the other direction, for the config's
+pages, and only on them. A config page is HTML the config's =render= returns,
+served at =nemesis://app/user/<name>= on the persistent page partition (never
+on the cockpit's session) under =USER_PAGE_CSP=, which runs no script, in a
+page buffer, so it carries this preload. On a document loaded at such a URL,
+and on no other, the preload listens for a trusted click on a
+=<button data-command>= in its own world and sends one message,
+={ command }=, the attribute's kebab-case name; it writes nothing to the
+page and the page sees nothing of it. Main keeps the message only from the
+top frame of a page buffer it holds whose committed URL is that same config
+page, with exactly that one field; it refuses a name that is no registered
+command and runs a registered one under its own class (=never= refused,
+=yes= asked every click, =free= run) with the source =user-page=. The rules
+above still hold for every web page: the route does not exist there, and no
+request of main's carries text into a page because of it. The IPC sender
+check never counts a config page as an internal page, though it shares the
+origin.

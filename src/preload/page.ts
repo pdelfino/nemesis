@@ -49,6 +49,7 @@ import {
 } from '../shared/page-door'
 import { formField, isSecretField, type FormControl } from '../shared/form-snapshot'
 import { extractReader, type ReaderNode } from '../shared/reader'
+import { isUserPageName, parseUserPageUrl, USER_PAGE_COMMAND_CHANNEL } from '../shared/user-pages'
 
 // The page-script door (ADR 0009, #130, SECURITY.org T1 and T4): the preload
 // of page buffers, and of nothing else. It runs sandboxed in Chromium's
@@ -1206,3 +1207,45 @@ ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {
   }
   ipcRenderer.send(PAGE_DOOR_REPLY_CHANNEL, { id, name, data })
 })
+
+// Config pages (#181, ADR 0009 amendment): on a page at
+// `nemesis://app/user/<name>`, and on no other, a trusted click on a
+// `<button data-command="...">` sends that one name to main, which checks
+// the sender, the page and the name and runs a registered command under its
+// own class. The page runs no script (USER_PAGE_CSP), so the click is the
+// user's; the listener is in this world, so the page sees nothing of it.
+
+/** The parts of a click this route reads. */
+interface PageClick {
+  readonly isTrusted: boolean
+  readonly button: number
+  readonly target: unknown
+  preventDefault(): void
+}
+
+/** The parts of a clicked element this route reads. */
+interface ClickTarget {
+  closest?(selector: string): {
+    getAttribute(name: string): string | null
+    readonly disabled?: unknown
+  } | null
+}
+
+// Whether this document is a config page, by the URL it was loaded at.
+if (parseUserPageUrl(world.location.href) !== null) {
+  const document = world.document as unknown as {
+    addEventListener(type: 'click', listener: (event: PageClick) => void, capture: boolean): void
+  }
+  document.addEventListener(
+    'click',
+    (event) => {
+      if (!event.isTrusted || event.button !== 0) return
+      const button = (event.target as ClickTarget | null)?.closest?.('button[data-command]') ?? null
+      if (button === null || button.disabled === true) return
+      event.preventDefault()
+      const command = button.getAttribute('data-command')
+      if (isUserPageName(command)) ipcRenderer.send(USER_PAGE_COMMAND_CHANNEL, { command })
+    },
+    true,
+  )
+}

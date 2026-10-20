@@ -25,7 +25,8 @@ export interface AtPoint {
 
 /** Where the invocation came from, for commands that care. */
 export interface CommandContext {
-  readonly source: 'key' | 'palette' | 'menu' | 'context-menu' | 'config' | 'test' | 'mcp'
+  readonly source:
+    'key' | 'palette' | 'menu' | 'context-menu' | 'user-page' | 'config' | 'test' | 'mcp'
   /** With `mcp`: the name the client gave at initialize (#28), so a command can tell who asked. */
   readonly client?: string
   /** The chord that ran it, in Emacs notation, when a key did. */
@@ -56,8 +57,19 @@ export class CommandError extends Error {
   override readonly name = 'CommandError'
 }
 
-/** The sources that are code acting for the user, not the user: they cannot run a `never` command. */
-const NOT_THE_USER: ReadonlySet<CommandContext['source']> = new Set(['config', 'mcp'])
+/**
+ * The sources that are code acting for the user, not the user: they cannot
+ * run a `never` command. A config page's button (#181) is markup the config
+ * wrote, so it is one of them.
+ */
+const NOT_THE_USER: ReadonlySet<CommandContext['source']> = new Set(['config', 'mcp', 'user-page'])
+
+/** How a refusal names each of those sources. */
+const NOT_THE_USER_NAME: Readonly<Partial<Record<CommandContext['source'], string>>> = {
+  config: 'the config',
+  mcp: 'an MCP client',
+  'user-page': 'a page button',
+}
 
 const COMMAND_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
 
@@ -130,7 +142,7 @@ export class CommandRegistry {
     // nor can the MCP door, which refuses it upstream as well.
     if (command.mcp === 'never' && NOT_THE_USER.has(context.source)) {
       throw new CommandError(
-        `${name} answers a question only you can answer; it runs from a key or the palette, never from ${context.source === 'config' ? 'the config' : 'an MCP client'}`,
+        `${name} answers a question only you can answer; it runs from a key or the palette, never from ${NOT_THE_USER_NAME[context.source] ?? context.source}`,
       )
     }
     const hooks = this.hooks

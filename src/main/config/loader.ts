@@ -10,6 +10,7 @@ import type { HookPoint, HookRegistry } from '../hooks'
 import type { Mode, ModeRegistry } from '../commands/modes'
 import type { Settings } from '../settings'
 import type { ContextMenuEntry } from '../pages/context-menu'
+import type { UserPage } from '../pages/user-pages'
 import type { CallSite, ConfigApiEnv, StagedHook } from './api'
 import { ConfigError, ConfigStaging, createConfigApi, siteIn, USER_KEYMAP } from './api'
 
@@ -103,6 +104,8 @@ export interface StagedConfig {
   readonly modes: readonly Mode[]
   /** The file's page context-menu entries (#180), in its order. */
   readonly contextMenu: readonly ContextMenuEntry[]
+  /** The file's pages (#181), in its order. */
+  readonly pages: readonly UserPage[]
 }
 
 export type StageResult =
@@ -135,6 +138,8 @@ export interface ConfigLoaderOptions {
   readonly modes?: ModeRegistry
   /** A config mode's toggle, in the focused window's current buffer. */
   readonly toggleMode?: ConfigApiEnv['toggleMode']
+  /** Opens a config page in the focused window, for `page-<name>` (#181). */
+  readonly openPage?: ConfigApiEnv['openPage']
   /** Milliseconds the file's top level may run. */
   readonly timeoutMs?: number
   readonly now?: () => number
@@ -243,6 +248,11 @@ export class ConfigLoader {
     return this.live?.contextMenu ?? []
   }
 
+  /** The config's pages in force (#181): the committed load's, else none. */
+  get pages(): readonly UserPage[] {
+    return this.live?.pages ?? []
+  }
+
   /** The settings in force: the committed load's, else the data file's. */
   get settings(): Settings {
     return this.live?.settings ?? this.base ?? this.options.base()
@@ -284,6 +294,7 @@ export class ConfigLoader {
           removals: [],
           modes: [],
           contextMenu: [],
+          pages: [],
         },
       }
     }
@@ -301,6 +312,7 @@ export class ConfigLoader {
         run: this.options.run,
         notice: (text) => this.notify(text),
         ...(this.options.toggleMode === undefined ? {} : { toggleMode: this.options.toggleMode }),
+        ...(this.options.openPage === undefined ? {} : { openPage: this.options.openPage }),
       })
       const context = createContext({ nemesis: api })
       new Script(js, { filename: path }).runInContext(context, {
@@ -367,6 +379,7 @@ export class ConfigLoader {
           label,
           command,
         })),
+        pages: [...staging.pages.values()].map((staged) => staged.page),
       },
     }
   }

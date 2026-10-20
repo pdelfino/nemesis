@@ -52,6 +52,7 @@ column in an error are the line and column in your file.
 | =nemesis.dispatchUrl(rule)=                 | A URL rule at =before-load=: rewrite or block the page loads it matches. See URL dispatch below.      |
 | =nemesis.defineMode(spec)=                  | A mode (ADR 0004): a keymap layer, hooks and settings, and =toggle-<name>=. See Modes below.          |
 | =nemesis.addContextMenuCommand(label, cmd)= | An entry of a page buffer's right-click menu that runs =cmd=. See Context menu below.                 |
+| =nemesis.definePage(name, { title, render })= | A page at =nemesis://app/user/<name>= and its =page-<name>= command. See Pages below.             |
 
 The =user= layer sits above the global map and below the per-buffer maps, so
 a chord there wins over the cockpit's global one. A config command cannot take
@@ -270,6 +271,48 @@ nemesis.addContextMenuCommand('Note link', 'note-link')
   command is one of the file's or the cockpit's; an unknown name fails the
   load on the line that added it. Eval refuses the call: it belongs in the
   file.
+
+* Pages
+
+=nemesis.definePage(name, { title, render })= (#181) is Nyxt's
+=define-internal-page-command=: a small tool inside the browser. =render(params)=
+returns the page's HTML; =page-<name>= opens it in a new page buffer at
+=nemesis://app/user/<name>=, and the query of that URL is =params=, one string
+per key. A =<button data-command="...">= on the page runs that command when you
+click it:
+
+#+begin_src typescript
+nemesis.defineCommand({
+  name: 'say-hello',
+  doc: 'Says hello.',
+  run(): void {
+    nemesis.notice('hello')
+  },
+})
+nemesis.definePage('tools', {
+  title: 'Tools',
+  render(): string {
+    return '<h1>Tools</h1><button data-command="say-hello">Say hello</button>'
+  },
+})
+#+end_src
+
+- The page runs no script: inline =<script>=, =on...= handlers and any script
+  file are refused by the page's policy, and so are fetches, form posts and
+  images but =data:= ones. Inline =style= works. A link to an =https:= page
+  opens in the same buffer; a link to another =nemesis:= URL does not.
+- A button names one registered command, the file's or the cockpit's, and
+  nothing else: no arguments, no code. A name no command has is refused with
+  a notice. The command keeps its MCP class: a =free= one runs on the click, a
+  =yes= one asks in the prompt buffer on every click (a config command
+  declares no class, so it asks), and a =never= one is refused. It runs with
+  the source =user-page=, through the registry, so the command hooks fire.
+- The name is kebab-case, at most 64 characters, and =page-<name>= must be a
+  free command name. The title is one line of at most 200 characters.
+- =render= runs in the main process at each load and each =reload=; a throw or
+  a non-string answers a page that says so. Params come from the URL; treat
+  them as text, never as code.
+- Eval refuses =definePage=: it belongs in the file.
 
 * Modes
 
