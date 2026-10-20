@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import { extname, resolve } from 'node:path'
 import type { AgentNoticeEvent } from './agent/events'
 import type { BufferInfo } from '../shared/buffers'
 import type { ReplContent } from '../shared/repl'
@@ -11,7 +13,8 @@ import type { Journal, JournalEntry } from './config/journal'
  * help buffer; `RET` in it reads a form off the palette, and the form and its
  * value are added to the buffer's log, which is pushed to the window whole.
  * `eval-expression` evaluates the same way from anywhere and answers with a
- * notice in the transcript, as the echo area does in Emacs.
+ * notice in the transcript, as the echo area does in Emacs. `load-file`
+ * (#182) evaluates a whole `.ts` or `.js` file the same way, as one form.
  *
  * The evaluator is src/main/config/eval.ts, given by the app; without one
  * (a unit test, a registry built from nothing) every form is refused.
@@ -105,6 +108,38 @@ export class Repl {
     if (echo) this.notify(value)
     if (outcome.journal !== null) this.notify(outcome.journal)
     return outcome
+  }
+
+  /**
+   * `load-file` (#182): reads a `.ts` or `.js` file and evaluates its text as
+   * one form, through the same evaluator, journal and notices as
+   * eval-expression, so what the file defines is staged and checked like a
+   * form. The value is echoed after a line naming the file.
+   */
+  async loadFile(path: string): Promise<EvalOutcome> {
+    const file = resolve(path)
+    const extension = extname(file)
+    if (extension !== '.ts' && extension !== '.js') {
+      const outcome = {
+        ok: false,
+        text: `Not loaded: ${file} is not a .ts or .js file`,
+        defined: null,
+        journal: null,
+      }
+      this.notify(outcome.text)
+      return outcome
+    }
+    let source: string
+    try {
+      source = await readFile(file, 'utf8')
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      const outcome = { ok: false, text: `Not loaded: ${reason}`, defined: null, journal: null }
+      this.notify(outcome.text)
+      return outcome
+    }
+    this.notify(`Loading ${file}`)
+    return this.evaluate(source, true)
   }
 
   /** The journal's entries, for the palette; none without a journal. */

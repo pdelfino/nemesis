@@ -45,6 +45,18 @@ Node must be on the client's =PATH=, or =command= must be its absolute path. Res
 
 The agent inside the cockpit needs none of this. Its session is given the same server in process, under the key =nemesis=, so it sees the tools as =mcp__nemesis__<tool>=. It differs from a socket client in three ways: =cockpit_send_prompt= is not offered (a session sending itself a prompt is a loop), =cockpit_run_command= refuses the commands that replace the session it runs in (=new-task=, =resume-session=, =rewind=, =start-fresh-session-from-spec=), and its questions come through the permission bridge instead of the prompt buffer.
 
+** From a terminal: bin/nemesis-eval
+
+=bin/nemesis-eval= runs one command, or evaluates one form, in the running app, as Nyxt's =--remote --eval= does (#182). It is a tiny MCP client of the same socket, with the same token, found the same way (=--socket <path>=, =NEMESIS_USER_DATA=), plain Node with no dependency. It calls only =cockpit_run_command=, so a =yes= command asks in the prompt buffer as =nemesis-eval asks cockpit_run_command: run eval-expression with "..."?= and runs only on the yes; a =never= command is refused.
+
+#+begin_src sh
+node <checkout>/bin/nemesis-eval 'nemesis.buffers.list().length'
+node <checkout>/bin/nemesis-eval --load ~/notes/commands.ts
+node <checkout>/bin/nemesis-eval --command reload-config
+#+end_src
+
+A form is =eval-expression='s answer; =-= reads it from stdin. =--load= resolves the path in the terminal's folder and runs =load-file= on it. =--command <name> [answer...]= runs any command, the answers feeding its reads in order. The notices the run left are printed one per line; a refusal, an error or a token of another run goes to stderr with exit status 1.
+
 * The two doors and the confirmation classes
 
 Every tool carries one class, and the door reads it.
@@ -175,7 +187,7 @@ A secret field (a password, a card number, an expiry) is masked by one list in =
 These are absent from the catalog: there is no row to call. A client that calls one of them gets the unknown-tool result.
 
 - *Eval from a page.* No =browser_evaluate=, =browser_execute_script= or =browser_add_init_script=. The only code a tool runs in a page is the fixed set of reads ADR 0009 names; a selector selects and cannot call code.
-- *Eval for an outside client.* No =cockpit_eval=. A client that wants a definition made asks the session through =cockpit_send_prompt=, where the user's yes applies.
+- *Eval without a yes.* No =cockpit_eval=. A client that wants a form evaluated runs =eval-expression= or =load-file= through =cockpit_run_command=, both of class =yes=, so the user is asked each call; =bin/nemesis-eval= does exactly that.
 - *Submitting without a yes.* No =browser_submit=, no =browser_fill_form= taking a batch, no =browser_checkout=. A submission is one of three yes-per-call calls: =browser_type= with =submit=, =browser_press_key= with =Enter=, or =browser_click= on the button, and the question says which.
 - *Reading a masked field*, as above.
 - *A client answering its own question*, as above.

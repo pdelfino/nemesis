@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test, type Page } from './_test'
@@ -112,6 +112,52 @@ test('the *repl* buffer evaluates a form on RET', async () => {
     await expect
       .poll(() => page.locator('#repl .cm-line').allTextContents())
       .toEqual(['> nemesis.buffers.list().length', '=> 3'])
+  } finally {
+    await app.close()
+  }
+})
+
+// load-file (#182): a .ts file read off the palette is evaluated as eval
+// evaluates a form; the command it defines runs from M-x, and what it
+// defined is journaled like a form.
+test('load-file evaluates a file that defines a command, which then runs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nemesis-e2e-load-'))
+  const file = join(dir, 'greet.ts')
+  writeFileSync(
+    file,
+    [
+      "const greeting: string = 'hi from a loaded file'",
+      "nemesis.defineCommand({ name: 'say-loaded', doc: 'Says hi from load-file.', run(): void { nemesis.notice(greeting) } })",
+      "'loaded'",
+      '',
+    ].join('\n'),
+  )
+  const { app } = await launchApp('nemesis-e2e-', [], {}, { NEMESIS_CONFIG_DIR: dir })
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.locator('#prompt .cm-content')).toBeFocused()
+
+    await runCommand(page, 'load-file')
+    await answer(page, 'Load file:', file)
+    await expect.poll(() => transcriptLines(page)).toContain(`Loading ${file}`)
+    await expect.poll(() => transcriptLines(page)).toContain('=> "loaded"')
+    await expect
+      .poll(() => transcriptLines(page))
+      .toContain(
+        `Journaled command say-loaded as entry 1 of ${join(dir, 'journal.org')}: 1 unpromoted.`,
+      )
+    await runCommand(page, 'say-loaded')
+    await expect.poll(() => transcriptLines(page)).toContain('hi from a loaded file')
+
+    // Only a .ts or .js file is loaded.
+    const notes = join(dir, 'notes.org')
+    writeFileSync(notes, '* not code\n')
+    await runCommand(page, 'load-file')
+    await answer(page, 'Load file:', notes)
+    await expect
+      .poll(() => transcriptLines(page))
+      .toContain(`Not loaded: ${notes} is not a .ts or .js file`)
   } finally {
     await app.close()
   }

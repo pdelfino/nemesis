@@ -432,6 +432,13 @@ deletes an entry; what it defined stays live until a restart. Under
 =--no-config= eval still works and nothing is journaled, and the note after
 each definition says so.
 
-Eval runs only on a command you ran from the cockpit's keys or palette. No
-page buffer and no MCP server reaches it. Like the file, it is trusted code
-with the app's privileges.
+=M-x load-file= reads the path of a =.ts= or =.js= file and evaluates the
+whole file as one form, in the same context and under the same rules: a
+notice names the file, the value is a notice, and what the file defines is
+applied and journaled as a form's would be. Any other extension is refused.
+Landed in #182.
+
+Eval runs on a command you ran from the cockpit's keys or palette, or on a
+=yes= you gave to an MCP client's =cockpit_run_command= (=bin/nemesis-eval=
+is one, see [[file:mcp.org][mcp.org]]). No page buffer reaches it. Like the
+file, it is trusted code with the app's privileges.

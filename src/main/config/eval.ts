@@ -21,8 +21,9 @@ import { CONFIG_TIMEOUT_MS, problemOf } from './loader'
  * holds it until it is promoted to init.ts or discarded. `nemesis.settings.set`
  * belongs in the file and is refused here, before anything is adopted.
  *
- * Eval runs only on a command the user ran from the cockpit's keys or
- * palette. Nothing reaches it from a page buffer or from an MCP server.
+ * Eval runs on a command the user ran from the cockpit's keys or palette,
+ * or on the user's yes to an MCP client's `cockpit_run_command` (#182).
+ * Nothing reaches it from a page buffer.
  * Like the file, it is trusted code with the app's privileges; node:vm is not
  * a sandbox.
  */

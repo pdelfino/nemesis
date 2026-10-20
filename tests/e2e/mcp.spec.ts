@@ -1,4 +1,6 @@
-import { existsSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -7,6 +9,27 @@ import { launchApp } from './_launch'
 
 /** The shim a client spawns, from this checkout (#28). */
 const SHIM = join(process.cwd(), 'bin', 'nemesis-mcp')
+/** The terminal client of #182, from this checkout. */
+const EVAL = join(process.cwd(), 'bin', 'nemesis-eval')
+
+interface Exited {
+  readonly code: number | null
+  readonly stdout: string
+  readonly stderr: string
+}
+
+/** Runs bin/nemesis-eval with `args` and resolves when it exits. */
+function nemesisEval(args: readonly string[]): Promise<Exited> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [EVAL, ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')))
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')))
+    child.on('error', reject)
+    child.on('close', (code) => resolve({ code, stdout, stderr }))
+  })
+}
 
 interface Listed {
   readonly buffers: readonly { id: string; kind: string; title: string; current: boolean }[]
@@ -95,6 +118,58 @@ test('a client through bin/nemesis-mcp lists, reads, and sends a prompt after th
     )
   } finally {
     await client.close().catch(() => undefined)
+    await app.close()
+  }
+})
+
+// The terminal client (#182): bin/nemesis-eval is an MCP client of the same
+// door. With a token that is not this run's, the app closes the connection
+// and nothing is evaluated; with the run's token, eval-expression is a `yes`
+// command, so the app asks in the palette, names the client and the form,
+// and the value comes back only after the yes. A no is an error.
+test('bin/nemesis-eval is refused without the token, and with it the app asks before it evaluates', async () => {
+  const { app, userData } = await launchApp()
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.locator('#prompt .cm-content')).toBeFocused()
+    const socket = join(userData, 'mcp.sock')
+    await expect.poll(() => existsSync(socket)).toBe(true)
+
+    // The same socket through a link in a folder whose mcp.token is wrong.
+    const elsewhere = mkdtempSync(join(tmpdir(), 'nemesis-eval-'))
+    symlinkSync(socket, join(elsewhere, 'mcp.sock'))
+    writeFileSync(join(elsewhere, 'mcp.token'), `${'0'.repeat(64)}\n`, { mode: 0o600 })
+    const refused = await nemesisEval(['--socket', join(elsewhere, 'mcp.sock'), '40 + 2'])
+    expect(refused.code).toBe(1)
+    expect(refused.stderr).toContain('Nemesis closed the connection')
+    expect(refused.stdout).toBe('')
+    await expect(page.locator('#transcript .cm-content')).not.toContainText('=> 42')
+
+    // With the run's token: the question first, nothing evaluated before the yes.
+    const allowed = nemesisEval(['--socket', socket, '40 + 2'])
+    await expect(page.locator('#palette-prompt')).toHaveText(
+      'nemesis-eval asks cockpit_run_command: run eval-expression with "40 + 2"?',
+    )
+    await expect(page.locator('#palette-candidates li').first()).toContainText('Refuse')
+    await expect(page.locator('#transcript .cm-content')).not.toContainText('=> 42')
+    await pick(page, 'Allow this one call')
+    const ran = await allowed
+    expect(ran.stderr).toBe('')
+    expect(ran.code).toBe(0)
+    expect(ran.stdout).toBe('=> 42\n')
+
+    // A no is the client's error, and nothing runs.
+    const denied = nemesisEval(['--socket', socket, '"not evaluated"'])
+    await expect(page.locator('#palette-prompt')).toHaveText(
+      'nemesis-eval asks cockpit_run_command: run eval-expression with ""not evaluated""?',
+    )
+    await pick(page, 'Refuse')
+    const no = await denied
+    expect(no.code).toBe(1)
+    expect(no.stderr).toContain('The user refused the call')
+    await expect(page.locator('#transcript .cm-content')).not.toContainText('=> "not evaluated"')
+  } finally {
     await app.close()
   }
 })

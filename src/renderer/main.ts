@@ -66,6 +66,7 @@ void installPromptBuffer().then((prompt) => {
     if (
       outcome.command === 'reload-config' ||
       outcome.command === 'eval-expression' ||
+      outcome.command === 'load-file' ||
       outcome.command === 'repl-read'
     ) {
       readBindings()

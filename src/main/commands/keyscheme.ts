@@ -158,7 +158,8 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * through the same door with the guide's reminder, and `doctor` lists the
  * CLAUDE.md files over the length threshold. Eval in the config scope
  * (#72): `eval-expression` reads a form as free text and answers with a
- * notice, `repl` opens the `*repl*` buffer, where `RET` is `repl-read`, and
+ * notice, `load-file` (#182) reads a path and evaluates the `.ts` or `.js`
+ * file there the same way, `repl` opens the `*repl*` buffer, where `RET` is `repl-read`, and
  * `journal-promote` and `journal-discard` read an entry of the eval journal
  * off the palette and move it to init.ts or delete it. Windows (#70):
  * `new-window` on `C-x 5 2` opens another window with its own session and
@@ -1295,6 +1296,19 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'load-file',
+      doc: 'Read the path of a .ts or .js file and evaluate it in the config scope, as eval-expression does a form.',
+      run: () => {
+        prompter.read(
+          { source: 'load-path', prompt: 'Load file:', freeText: true },
+          async (text) => {
+            await repl.loadFile(text.trim().replace(/^~(?=\/)/, homedir()))
+            return { command: 'load-file' }
+          },
+        )
+      },
+    }),
+    defineCommand({
       name: 'repl',
       doc: 'Open the *repl* buffer, where RET evaluates a form in the config scope.',
       run: () => {
@@ -2244,6 +2258,10 @@ export function cockpitSources(
     },
     {
       name: 'import-path',
+      candidates: () => [],
+    },
+    {
+      name: 'load-path',
       candidates: () => [],
     },
     {
