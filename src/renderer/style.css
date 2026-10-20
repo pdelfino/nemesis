@@ -306,6 +306,32 @@ main {
   font-size: inherit;
   line-height: 1.45;
 }
+/* The agents buffer is a read-only document under the transcript, as the environment buffer is (#157). */
+#agents {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+}
+#agents[hidden] {
+  display: none;
+}
+#agents-keys {
+  margin: 0.3rem 0 0;
+}
+#agents .cm-editor {
+  min-height: 0;
+}
+#agents .cm-editor.cm-focused {
+  outline: none;
+}
+#agents .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
 /* The *repl* buffer is a read-only document under the transcript (#72). */
 #repl {
   border-top: 1px solid var(--line);

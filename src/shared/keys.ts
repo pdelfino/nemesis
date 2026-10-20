@@ -21,6 +21,7 @@ export type BufferType =
   | 'spec'
   | 'review'
   | 'environment'
+  | 'agents'
   | 'repl'
   | 'page'
   | 'reader'

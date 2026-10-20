@@ -19,6 +19,7 @@ import type { BufferRegistry } from '../buffers'
 import type { BufferInfo } from '../../shared/buffers'
 import { createCockpitBuffers } from '../buffers'
 import { describeDiff, DiffBuffers } from '../diffs'
+import { AgentsBuffers } from '../agents'
 import { EnvironmentBuffers } from '../environment'
 import { UrlFetcher, type FetchedPage } from '../fetch-url'
 import { WorkingFiles } from '../files'
@@ -247,6 +248,8 @@ export interface CockpitDeps {
   readonly fetcher: UrlFetcher
   /** The environment of the working directory, as one buffer (#86). */
   readonly environment: EnvironmentBuffers
+  /** Every window's session and its state, as one buffer (#157). */
+  readonly agents: AgentsBuffers
   /** Eval in the config scope, the `*repl*` buffer and the journal (#72). */
   readonly repl: Repl
   /** The other windows, as `new-window` opens one and the palette lists their buffers (#70). */
@@ -435,6 +438,18 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
         confirm: () => Promise.resolve(false),
         open: () => Promise.resolve('No file opener is installed'),
       }),
+    // Without the app there is this window alone, and no session to list.
+    agents:
+      partial.agents ??
+      new AgentsBuffers(buffers, {
+        source: { list: () => [], onChange: () => () => {} },
+        here: 0,
+        home: homedir(),
+        switchTo: () => {
+          throw new CommandError('There is no other window')
+        },
+        tickMs: 0,
+      }),
     // Without the app there is no config scope: every form is refused.
     repl: partial.repl ?? new Repl(buffers),
     windows: partial.windows ?? ONE_WINDOW,
@@ -491,6 +506,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     reader,
     formGuide,
     environment,
+    agents,
     repl,
     windows,
     cwd,
@@ -1030,6 +1046,28 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         prompter.read({ source: 'environment-files', prompt: 'Open file:' }, async (path) => {
           await environment.open(path)
         })
+      },
+    }),
+    defineCommand({
+      name: 'agents',
+      doc: "Show every window's session in one buffer: its window, name, folder and state, with the running turn's time and tool calls.",
+      run: () => {
+        agents.show()
+      },
+    }),
+    defineCommand({
+      name: 'open-agent',
+      doc: 'Pick a session from the agents list and bring its window forward on its prompt buffer.',
+      run: () => {
+        // The renderer holds the point and the preload gains no channel for
+        // it, so the session is read off the palette over the same list (#157).
+        if (agents.lines().length === 0) {
+          help.show('No session to open: the agents list is empty.')
+          return
+        }
+        prompter.read({ source: 'agents', prompt: 'Open session:' }, (id) =>
+          Promise.resolve().then(() => agents.open(Number(id))),
+        )
       },
     }),
     defineCommand({
@@ -1604,6 +1642,7 @@ export function cockpitSources(
   windows: CockpitWindows,
   urls: UrlSources,
   stores: PageStores | null = null,
+  agents: AgentsBuffers | null = null,
 ): readonly PaletteSource[] {
   return [
     {
@@ -1744,6 +1783,15 @@ export function cockpitSources(
         })),
     },
     {
+      name: 'agents',
+      candidates: () =>
+        (agents?.lines() ?? []).map((line) => ({
+          id: String(line.windowId),
+          label: `${line.windowName}: ${line.session}`,
+          doc: `${line.state}, ${line.cwd}`,
+        })),
+    },
+    {
       name: 'eval-form',
       candidates: () => [],
     },
@@ -1830,6 +1878,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-x 5 2': 'new-window',
   'C-x 5 w': 'new-window-in-worktree',
   'C-x 5 F': 'toggle-full-screen',
+  'C-x 5 a': 'agents',
   'C-c C-r': 'review-diff',
   'C-s': 'search-buffer',
   'C-h x': 'describe-command',
@@ -1893,6 +1942,10 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
   // In the environment buffer RET opens a listed file through the open door (#86).
   environment: defineKeymap('environment', {
     RET: 'open-environment-file',
+  }),
+  // In the agents buffer RET picks a session and brings its window forward (#157).
+  agents: defineKeymap('agents', {
+    RET: 'open-agent',
   }),
   // In the *repl* buffer RET reads the next form (#72).
   repl: defineKeymap('repl', {
@@ -2022,6 +2075,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
     deps.windows,
     deps.urls,
     deps.stores,
+    deps.agents,
   )) {
     deps.prompter.addSource(source)
   }

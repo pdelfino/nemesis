@@ -10,6 +10,7 @@ import type { BufferInfo, BufferList, BufferSpec, PageBounds } from './buffers'
 import type { DiffContent } from './diff'
 import type { FormGuideContent } from './form-guide'
 import type { EnvironmentContent } from './environment'
+import type { AgentsContent } from './agents'
 import type { DispatchRecord, KeyBindings, KeyOutcome, KeyPress } from './keys'
 import type { HelpContent, PaletteAnswer, PaletteOutcome, PaletteRequest } from './palette'
 import type { PlanAnswer, PlanContent } from './plan'
@@ -65,6 +66,8 @@ export interface NemesisApi {
   onPromptInsert(listener: (insert: PromptInsert) => void): void
   /** The environment buffer has content: the environment command listed the session's files and servers (#86). */
   onEnvironmentShown(listener: (content: EnvironmentContent) => void): void
+  /** The `agents` buffer has content: every window's session and its state (#157). Push only. */
+  onAgentsShown(listener: (content: AgentsContent) => void): void
   /** The `*repl*` buffer has content: a form was evaluated there (#72). Push only: the page sends no form. */
   onReplShown(listener: (content: ReplContent) => void): void
   /** The eval journal changed, or the page loaded: the count for the mode line (#72). */

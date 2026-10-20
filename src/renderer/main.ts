@@ -3,6 +3,7 @@ import type { BufferType, KeyOutcome } from '../shared/keys'
 import { installBufferList } from './buffers'
 import { installDiffBuffer } from './diff-buffer'
 import { installEnvironmentBuffer } from './environment-buffer'
+import { installAgentsBuffer } from './agents-buffer'
 import { installFormGuide } from './form-guide'
 import { installHelpBuffer } from './help-buffer'
 import { installKeyCapture } from './keys'
@@ -44,6 +45,8 @@ const spec = installSpecBuffer()
 const review = installReviewBuffer()
 // And the environment buffer: C-c C-e lists the session's environment there (#86).
 const environment = installEnvironmentBuffer()
+// And the agents buffer: C-x 5 a lists every window's session there (#157).
+const agents = installAgentsBuffer()
 // And the *repl* buffer: forms evaluated in the config scope show there (#72).
 const repl = installReplBuffer()
 // The page section reports where the current page's view goes (#119).
@@ -77,6 +80,7 @@ void installPromptBuffer().then((prompt) => {
     spec.onCommand(outcome, bufferType)
     review.onCommand(outcome, bufferType)
     environment.onCommand(outcome, bufferType)
+    agents.onCommand(outcome, bufferType)
     repl.onCommand(outcome, bufferType)
   }
   keys.onCommand = act

@@ -52,6 +52,7 @@ Every conversation is a session, written to disk as an Org transcript.
 - =M-x resume-session= lists past sessions, newest first, by name or else first prompt; picking one shows its transcript and the next prompt continues it.
 - =C-x n= starts a new task and =C-x 5 2= opens a new window.
 - =C-x 5 w= opens a window in a git worktree; =C-x 5 F= toggles full screen.
+- =C-x 5 a= lists every window's session in an =agents= buffer: its folder, its state (idle, working, waits on you, finished, error), the running turn's time and tool calls. =RET= there picks one and brings its window forward.
 
 * 6. The first page buffer (minutes 9 to 11)
 

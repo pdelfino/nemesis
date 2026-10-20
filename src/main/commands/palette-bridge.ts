@@ -1,6 +1,7 @@
 import type { WebContents } from 'electron'
 import { TRANSCRIPT_GOTO_CHANNEL } from '../../shared/agent'
 import { DIFF_SHOWN_CHANNEL } from '../../shared/diff'
+import { AGENTS_SHOWN_CHANNEL } from '../../shared/agents'
 import { ENVIRONMENT_SHOWN_CHANNEL } from '../../shared/environment'
 import { PLAN_ANSWER_CHANNEL, PLAN_SHOWN_CHANNEL } from '../../shared/plan'
 import { JOURNAL_CHANGED_CHANNEL, REPL_SHOWN_CHANNEL } from '../../shared/repl'
@@ -12,6 +13,7 @@ import {
   PALETTE_OPEN_CHANNEL,
 } from '../../shared/palette'
 import type { DiffBuffers } from '../diffs'
+import type { AgentsBuffers } from '../agents'
 import type { EnvironmentBuffers } from '../environment'
 import type { HelpBuffers } from '../help'
 import { handleIn } from '../ipc'
@@ -49,6 +51,8 @@ export interface PaletteBridgeOptions {
   readonly specs: SpecBuffers
   readonly reviews: ReviewBuffers
   readonly environment: EnvironmentBuffers
+  /** Every window's session, as the `agents` buffer shows it (#157). */
+  readonly agents?: AgentsBuffers
   readonly repl: Repl
   /** Null under `--no-config`: the count stays blank. */
   readonly journal: Journal | null
@@ -72,6 +76,7 @@ export function installPaletteBridge(options: PaletteBridgeOptions): void {
     specs,
     reviews,
     environment,
+    agents,
     repl,
     journal,
     readers,
@@ -88,6 +93,8 @@ export function installPaletteBridge(options: PaletteBridgeOptions): void {
   specs.onShown((content) => send(SPEC_SHOWN_CHANNEL, content))
   reviews.onShown((content) => send(REVIEW_SHOWN_CHANNEL, content))
   environment.onShown((content) => send(ENVIRONMENT_SHOWN_CHANNEL, content))
+  const offAgents = agents?.onShown((content) => send(AGENTS_SHOWN_CHANNEL, content))
+  if (offAgents !== undefined) onDestroyed(offAgents)
   repl.onShown((content) => send(REPL_SHOWN_CHANNEL, content))
   readers?.onShown(({ bufferId, text }) => send(HELP_SHOWN_CHANNEL, { bufferId, text }))
   // The journal is the app's, not the window's: its subscription goes with the window.

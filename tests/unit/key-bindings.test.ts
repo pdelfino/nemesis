@@ -35,6 +35,7 @@ describe('the shape of a keymap', () => {
       'C-h x',
       'C-s',
       'C-x 5 2',
+      'C-x 5 a',
       'C-x 5 F',
       'C-x 5 w',
       'C-x b',

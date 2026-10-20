@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
 import type { EventSource } from './agent/session-bridge'
 import { createCockpit, mergeNotices, type Cockpit } from './cockpit'
+import type { AgentsSource } from './agents'
 import { confirm, DOWNLOAD_SOURCE, EXTERNAL_SOURCE, WORKTREE_SOURCE } from './commands/confirm'
 import {
   cockpitKeymapLayers,
@@ -781,6 +782,30 @@ void app.whenReady().then(() => {
     buffers: () => focusedCockpit()?.buffers.list() ?? [],
     run: runInFocused,
   })
+  // Every window's session for the agents buffer of each (#157): the list
+  // read when a buffer draws, and a word to every buffer when any session's
+  // state changes or a window opens or closes.
+  const agentsListeners = new Set<() => void>()
+  const agentsChanged = (): void => {
+    for (const listener of [...agentsListeners]) listener()
+  }
+  const agentsSource: AgentsSource = {
+    list: () =>
+      [...cockpits.values()].map((cockpit) => ({
+        ...cockpit.status.snapshot,
+        windowId: cockpit.id,
+        windowName: cockpit.name,
+        cwd: cockpit.cwd,
+        promptBufferId:
+          cockpit.buffers.list().find((buffer) => buffer.kind === 'prompt')?.id ?? null,
+      })),
+    onChange: (listener) => {
+      agentsListeners.add(listener)
+      return () => {
+        agentsListeners.delete(listener)
+      }
+    },
+  }
   /** The other windows as the window `id` sees them (#70). */
   const windowsFor = (id: number): CockpitWindows => ({
     open: () => {
@@ -910,6 +935,7 @@ void app.whenReady().then(() => {
         blocker,
         pageDoor,
         completed,
+        agents: agentsSource,
       },
       place.cwd,
     )
@@ -918,6 +944,8 @@ void app.whenReady().then(() => {
     }
     syncConfigCommands(cockpit.registry)
     cockpits.set(id, cockpit)
+    cockpit.status.onChange(agentsChanged)
+    agentsChanged()
     lastFocused = id
     win.on('focus', () => {
       lastFocused = id
@@ -926,6 +954,7 @@ void app.whenReady().then(() => {
     win.on('closed', () => {
       cockpits.delete(id)
       if (lastFocused === id) lastFocused = null
+      agentsChanged()
     })
     // The mode line's journal count is pushed on every change; a page that
     // loads, or loads again, gets the count as it stands.

@@ -7,6 +7,7 @@ import { CommandError } from './commands/registry'
 import type { PromptQueue } from './agent/prompt-queue'
 import { installSessionBridge, type EventSource } from './agent/session-bridge'
 import type { AgentEvent } from './agent/events'
+import { AgentsBuffers, AgentStatus, type AgentsSource } from './agents'
 import { SessionManager } from './agent/session-manager'
 import { installBufferBridge, installPageBridge } from './buffer-bridge'
 import { createCockpitBuffers, type BufferRegistry } from './buffers'
@@ -110,6 +111,8 @@ export interface Cockpit {
   readonly readers: ReaderBuffers
   /** The form guide's watches over those pages (#94). */
   readonly formGuide: FormGuide
+  /** The session's state, as the `agents` buffer of every window lists it (#157). */
+  readonly status: AgentStatus
 }
 
 export interface CockpitShared {
@@ -144,7 +147,12 @@ export interface CockpitShared {
   readonly pageDoor: PageScriptDoor
   /** Every request the page sessions completed (#29); each window keeps its own pages'. */
   readonly completed?: CompletedRequests
+  /** Every window's session, for the `agents` buffer (#157); without it the buffer lists none. */
+  readonly agents?: AgentsSource
 }
+
+/** Without the app there is no other window to list. */
+const NO_AGENTS: AgentsSource = { list: () => [], onChange: () => () => {} }
 
 /** One stream of notices out of several sources. */
 export function mergeNotices(...sources: readonly EventSource[]): EventSource {
@@ -294,6 +302,24 @@ export function createCockpit(
     for (const event of history) reviews.observe(event)
   })
   const worktrees = new Worktrees()
+  // Every window's session on one screen (#157): this session's state off
+  // its events, its requests and its attention stream, counts and times
+  // only; the buffer lists every window's through the app's source.
+  const status = new AgentStatus()
+  agent.on((event) => status.observe(event))
+  permissions.on((event) => status.observe(event))
+  agent.onAttention((event) => status.attend(event))
+  // A resumed session keeps the name it was given, as its notifications do (#90).
+  agent.onHistory((history) => {
+    for (const event of history) if (event.type === 'named') status.observe(event)
+  })
+  const agents = new AgentsBuffers(buffers, {
+    source: shared.agents ?? NO_AGENTS,
+    here: contents.id,
+    home: shared.home,
+    switchTo: (windowId, bufferId) => shared.windows.switchTo(windowId, bufferId),
+  })
+  onDestroyed(() => agents.dispose())
   // The environment of the working directory as one buffer (#86): the
   // CLAUDE.md files, rules, hooks, skills, servers and subagents off disk
   // and off the session's init frame. A listed file opens through the same
@@ -539,6 +565,7 @@ export function createCockpit(
   texts.follow(specs, shown)
   texts.follow(reviews, shown)
   texts.follow(environment, shown)
+  texts.follow(agents, shown)
   texts.follow(repl, shown)
   // A reader buffer is page text: an MCP read of it gets the labeled block (T4).
   texts.follow(readers, (content) => readerAttachment(content.document))
@@ -675,6 +702,7 @@ export function createCockpit(
     clipboard: shared.clipboard,
     fetcher,
     environment,
+    agents,
     repl,
     windows: shared.windows,
     cwd,
@@ -742,6 +770,7 @@ export function createCockpit(
     specs,
     reviews,
     environment,
+    agents,
     repl,
     journal,
     readers,
@@ -769,5 +798,6 @@ export function createCockpit(
     hints,
     readers,
     formGuide,
+    status,
   }
 }

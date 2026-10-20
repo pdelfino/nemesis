@@ -36,6 +36,7 @@ import type {
 } from './buffers'
 import type { DIFF_SHOWN_CHANNEL, DiffContent } from './diff'
 import type { ENVIRONMENT_SHOWN_CHANNEL, EnvironmentContent } from './environment'
+import type { AGENTS_SHOWN_CHANNEL, AgentsContent } from './agents'
 import type {
   BINDINGS_CHANNEL,
   DISPATCH_LOG_CHANNEL,
@@ -93,6 +94,7 @@ export interface PushChannels {
   readonly [REVIEW_SHOWN_CHANNEL]: ReviewContent
   readonly [PROMPT_INSERT_CHANNEL]: PromptInsert
   readonly [ENVIRONMENT_SHOWN_CHANNEL]: EnvironmentContent
+  readonly [AGENTS_SHOWN_CHANNEL]: AgentsContent
   readonly [REPL_SHOWN_CHANNEL]: ReplContent
   readonly [JOURNAL_CHANGED_CHANNEL]: JournalState
   readonly [FORM_GUIDE_SHOWN_CHANNEL]: FormGuideContent

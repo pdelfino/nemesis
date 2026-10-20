@@ -19,6 +19,7 @@ import {
 import { DIFF_SHOWN_CHANNEL } from '../shared/diff'
 import { FORM_GUIDE_SHOWN_CHANNEL } from '../shared/form-guide'
 import { ENVIRONMENT_SHOWN_CHANNEL } from '../shared/environment'
+import { AGENTS_SHOWN_CHANNEL } from '../shared/agents'
 import type {
   InvokeAnswer,
   InvokeArgs,
@@ -73,6 +74,7 @@ const base = {
   onReviewShown: (listener) => on(REVIEW_SHOWN_CHANNEL, listener),
   onPromptInsert: (listener) => on(PROMPT_INSERT_CHANNEL, listener),
   onEnvironmentShown: (listener) => on(ENVIRONMENT_SHOWN_CHANNEL, listener),
+  onAgentsShown: (listener) => on(AGENTS_SHOWN_CHANNEL, listener),
   // Eval (#72) is two pushes and no invoke: the form is read through the
   // palette answer channel like any other free text, and evaluated in the
   // main process on a command the user ran.

@@ -223,6 +223,7 @@ function activeBufferType(): BufferType | null {
     value === 'spec' ||
     value === 'review' ||
     value === 'environment' ||
+    value === 'agents' ||
     value === 'repl' ||
     value === 'page'
     ? value

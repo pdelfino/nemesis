@@ -93,10 +93,19 @@ export class AttentionTracker {
   }
 
   private sessionName(): string {
-    const name = (this.name ?? '').replace(/\s+/g, ' ').trim()
-    if (name.length > 0) {
-      return name.length > NAME_LIMIT ? `${name.slice(0, NAME_LIMIT - 3)}...` : name
-    }
-    return this.sessionId === null ? 'Nemesis' : `session ${this.sessionId.slice(0, 8)}`
+    return sessionLabel(this.name, this.sessionId)
   }
+}
+
+/**
+ * How a session is named to the user outside its own window: the name it
+ * was given (#104), else a short form of its id, else `Nemesis`. The
+ * notifications (#90) and the `agents` buffer (#157) say it alike.
+ */
+export function sessionLabel(name: string | null, sessionId: string | null): string {
+  const trimmed = (name ?? '').replace(/\s+/g, ' ').trim()
+  if (trimmed.length > 0) {
+    return trimmed.length > NAME_LIMIT ? `${trimmed.slice(0, NAME_LIMIT - 3)}...` : trimmed
+  }
+  return sessionId === null ? 'Nemesis' : `session ${sessionId.slice(0, 8)}`
 }

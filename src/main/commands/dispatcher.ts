@@ -24,6 +24,7 @@ const BUFFER_TYPES: readonly BufferType[] = [
   'spec',
   'review',
   'environment',
+  'agents',
   'repl',
   'page',
   'reader',

@@ -44,7 +44,9 @@ test('M-x reads a command, describe-command and describe-key answer in a help bu
     await expect(page.locator('#palette-candidates li', { hasText: 'compact' })).toContainText(
       'C-c C-k',
     )
-    await expect(doc).toHaveText('Allow the pending tool now and for the rest of the session.')
+    await expect(doc).toHaveText(
+      "Show every window's session in one buffer: its window, name, folder and state, with the running turn's time and tool calls.",
+    )
 
     // The query narrows the list; the highlight and its doc follow.
     await page.keyboard.type('desc')
