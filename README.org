@@ -38,7 +38,7 @@ In Greek mythology, *Nemesis is the daughter of Nyx*. So this is not a fork. It 
 
 * Nemesis against the neighbors, honestly
 
-Every mark below comes from the other projects' own READMEs and docs, read on 2026-OCTOBER-17; the long version with every column is [[file:docs/comparison.org][docs/comparison.org]]. Where Nemesis loses, the table says so. Hiding the bad rows is how a project earns a nemesis.
+Every mark below comes from the other projects' own READMEs and docs, read on 2026-OCTOBER-17 (iTerm2, Goose and Min on 2026-OCTOBER-20). Each table opens with a technical line and a plain-words line; the long version with every column is [[file:docs/comparison.org][docs/comparison.org]]. Where Nemesis loses, the table says so. Hiding the bad rows is how a project earns a nemesis.
 
 ✅ yes, 🟡 partly, ❌ no.
 
@@ -48,6 +48,8 @@ Nemesis is Nyxt's daughter, so this is less a rivalry than a family dinner.
 
 |                                             | [[https://github.com/atlas-engineer/nyxt][Nyxt]]                         | Nemesis                                      |
 |---------------------------------------------+-------------------------------+----------------------------------------------|
+| Technically | Common Lisp browser with a prompt buffer, modes and hooks; Electron renderer since 4.0 | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words | A web browser you drive with the keyboard and can reprogram while it runs | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
 | Every action is a command bound to a key    | ✅ Emacs, vi or CUA           | ✅ Emacs                                     |
 | The prompt buffer (fuzzy M-x for everything) | ✅ invented it                | ✅ borrowed it, with thanks                  |
 | Hints, history, bookmarks, a blocker        | ✅                            | ✅                                           |
@@ -64,6 +66,8 @@ Nemesis is Nyxt's daughter, so this is less a rivalry than a family dinner.
 
 |                                       | Emacs + agent-shell            | Nemesis                                       |
 |---------------------------------------+--------------------------------+-----------------------------------------------|
+| Technically | Emacs Lisp client for ACP agents, the transcript in an Emacs buffer | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words | Claude inside Emacs, an old text editor you can reshape forever | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
 | The transcript is a searchable buffer | ✅                             | ✅                                            |
 | A web browser next to the session     | 🟡 eww, text only              | ✅ Chromium page buffers                      |
 | An MCP server over its commands       | ❌                             | ✅                                            |
@@ -78,6 +82,8 @@ Anthropic's own app. Nemesis is that idea rebuilt by someone who refuses to touc
 
 |                                                  | Claude desktop app                     | Nemesis                                      |
 |--------------------------------------------------+----------------------------------------+----------------------------------------------|
+| Technically | Anthropic's Electron app over Claude Code, with a sandboxed browser and cloud sessions | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words | Claude's official app for coding: chat with Claude, click around with the mouse | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
 | A browser inside                                 | ✅ sandboxed, its own profile          | ✅ page buffers, their own profile           |
 | Every action a named command you can rebind      | 🟡 shortcuts                           | ✅                                           |
 | The transcript is text you can search and edit   | 🟡                                     | ✅                                           |
@@ -91,6 +97,8 @@ Anthropic's own app. Nemesis is that idea rebuilt by someone who refuses to touc
 
 |                              | [[https://zed.dev][Zed]]                      | Nemesis                                 |
 |------------------------------+---------------------------+-----------------------------------------|
+| Technically | GPU-rendered Rust code editor with an Agent Panel that speaks ACP | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words | A very fast code editor with an AI helper panel | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
 | A key model                  | ✅ vim mode and keymaps   | ✅ Emacs, every action a command        |
 | A browser                    | ❌                        | ✅                                      |
 | MCP                          | 🟡 a client               | ✅ a server over its command table      |
@@ -105,12 +113,61 @@ Anthropic's own app. Nemesis is that idea rebuilt by someone who refuses to touc
 
 |                                          | BrowserOS                       | Claude in Chrome         | Nemesis                                             |
 |------------------------------------------+---------------------------------+--------------------------+-----------------------------------------------------|
+| Technically | Chromium fork with built-in agents and an MCP route for outside agents | Chrome extension that lets Claude drive your logged-in browser | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words | Chrome with AI helpers that click around web pages for you | Claude moves the mouse in your own Chrome | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
 | An agent built in                        | ✅ several, local or your keys  | ✅ Claude                | ✅ Claude Code                                      |
 | A key model                              | ❌                              | ❌                       | ✅                                                  |
 | A page's text cannot steer the agent     | 🟡 autonomy first               | 🟡 acts in live sessions | ✅ labeled untrusted, with specs (T4)               |
 | A coding agent in your repo, same window | ❌                              | ❌                       | ✅                                                  |
 | A full browser                           | ✅ a Chromium fork              | ✅ your own Chrome       | 🟡 page buffers: no extensions, no password manager |
 | The agent clicks in your logged-in tabs  | ✅                              | ✅ that is the point     | 🟡 only with your yes, per click                    |
+
+** vs Claude Code in iTerm2, the daily baseline
+
+This is what Nemesis replaces every day, so it is a key reference: if Nemesis does not feel better than this, it has failed.
+
+|                                          | Claude Code in [[https://iterm2.com][iTerm2]]              | Nemesis                                   |
+|------------------------------------------+----------------------------------+-------------------------------------------|
+| Technically                              | The Claude Code Node CLI drawing its terminal UI in iTerm2, a native macOS terminal emulator | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words                           | Talking to Claude in a black text window, the way programmers type commands | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
+| Every Claude Code feature, first-hand    | ✅ skills, hooks, plugins, /resume | 🟡 through the SDK, same settings files    |
+| Keys                                     | 🟡 readline and iTerm shortcuts  | ✅ Emacs keyscheme, every command bound    |
+| The transcript is text you can edit      | 🟡 scrollback; copy grabs junk   | ✅ a real buffer                           |
+| Web pages next to the session            | ❌                               | ✅ page buffers                            |
+| Other agents can drive it over MCP       | ❌                               | ✅                                         |
+| Rock solid                               | ✅ years of it                   | 🟡 a stable channel since 2026-OCTOBER-20  |
+
+** vs Goose
+
+[[https://github.com/aaif-goose/goose][Goose]] is the other key reference: the strongest open-source agent platform, now under the Linux Foundation. The full study is #183.
+
+|                                          | Goose                            | Nemesis                                   |
+|------------------------------------------+----------------------------------+-------------------------------------------|
+| Technically                              | Rust agent loop over 15+ model providers, Electron desktop and CLI, MCP extensions, YAML recipes | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words                           | A free AI helper that works with any AI brand and plugs into tools, for code or anything else | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
+| Which models                             | ✅ any, 15+ providers            | 🟡 Claude only                             |
+| Claude Code as the engine                | 🟡 through ACP, no resume yet    | ✅ the Agent SDK, in-process               |
+| Saved workflows, scheduled and headless  | ✅ recipes                       | ❌ not yet (ported from Goose, #183)       |
+| A key model                              | 🟡 a shortcut list               | ✅                                         |
+| A browser                                | ❌ only through extensions       | ✅                                         |
+| Asks before acting, by default           | ❌ Autonomous is the default     | ✅                                         |
+| Community                                | ✅ 55,000 stars, weekly releases | ❌ one user                                |
+
+** vs Min
+
+[[https://github.com/minbrowser/min][Min]] is the closest browser on the same stack, and the proof that a daily Electron browser is realistic.
+
+|                                          | Min                              | Nemesis                                   |
+|------------------------------------------+----------------------------------+-------------------------------------------|
+| Technically                              | Electron browser in plain JavaScript, a WebContentsView per tab, blocker and reader built in | Electron app hosting the Claude Agent SDK in-process, CodeMirror buffers, WebContentsView page buffers, an MCP server over its command table |
+| In plain words                           | A simple, clean web browser that blocks ads and hides clutter | One window where you talk to Claude and browse the web with only the keyboard, and web pages cannot trick Claude |
+| Ads and trackers blocked                 | ✅                               | ✅                                         |
+| Full-text search of your history         | ✅                               | ❌ not yet                                 |
+| Password manager                         | ✅ Bitwarden, 1Password, KeePassXC | ❌ on purpose: banking stays in Brave     |
+| A key model                              | 🟡 about 35 remappable shortcuts | ✅                                         |
+| An agent inside                          | ❌                               | ✅                                         |
+| The app's own UI is isolated from Node   | ❌ nodeIntegration on            | ✅ every renderer sandboxed                |
+| Years of daily users                     | ✅                               | ❌                                         |
 
 ** So, should you use it?
 
@@ -202,15 +259,37 @@ The catalog has since grown a page tier (=browser_= tools, three feeds per page 
 
 * Repos and documents to study
 
-| Reference                                                         | Why                                                                         |
-|-------------------------------------------------------------------+-----------------------------------------------------------------------------|
-| [[https://github.com/atlas-engineer/nyxt][atlas-engineer/nyxt]]                                      | Architectural source of truth: prompt buffer, modes, hooks, keymaps, history |
-| [[https://github.com/xenodium/agent-shell][xenodium/agent-shell]]                                     | The reference Claude cockpit inside Emacs; M0 lives here                     |
-| [[https://platform.claude.com/docs/en/agent-sdk/overview][Claude Agent SDK]]                                  | The agent runtime Nemesis hosts                                              |
-| [[https://www.electronjs.org/docs/latest/tutorial/security][Electron security checklist]]                   | Every item is a non-negotiable in SECURITY.org                               |
-| [[https://github.com/browsermcp/mcp][browsermcp/mcp]]                                             | MCP tool-surface reference for M3 and M4; match then exceed                  |
-| [[https://github.com/minbrowser/min][minbrowser/min]]                                            | Proof that a daily-use browser on Electron is realistic                      |
-| [[file:docs/comparison.org][docs/comparison.org]]                                           | One table: Nemesis next to the cockpits, orchestrators and browsers it borrows from |
+** Projects
+
+The same projects as the rows of [[file:docs/comparison.org][docs/comparison.org]], no more and no fewer; add or remove a project in both files in the same commit. The two key references come first.
+
+| Project | Why |
+|---------+-----|
+| [[https://docs.claude.com/en/docs/claude-code/overview][Claude Code in iTerm2 (key reference)]] | The daily baseline Nemesis has to beat on feel |
+| [[https://github.com/aaif-goose/goose][aaif-goose/goose (key reference)]] | Strongest open-source agent platform: recipes, ACP providers, adversary reviewer (#183) |
+| [[https://github.com/atlas-engineer/nyxt][atlas-engineer/nyxt]] | Architectural source of truth: prompt buffer, modes, hooks, keymaps, history |
+| [[https://github.com/xenodium/agent-shell][xenodium/agent-shell]] | The reference Claude cockpit inside Emacs; M0 lives here |
+| [[https://github.com/manzaltu/claude-code-ide.el][manzaltu/claude-code-ide.el]] | Emacs as an MCP tool server for Claude |
+| [[https://claude.com/download][Claude Code desktop app]] | The official cockpit: sessions, sandboxed browser, classifiers |
+| [[https://github.com/zed-industries/zed][zed-industries/zed]] | Agent Panel over ACP and a fast key model |
+| [[https://github.com/winfunc/opcode][winfunc/opcode]] | GUI over the Claude CLI: custom agents, usage tracking |
+| [[https://github.com/BloopAI/vibe-kanban][BloopAI/vibe-kanban]] | Agents per task in worktrees, an MCP task server |
+| [[https://github.com/smtg-ai/claude-squad][smtg-ai/claude-squad]] | Many Claude Code sessions in tmux and worktrees |
+| [[https://conductor.build][Conductor]] | Mac app for parallel agents per worktree |
+| [[https://github.com/minbrowser/min][minbrowser/min]] | Proof that a daily-use browser on Electron is realistic |
+| [[https://github.com/glide-browser/glide][glide-browser/glide]] | Modal keys and a TypeScript config door on Firefox |
+| [[https://github.com/qutebrowser/qutebrowser][qutebrowser/qutebrowser]] | Keyboard-only browsing done well for years |
+| [[https://github.com/browseros-ai/BrowserOS][browseros-ai/BrowserOS]] | Agentic browser with an MCP route; what autonomy-first looks like |
+| [[https://claude.com/chrome][Claude in Chrome]] | Claude driving a logged-in browser; the threat Nemesis designs against |
+| [[https://github.com/browsermcp/mcp][browsermcp/mcp]] | MCP tool-surface reference for M3 and M4; match then exceed |
+
+** Documents
+
+| Document | Why |
+|----------+-----|
+| [[https://platform.claude.com/docs/en/agent-sdk/overview][Claude Agent SDK]] | The agent runtime Nemesis hosts |
+| [[https://www.electronjs.org/docs/latest/tutorial/security][Electron security checklist]] | Every item is a non-negotiable in SECURITY.org |
+| [[file:docs/comparison.org][docs/comparison.org]] | One table: Nemesis next to every project above |
 
 * License
 
