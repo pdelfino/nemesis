@@ -28,7 +28,7 @@ yes / partial / no.
 | Vibe Kanban                        | orchestrator          | Rust, web UI                    | no                     | no                      | CLI wrappers, many agents                  | yes, a task server for agents               | no                                        | no                                      | no                                              | Apache-2.0     | 28,386 |
 | Claude Squad                       | orchestrator, TUI     | Go, tmux                        | yes, TUI keys          | partial, terminals      | CLI in tmux and worktrees                  | no                                          | no                                        | no                                      | no                                              | AGPL (reported) | 8,618  |
 | Conductor                          | orchestrator, Mac app | macOS app                       | partial                | no                      | CLI per worktree, cloud sandboxes          | client                                      | no                                        | partial                                 | no                                              | proprietary    | n/a    |
-| Goose                              | agent platform        | Rust, Electron UI               | partial                | no                      | its own agent, any model                   | client; extensions are MCP servers          | no                                        | partial                                 | yes, MCP extensions                             | Apache-2.0     | 55,373 |
+| Goose (aaif-goose/goose)             | agent platform          | Rust core, Electron + React UI    | partial, shortcut list   | no, chat bubbles          | its own agent, any model; Claude Code via ACP | client; extensions are MCP servers            | no, only via MCP extensions                 | partial, Autonomous by default; opt-in injection scan, adversary reviewer (fail-open) | yes, MCP extensions, recipes, custom distros      | Apache-2.0       | 55,464   |
 | Nyxt 4.0                           | browser               | Common Lisp, Electron renderer  | yes, Emacs, vi, CUA    | yes, prompt buffer      | none built in                              | no                                          | yes                                       | partial, platform default               | yes, Lisp init, REPL, hooks                     | BSD-3          | 11,036 |
 | Glide                              | browser               | TypeScript, Firefox             | yes, modal             | partial, excmds         | none                                       | no                                          | yes                                       | partial, Firefox default                | yes, TypeScript config, web extensions          | see repo       | 1,499  |
 | qutebrowser                        | browser               | Python, Qt                      | yes, vim               | partial, command line   | none                                       | no                                          | yes                                       | partial                                 | yes, Python config                              | GPL            | 11,735 |
@@ -36,7 +36,7 @@ yes / partial / no.
 | BrowserOS                          | agentic browser       | Chromium fork                   | no                     | no                      | built-in agents, local models or own keys  | yes, an MCP route for external agents       | yes                                       | partial, autonomy first                 | partial                                         | AGPL-3.0       | 13,972 |
 | Claude in Chrome                   | extension             | Chrome extension                | no                     | no                      | Claude drives your logged-in Chrome        | no                                          | your Chrome                               | partial, acts in live sessions          | no                                              | proprietary    | n/a    |
 
-Stars are GitHub counts read on 2026-OCTOBER-17. The Nemesis row was updated on 2026-OCTOBER-20, after M3 (the MCP server and the config door) and M4 (page buffers) landed; the other rows are still the read of 2026-OCTOBER-17.
+Stars are GitHub counts read on 2026-OCTOBER-17. The Nemesis row was updated on 2026-OCTOBER-20, after M3 (the MCP server and the config door) and M4 (page buffers) landed; the Goose row on 2026-OCTOBER-20 (#183); the other rows are still the read of 2026-OCTOBER-17.
 
 * What the table says
 
@@ -44,6 +44,15 @@ Stars are GitHub counts read on 2026-OCTOBER-17. The Nemesis row was updated on 
 - The "MCP" column is where Nemesis is nearly alone: only claude-code-ide.el, Vibe Kanban and BrowserOS expose anything to agents, and none exposes a full command table.
 - The "Safety" column is where Nemesis and the official app are alone in having a tested posture; the agentic browsers lead with autonomy.
 - The cockpit basics (sessions, worktrees, diff review) are owned by the orchestrators and the official app; Nemesis should not compete there, it should be the keyboard and text version of them.
+
+* Goose against Claude Code in iTerm2 and Nemesis
+
+Read on 2026-OCTOBER-20 for #183, where the full attribute table lives. In short:
+
+- *Goose* wins on model choice (15+ providers), recipes with scheduling and headless runs, and community (Linux Foundation, weekly releases). Claude Code runs inside it only as an ACP provider, which has no session resume or fork yet, and its permission default is Autonomous.
+- *Claude Code in iTerm2* is the baseline for daily feel: native features, subscription billing, but scrollback for text and no pages.
+- *Nemesis* keeps the pillars neither has: a key model, the transcript as a text buffer, page buffers the agent reads as untrusted, and ask-by-default permissions with tested specs.
+- Taken from Goose (decision A in #183): a fail-closed adversary reviewer behind the permission bridge, and recipes.
 
 * Related
 
