@@ -35,8 +35,13 @@ setup: node-version ## Install dependencies and the Electron binary (safe to rer
 	$(NPM) ci --ignore-scripts
 	$(NPM) run electron:install
 
+# The installed Nemesis.app keeps ~/Library/Application Support/Nemesis, so a
+# dev build gets its own folder and cannot touch the stable app's sessions,
+# windows or settings. Set NEMESIS_USER_DATA to override.
+DEV_USER_DATA := $(or $(NEMESIS_USER_DATA),$(HOME)/Library/Application Support/Nemesis-dev)
+
 dev: node-version node_modules/electron/dist ## Run the app in development mode, installing first if needed
-	$(NPM) run dev
+	NEMESIS_USER_DATA="$(DEV_USER_DATA)" $(NPM) run dev
 
 gate: node-version ## Run the gate, the same as npm run gate
 	$(NPM) run gate
