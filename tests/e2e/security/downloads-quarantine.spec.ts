@@ -158,8 +158,10 @@ test('a download lands only after a yes, in the quarantine folder, with the attr
     await expect
       .poll(() => filesUnder(nemesis.downloadsDir), { timeout: 10_000 })
       .toEqual([join(QUARANTINE_FOLDER, 'download.bin')])
+    // The file is listed as soon as it is created; it is whole a moment
+    // later, once the last bytes are written (a CI run saw 0 bytes here).
     const saved = join(quarantine, 'download.bin')
-    expect(statSync(saved).size).toBe(1024)
+    await expect.poll(() => statSync(saved).size, { timeout: 10_000 }).toBe(1024)
     if (process.platform === 'darwin') {
       // The policy announces the file only after it has read the attribute
       // back; the spec reads it a second time, with the tool the issue names.
