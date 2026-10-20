@@ -38,6 +38,9 @@ export class CommandError extends Error {
   override readonly name = 'CommandError'
 }
 
+/** The sources that are code acting for the user, not the user: they cannot run a `never` command. */
+const NOT_THE_USER: ReadonlySet<CommandContext['source']> = new Set(['config', 'mcp'])
+
 const COMMAND_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
 
 export function defineCommand(command: Command): Command {
@@ -103,6 +106,15 @@ export class CommandRegistry {
    */
   async run(name: string, context: CommandContext): Promise<void> {
     const command = this.require(name)
+    // A `never` command answers a question the user owns (ADR 0007): a
+    // permission, a plan, an AskUserQuestion. Code is not the user, so the
+    // config, and through it every hook handler (ADR 0005), cannot run one,
+    // nor can the MCP door, which refuses it upstream as well.
+    if (command.mcp === 'never' && NOT_THE_USER.has(context.source)) {
+      throw new CommandError(
+        `${name} answers a question only you can answer; it runs from a key or the palette, never from ${context.source === 'config' ? 'the config' : 'an MCP client'}`,
+      )
+    }
     const hooks = this.hooks
     if (hooks?.has('before-command') === true) {
       // The hook registry's notice says who refused and why; the command does not run.
