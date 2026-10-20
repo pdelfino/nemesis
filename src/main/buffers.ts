@@ -1,5 +1,7 @@
 import type { BufferInfo, BufferList, BufferSpec } from '../shared/buffers'
 import type { BufferType } from '../shared/keys'
+import type { HookRegistry } from './hooks'
+import { DEFAULT_MODES } from './commands/modes'
 
 /**
  * The buffer registry (#60). Nyxt and Emacs make everything a buffer, so the
@@ -43,6 +45,16 @@ export class BufferRegistry {
   private counter = 0
   /** Buffer ids, the most recently current first (#172). */
   private recent: string[] = []
+  /**
+   * The app's hooks (#165). The buffer points fire before announce(), so a
+   * synchronous handler's effect is in the same push the renderer gets; the
+   * registry stays synchronous and does not wait on an async handler.
+   */
+  private readonly hooks: HookRegistry | null
+
+  constructor(hooks: HookRegistry | null = null) {
+    this.hooks = hooks
+  }
 
   /** Opens a buffer and makes it current when nothing else is. */
   create(spec: BufferSpec): BufferInfo {
@@ -54,17 +66,22 @@ export class BufferRegistry {
     if (title.length > MAX_TITLE) throw new BufferError('Buffer title is too long')
 
     this.counter += 1
+    // A kind with default modes starts in them, first wins (#166, ADR 0004).
+    const modes = DEFAULT_MODES[spec.kind]
     const buffer: BufferInfo = Object.freeze({
       id: `b${this.counter}`,
       kind: spec.kind,
       title,
       elementId: spec.elementId ?? null,
+      ...(modes === undefined ? {} : { modes: Object.freeze([...modes]) }),
     })
     this.buffers.push(buffer)
     if (this.currentId === null) this.currentId = buffer.id
     // A new buffer is the least recently used, unless it is the current one.
     if (this.currentId === buffer.id) this.recent.unshift(buffer.id)
     else this.recent.push(buffer.id)
+    if (this.hooks?.has('buffer-created') === true)
+      void this.hooks.fire('buffer-created', { buffer })
     this.announce()
     return buffer
   }
@@ -87,8 +104,12 @@ export class BufferRegistry {
     const buffer = this.get(id)
     if (buffer === undefined) throw new BufferError(`No buffer with id "${id}"`)
     if (this.currentId !== buffer.id) {
+      const from = this.current
       this.currentId = buffer.id
       this.recent = [buffer.id, ...this.recent.filter((id) => id !== buffer.id)]
+      if (this.hooks?.has('buffer-switched') === true) {
+        void this.hooks.fire('buffer-switched', { from, to: buffer })
+      }
       this.announce()
     }
     return buffer
@@ -191,6 +212,9 @@ export class BufferRegistry {
       this.currentId = next?.id ?? null
       if (next !== undefined) this.recent = [next.id, ...this.recent.filter((r) => r !== next.id)]
     }
+    if (this.hooks?.has('buffer-killed') === true) {
+      void this.hooks.fire('buffer-killed', { buffer: killed })
+    }
     this.announce()
     return killed
   }
@@ -242,8 +266,8 @@ export function parseBufferSpec(payload: unknown): BufferSpec {
  * prompt below, the two sections src/renderer/index.html lays out. The prompt
  * is current, because that is where typing goes.
  */
-export function createCockpitBuffers(): BufferRegistry {
-  const buffers = new BufferRegistry()
+export function createCockpitBuffers(hooks: HookRegistry | null = null): BufferRegistry {
+  const buffers = new BufferRegistry(hooks)
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
   const prompt = buffers.create({ kind: 'prompt', title: 'Prompt', elementId: 'prompt' })
   buffers.switchTo(prompt.id)

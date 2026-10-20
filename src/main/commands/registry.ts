@@ -1,4 +1,5 @@
 import type { BufferType } from '../../shared/keys'
+import type { HookRegistry } from '../hooks'
 
 /**
  * The command registry (#59). Every action in the cockpit is a named command,
@@ -37,6 +38,9 @@ export class CommandError extends Error {
   override readonly name = 'CommandError'
 }
 
+/** The sources that are code acting for the user, not the user: they cannot run a `never` command. */
+const NOT_THE_USER: ReadonlySet<CommandContext['source']> = new Set(['config', 'mcp'])
+
 const COMMAND_NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
 
 export function defineCommand(command: Command): Command {
@@ -51,6 +55,13 @@ export function defineCommand(command: Command): Command {
 
 export class CommandRegistry {
   private readonly commands = new Map<string, Command>()
+  /** The app's hooks (#165): before-command may refuse a run, after-command hears it. */
+  private hooks: HookRegistry | null = null
+
+  /** Fires the command points of ADR 0005 from `run`, whichever caller ran it. */
+  useHooks(hooks: HookRegistry): void {
+    this.hooks = hooks
+  }
 
   register(command: Command): Command {
     const existing = this.commands.get(command.name)
@@ -89,7 +100,42 @@ export class CommandRegistry {
     return Array.from(this.commands.values()).sort((a, b) => a.name.localeCompare(b.name))
   }
 
+  /**
+   * Runs a command. The hooks fire here, one level below the dispatcher, so
+   * a key, the palette, the menu and the config all pass them (ADR 0005).
+   */
   async run(name: string, context: CommandContext): Promise<void> {
-    await this.require(name).run(context)
+    const command = this.require(name)
+    // A `never` command answers a question the user owns (ADR 0007): a
+    // permission, a plan, an AskUserQuestion. Code is not the user, so the
+    // config, and through it every hook handler (ADR 0005), cannot run one,
+    // nor can the MCP door, which refuses it upstream as well.
+    if (command.mcp === 'never' && NOT_THE_USER.has(context.source)) {
+      throw new CommandError(
+        `${name} answers a question only you can answer; it runs from a key or the palette, never from ${context.source === 'config' ? 'the config' : 'an MCP client'}`,
+      )
+    }
+    const hooks = this.hooks
+    if (hooks?.has('before-command') === true) {
+      // The hook registry's notice says who refused and why; the command does not run.
+      if ((await hooks.fire('before-command', { command: name, context })) !== null) return
+    }
+    if (hooks?.has('after-command') !== true) {
+      await command.run(context)
+      return
+    }
+    const started = Date.now()
+    let ok = false
+    try {
+      await command.run(context)
+      ok = true
+    } finally {
+      await hooks.fire('after-command', {
+        command: name,
+        context,
+        ok,
+        durationMs: Date.now() - started,
+      })
+    }
   }
 }

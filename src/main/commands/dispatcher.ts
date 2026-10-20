@@ -132,7 +132,8 @@ export class KeyDispatcher {
     return this.resolver.bindings()
   }
 
-  handle(press: KeyPress, modes: readonly string[] = []): Promise<KeyOutcome> {
+  /** `modes` are the buffer's, first wins; absent means its kind's defaults (#166). */
+  handle(press: KeyPress, modes?: readonly string[]): Promise<KeyOutcome> {
     return this.take(press, modes).outcome
   }
 
@@ -146,7 +147,7 @@ export class KeyDispatcher {
    */
   take(
     press: KeyPress,
-    modes: readonly string[] = [],
+    modes?: readonly string[],
   ): { readonly consumed: boolean; readonly outcome: Promise<KeyOutcome> } {
     const stroke = strokeFromKeyPress(press)
     if (stroke === null) {

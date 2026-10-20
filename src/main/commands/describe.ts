@@ -9,22 +9,31 @@ import type { CommandRegistry } from './registry'
  * the registry and the keymaps; the unit tests read them straight.
  */
 
-/** One keymap and the buffers it applies to: null for the global map. */
+/**
+ * One keymap and the buffers it applies to: null for the global map. A mode's
+ * layer (#166) names the mode, and its one kind when it has one.
+ */
 export interface KeymapLayer {
   readonly keymap: Keymap
   readonly bufferType: BufferType | null
+  readonly mode?: string
 }
 
 /** Every chord that runs `name`, with the buffer type it is bound in. */
 export function bindingsOf(
   layers: readonly KeymapLayer[],
   name: string,
-): readonly { chord: string; bufferType: BufferType | null }[] {
+): readonly { chord: string; bufferType: BufferType | null; mode?: string }[] {
   const bindings = []
   for (const layer of layers) {
     for (const entry of layer.keymap.entries()) {
-      if (entry.command === name)
-        bindings.push({ chord: entry.chord, bufferType: layer.bufferType })
+      if (entry.command === name) {
+        bindings.push({
+          chord: entry.chord,
+          bufferType: layer.bufferType,
+          ...(layer.mode === undefined ? {} : { mode: layer.mode }),
+        })
+      }
     }
   }
   return bindings
@@ -33,7 +42,10 @@ export function bindingsOf(
 /** The chords that run `name`, as one short note for the palette: `C-x b`, `y (permission)`. */
 export function bindingNote(layers: readonly KeymapLayer[], name: string): string {
   return bindingsOf(layers, name)
-    .map(({ chord, bufferType }) => (bufferType === null ? chord : `${chord} (${bufferType})`))
+    .map(({ chord, bufferType, mode }) => {
+      const where = bufferType ?? mode
+      return where === undefined || where === null ? chord : `${chord} (${where})`
+    })
     .join(', ')
 }
 
@@ -49,11 +61,13 @@ export function describeCommand(
   if (bindings.length === 0) {
     lines.push('It is not bound to any key; run it from M-x.')
   } else {
-    for (const { chord, bufferType } of bindings) {
+    for (const { chord, bufferType, mode } of bindings) {
       lines.push(
-        bufferType === null
-          ? `It is bound to ${chord}.`
-          : `It is bound to ${chord} in ${bufferType} buffers.`,
+        bufferType !== null
+          ? `It is bound to ${chord} in ${bufferType} buffers.`
+          : mode !== undefined
+            ? `It is bound to ${chord} in ${mode} mode.`
+            : `It is bound to ${chord}.`,
       )
     }
   }

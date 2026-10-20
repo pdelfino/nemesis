@@ -6,8 +6,10 @@ import type { AgentNoticeEvent } from '../agent/events'
 import type { Keymap } from '../commands/keymap'
 import { defineKeymap } from '../commands/keymap'
 import type { Command, CommandRegistry } from '../commands/registry'
+import type { HookPoint, HookRegistry } from '../hooks'
+import type { Mode, ModeRegistry } from '../commands/modes'
 import type { Settings } from '../settings'
-import type { CallSite, ConfigApiEnv } from './api'
+import type { CallSite, ConfigApiEnv, StagedHook } from './api'
 import { ConfigError, ConfigStaging, createConfigApi, siteIn, USER_KEYMAP } from './api'
 
 /**
@@ -93,6 +95,11 @@ export interface StagedConfig {
   readonly bindings: number
   readonly settings: Settings
   readonly overridden: readonly (keyof Settings)[]
+  /** The file's hook handlers, in its order, and the handlers of other sources it removes (#165). */
+  readonly hooks: readonly StagedHook[]
+  readonly removals: readonly { readonly point: HookPoint; readonly name: string }[]
+  /** The file's modes (#166), which a commit swaps for the previous load's. */
+  readonly modes: readonly Mode[]
 }
 
 export type StageResult =
@@ -119,6 +126,12 @@ export interface ConfigLoaderOptions {
   readonly base: () => Settings
   readonly buffers: ConfigApiEnv['buffers']
   readonly run: ConfigApiEnv['run']
+  /** The app's hooks: a commit swaps the `config` source's handlers (#165). */
+  readonly hooks?: HookRegistry
+  /** The app's modes: a commit swaps the `config` source's modes (#166). */
+  readonly modes?: ModeRegistry
+  /** A config mode's toggle, in the focused window's current buffer. */
+  readonly toggleMode?: ConfigApiEnv['toggleMode']
   /** Milliseconds the file's top level may run. */
   readonly timeoutMs?: number
   readonly now?: () => number
@@ -253,10 +266,24 @@ export class ConfigLoader {
       if (path !== null) this.current = { state: 'absent', path }
       return {
         ok: true,
-        config: { commands: [], keymap: null, bindings: 0, settings: base, overridden: [] },
+        config: {
+          commands: [],
+          keymap: null,
+          bindings: 0,
+          settings: base,
+          overridden: [],
+          hooks: [],
+          removals: [],
+          modes: [],
+        },
       }
     }
-    const staging = new ConfigStaging(path, base, reserved)
+    const staging = new ConfigStaging(
+      path,
+      base,
+      reserved,
+      this.options.modes?.takenNames('config') ?? new Set(),
+    )
     try {
       const source = readFileSync(path, 'utf8')
       const js = stripTypeScriptTypes(source, { mode: 'strip' })
@@ -264,6 +291,7 @@ export class ConfigLoader {
         buffers: this.options.buffers,
         run: this.options.run,
         notice: (text) => this.notify(text),
+        ...(this.options.toggleMode === undefined ? {} : { toggleMode: this.options.toggleMode }),
       })
       const context = createContext({ nemesis: api })
       new Script(js, { filename: path }).runInContext(context, {
@@ -274,6 +302,29 @@ export class ConfigLoader {
           throw new ConfigError(
             `Keymap "user" binds ${binding.chord} to unknown command "${binding.command}"`,
             binding.site,
+          )
+        }
+      }
+      for (const { mode, site } of staging.modes.values()) {
+        for (const { chord, command } of mode.layer?.entries() ?? []) {
+          if (!reserved.has(command) && !staging.commands.has(command)) {
+            throw new ConfigError(
+              `Mode "${mode.name}" binds ${chord} to unknown command "${command}"`,
+              site,
+            )
+          }
+        }
+      }
+      // A name another source holds on the point would fail the commit half way.
+      const held = this.options.hooks?.list().filter((entry) => entry.source !== 'config') ?? []
+      for (const hook of staging.hooks.values()) {
+        const clash = held.find(
+          (entry) => entry.point === hook.point && entry.name === hook.handler.name,
+        )
+        if (clash !== undefined) {
+          throw new ConfigError(
+            `Hook "${hook.point}" already has a handler named "${hook.handler.name}" (${clash.source})`,
+            hook.site,
           )
         }
       }
@@ -292,6 +343,9 @@ export class ConfigLoader {
         bindings: staging.bindings.size,
         settings: staging.settings(),
         overridden: [...staging.overrides.keys()],
+        hooks: [...staging.hooks.values()],
+        removals: [...staging.removals],
+        modes: [...staging.modes.values()].map((staged) => staged.mode),
       },
     }
   }
@@ -323,6 +377,15 @@ export class ConfigLoader {
     }
     target.setUserKeymap(keymap)
     target.applySettings(config.settings)
+    // The previous load's handlers go, so a reload registers each handler once.
+    const hooks = this.options.hooks
+    if (hooks !== undefined) {
+      hooks.dropSource('config')
+      for (const { point, name } of config.removals) hooks.off(point, name)
+      for (const { point, handler } of config.hooks) hooks.on(point, handler, 'config')
+    }
+    // The previous load's modes go off every buffer and are dropped, then the file's are defined.
+    this.options.modes?.replace('config', config.modes)
     this.live = config
     this.started ??= config.settings
     const path = this.options.path

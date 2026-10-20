@@ -2,6 +2,7 @@ import type { AgentEvent } from '../shared/agent'
 import { APP_NAME } from '../shared/api'
 import type { BufferList } from '../shared/buffers'
 import { describeContext } from '../shared/context'
+import type { KeyBindings } from '../shared/keys'
 
 /**
  * The session's part of the mode line (#80): the context meter and the
@@ -74,6 +75,17 @@ export function pageState(list: BufferList): string {
     parts.push(`${current.blocked} blocked`)
   }
   return parts.join(' ')
+}
+
+/**
+ * The current buffer's modes as the mode line shows them (#166): the visible
+ * ones, first wins. A page buffer's own modes are not registered modes yet
+ * and show in its page state instead.
+ */
+export function modeNames(list: BufferList | null, bindings: KeyBindings | null): string {
+  if (list === null || bindings === null) return ''
+  const current = list.buffers.find((buffer) => buffer.id === list.currentId)
+  return (current?.modes ?? []).filter((name) => bindings.byMode[name]?.visible === true).join(' ')
 }
 
 /** `gate`, `gate 2/3` once retries were sent, blank when off. */

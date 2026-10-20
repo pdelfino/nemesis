@@ -64,6 +64,15 @@ import type { BufferKeymaps, Keymap, ModeKeymaps } from './keymap'
 import { defineKeymap, isShadowed, KeyResolver } from './keymap'
 import { assertBindingsAreRegistered, KeyDispatcher, KeyReader } from './dispatcher'
 import {
+  BASE_MODE,
+  BufferModes,
+  defineMode,
+  modeCommands,
+  ModeRegistry,
+  modeSources,
+  type Mode,
+} from './modes'
+import {
   askCodebasePrompt,
   attachCheckPrompt,
   freshSessionPrompt,
@@ -312,6 +321,8 @@ export interface CockpitDeps {
   readonly urls: UrlSources
   /** The profile's history and bookmarks (#125); null when the database did not open. */
   readonly stores: PageStores | null
+  /** The modes the window's buffers are in (#166), which enable-mode and disable-mode switch. */
+  readonly modes: BufferModes
 }
 
 /** The history and the bookmarks of the profile's database (#125), and where the export goes. */
@@ -524,6 +535,7 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     formGuide: partial.formGuide ?? NO_FORM_GUIDE,
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
     stores: partial.stores ?? null,
+    modes: partial.modes ?? new BufferModes(cockpitModes, buffers),
   }
 }
 
@@ -1899,6 +1911,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         },
       }),
     ),
+    // enable-mode, disable-mode, and a toggle per togglable cockpit mode (#166).
+    ...modeCommands(deps.modes, prompter, cockpitModes.list('cockpit')),
   ]
 }
 
@@ -2197,7 +2211,7 @@ const REWIND_DOCS: Record<RewindTarget, string> = {
   both: 'The conversation and the files, together.',
 }
 
-/** Bindings available in every buffer. The help keys are Emacs 28's. */
+/** Bindings available in every buffer, the `base` mode's (#166). The help keys are Emacs 28's. */
 export const GLOBAL_KEYMAP = defineKeymap('global', {
   'M-x': 'execute-command',
   'C-g': 'keyboard-quit',
@@ -2229,21 +2243,82 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-h b': 'describe-bindings',
 })
 
-/** Per-buffer-type bindings. They are consulted before the global map. */
-export const BUFFER_KEYMAPS: BufferKeymaps = {
+/**
+ * The cockpit's modes (#166, ADR 0004): `base`, the global map under every
+ * buffer, and the four kinds whose keymap was a per-type table before, each
+ * the one default mode of its kind (DEFAULT_MODES in modes.ts). The four are
+ * a kind's own layer, so they toggle with enable-mode and disable-mode and
+ * register no `toggle-<name>`.
+ */
+export const COCKPIT_MODES: readonly Mode[] = [
+  defineMode({
+    name: BASE_MODE,
+    doc: 'The global keys, under every buffer.',
+    keymap: GLOBAL_KEYMAP,
+    visible: false,
+    toggler: false,
+  }),
+  // A permission prompt is modal: an unmodified key is an answer, not text.
+  defineMode({
+    name: 'permission',
+    doc: 'Answer a permission prompt with y, n, a or an option number.',
+    keymap: {
+      y: 'answer-yes',
+      n: 'answer-no',
+      a: 'allow-for-session',
+      ...Object.fromEntries(
+        QUESTION_OPTIONS.map((number) => [`${number}`, `choose-option-${number}`]),
+      ),
+    },
+    modal: true,
+    toggler: false,
+    kinds: ['permission'],
+  }),
+  // A diff buffer's file goes to the system on the Org key for opening a link (#68).
+  defineMode({
+    name: 'diff',
+    doc: "Open a diff's file with C-c C-o.",
+    keymap: { 'C-c C-o': 'open-diff-file' },
+    toggler: false,
+    kinds: ['diff'],
+  }),
+  // In a plan buffer the send and compact keys are approve and reject (#82).
+  defineMode({
+    name: 'plan',
+    doc: 'Approve the plan with C-c C-c, reject it with C-c C-k.',
+    keymap: { 'C-c C-c': 'approve-plan', 'C-c C-k': 'reject-plan' },
+    toggler: false,
+    kinds: ['plan'],
+  }),
+  // In a spec buffer the send key starts the fresh session the guide says to (#85).
+  defineMode({
+    name: 'spec',
+    doc: 'Start a fresh session from the spec with C-c C-c.',
+    keymap: { 'C-c C-c': 'start-fresh-session-from-spec' },
+    toggler: false,
+    kinds: ['spec'],
+  }),
+]
+
+/** The app's modes: the cockpit's, then the config file's (#166). */
+export function createModeRegistry(): ModeRegistry {
+  // The page buffer's modes keep their names until #168 makes them registered modes.
+  const registry = new ModeRegistry(
+    new Set([DOCUMENT_MODE, HINT_MODE, FORM_GUIDE_MODE, PASSTHROUGH_MODE]),
+  )
+  for (const mode of COCKPIT_MODES) registry.register(mode)
+  return registry
+}
+
+/** The one registry of the app, as the user keymap is one: the config door swaps its own modes in it. */
+export const cockpitModes = createModeRegistry()
+
+/** Per-buffer-type bindings of the kinds that have no default mode. They are consulted before the global map. */
+const KIND_KEYMAPS: BufferKeymaps = {
   // In the prompt buffer `@` at the start of a word mentions a file (#83);
   // the renderer keeps it as text inside a word, so an address stays one.
   prompt: defineKeymap('prompt', {
     '@': 'complete-file',
-  }),
-  // A permission prompt is modal: an unmodified key is an answer, not text.
-  permission: defineKeymap('permission', {
-    y: 'answer-yes',
-    n: 'answer-no',
-    a: 'allow-for-session',
-    ...Object.fromEntries(
-      QUESTION_OPTIONS.map((number) => [`${number}`, `choose-option-${number}`]),
-    ),
   }),
   // C-x C-f opens a URL in a page buffer (#119), from a page or the
   // transcript, and C-x 4 C-f, Emacs's find-file-other-window, in a new
@@ -2272,19 +2347,6 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-c u': 'copy-url',
     'C-c t': 'copy-title',
   }),
-  // A diff buffer's file goes to the system on the Org key for opening a link (#68).
-  diff: defineKeymap('diff', {
-    'C-c C-o': 'open-diff-file',
-  }),
-  // In a plan buffer the send and compact keys are approve and reject (#82).
-  plan: defineKeymap('plan', {
-    'C-c C-c': 'approve-plan',
-    'C-c C-k': 'reject-plan',
-  }),
-  // In a spec buffer the send key starts the fresh session the guide says to (#85).
-  spec: defineKeymap('spec', {
-    'C-c C-c': 'start-fresh-session-from-spec',
-  }),
   // In a review buffer the send key sends the findings to the writer (#87).
   review: defineKeymap('review', {
     'C-c C-c': 'review-apply',
@@ -2302,6 +2364,19 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     RET: 'repl-read',
   }),
 }
+
+/** The layer of each kind's default mode, by kind. */
+function defaultModeKeymaps(): BufferKeymaps {
+  const layers: Partial<Record<BufferType, Keymap>> = {}
+  for (const mode of COCKPIT_MODES) {
+    const kind = mode.kinds?.length === 1 ? mode.kinds[0] : undefined
+    if (kind !== undefined && mode.layer !== null) layers[kind] = mode.layer
+  }
+  return layers
+}
+
+/** Every kind's own layer: its table, or its default mode's keymap (#166). */
+export const BUFFER_KEYMAPS: BufferKeymaps = { ...KIND_KEYMAPS, ...defaultModeKeymaps() }
 
 /**
  * The modes of a page buffer (#120, ADR 0004), consulted before the `page`
@@ -2392,15 +2467,30 @@ export function userKeymap(): Keymap | null {
   return userLayer?.keymap ?? null
 }
 
-/** Every keymap with the buffers it applies to, for describe-command (#65). */
-export function cockpitKeymapLayers(): readonly KeymapLayer[] {
+/**
+ * Every keymap with the buffers or the mode it applies to, for
+ * describe-command (#65): the user layer, `base`, the kinds' tables, then
+ * each registered mode's layer (#166), named by its one kind when it has one.
+ */
+export function cockpitKeymapLayers(modes: ModeRegistry = cockpitModes): readonly KeymapLayer[] {
   return [
     ...(userLayer === null ? [] : [{ keymap: userLayer.keymap, bufferType: null }]),
     { keymap: userLayer?.global ?? GLOBAL_KEYMAP, bufferType: null },
-    ...(Object.entries(BUFFER_KEYMAPS) as [BufferType, Keymap][]).map(([bufferType, keymap]) => ({
+    ...(Object.entries(KIND_KEYMAPS) as [BufferType, Keymap][]).map(([bufferType, keymap]) => ({
       keymap,
       bufferType,
     })),
+    ...modes.list().flatMap((mode) =>
+      mode.name === BASE_MODE || mode.layer === null
+        ? []
+        : [
+            {
+              keymap: mode.layer,
+              bufferType: mode.kinds?.length === 1 ? (mode.kinds[0] ?? null) : null,
+              mode: mode.name,
+            },
+          ],
+    ),
     // The page modes are a page buffer's only, for now (#120).
     ...Object.values(MODE_KEYMAPS).map((mode) => ({
       keymap: mode.keymap,
@@ -2413,6 +2503,7 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
   const deps = resolveCockpitDeps(partial)
   const registry = new CommandRegistry()
   registry.registerAll(cockpitCommands(deps, registry))
+  for (const source of modeSources(deps.modes)) deps.prompter.addSource(source)
   for (const source of cockpitSources(
     registry,
     deps.buffers,
@@ -2438,11 +2529,12 @@ export function createCockpitRegistry(partial: Partial<CockpitDeps> = {}): Comma
   return registry
 }
 
-export function createCockpitResolver(): KeyResolver {
+export function createCockpitResolver(modes: ModeRegistry = cockpitModes): KeyResolver {
   return new KeyResolver({
     global: GLOBAL_KEYMAP,
-    byBufferType: BUFFER_KEYMAPS,
+    byBufferType: KIND_KEYMAPS,
     modes: MODE_KEYMAPS,
+    registry: modes,
     user: userKeymap,
     abort: ABORT_CHORD,
   })
@@ -2453,8 +2545,8 @@ export function createCockpitDispatcher(partial: Partial<CockpitDeps> = {}): Key
   const deps = resolveCockpitDeps(partial)
   const registry = createCockpitRegistry(deps)
   assertBindingsAreRegistered(registry, [
-    GLOBAL_KEYMAP,
-    ...Object.values(BUFFER_KEYMAPS),
+    ...Object.values(KIND_KEYMAPS),
+    ...cockpitModes.list().flatMap((mode) => (mode.layer === null ? [] : [mode.layer])),
     ...Object.values(MODE_KEYMAPS).map((mode) => mode.keymap),
   ])
   return new KeyDispatcher(registry, createCockpitResolver(), deps.keys)

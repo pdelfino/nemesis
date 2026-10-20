@@ -1,5 +1,6 @@
 import type { BufferType, KeyBindings, KeymapShape, KeyStroke } from '../../shared/keys'
 import { formatStroke, NAMED_KEYS, strokeFromKeyPress } from '../../shared/keys'
+import type { ModeRegistry } from './modes'
 
 /**
  * Emacs key notation, parsed once at load (#59).
@@ -206,10 +207,17 @@ export interface ModeLayer {
 export type ModeKeymaps = Readonly<Record<string, ModeLayer>>
 
 export interface KeyResolverOptions {
+  /** The `base` mode's layer, under every buffer (#166). */
   readonly global: Keymap
   readonly byBufferType?: BufferKeymaps
-  /** Mode layers by name; a buffer's modes are consulted first, in their order. */
+  /** The page buffer's mode layers by name (#120); a buffer's modes are consulted first, in their order. */
   readonly modes?: ModeKeymaps
+  /**
+   * The registered modes (#166, ADR 0004): a buffer's mode that is not a
+   * page mode is looked up here, and a press that names no modes is in its
+   * kind's defaults.
+   */
+  readonly registry?: ModeRegistry
   /**
    * The user's layer from the config file (#71, ADR 0006), read on every
    * sequence so a reload takes effect on the next key. It sits above the
@@ -238,6 +246,7 @@ export class KeyResolver {
   private readonly global: Keymap
   private readonly byBufferType: BufferKeymaps
   private readonly modes: ModeKeymaps
+  private readonly registry: ModeRegistry | null
   private readonly user: () => Keymap | null
   private readonly abortStroke: string | undefined
   private path: string[] = []
@@ -247,6 +256,7 @@ export class KeyResolver {
     this.global = options.global
     this.byBufferType = options.byBufferType ?? {}
     this.modes = options.modes ?? {}
+    this.registry = options.registry ?? null
     this.user = options.user ?? (() => null)
     this.abortStroke = options.abort === undefined ? undefined : normalizeChord(options.abort)
   }
@@ -268,13 +278,21 @@ export class KeyResolver {
       byBufferType[type] = keymap.shape()
     }
     const user = this.user()
-    return { global: mergeShapes(this.global.shape(), user?.shape()), byBufferType }
+    return {
+      global: mergeShapes(this.global.shape(), user?.shape()),
+      byBufferType,
+      byMode: this.registry?.shapes() ?? {},
+    }
   }
 
+  /**
+   * `modes` are the buffer's, first wins; undefined means the kind's
+   * defaults, for a caller that knows the type and not the buffer.
+   */
   resolve(
     stroke: KeyStroke,
     bufferType: BufferType | null = null,
-    modes: readonly string[] = [],
+    modes?: readonly string[],
   ): Resolution {
     const token = formatStroke(stroke)
     // C-g abandons the sequence, then is looked up on its own.
@@ -297,11 +315,17 @@ export class KeyResolver {
     return { kind: 'unbound', chord }
   }
 
-  private layersFor(bufferType: BufferType | null, modes: readonly string[]): Keymap[] {
+  private layersFor(bufferType: BufferType | null, given?: readonly string[]): Keymap[] {
+    const modes =
+      given ?? (bufferType === null ? [] : (this.registry?.defaultsFor(bufferType) ?? []))
     const layers: Keymap[] = []
     for (const name of modes) {
       const mode = this.modes[name]
-      if (mode === undefined) continue
+      if (mode === undefined) {
+        const layer = this.registry?.get(name)?.layer
+        if (layer !== undefined && layer !== null) layers.push(layer)
+        continue
+      }
       layers.push(mode.keymap)
       if (mode.sealed === true) return layers
     }

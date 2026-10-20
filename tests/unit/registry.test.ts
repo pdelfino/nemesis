@@ -48,4 +48,23 @@ describe('the command registry (#59)', () => {
     expect(run).toHaveBeenCalledWith({ source: 'palette' })
     await expect(registry.run('nope', { source: 'test' })).rejects.toThrow(/No command named/)
   })
+
+  it('refuses a never command from the config or the MCP door, whatever a hook asks', async () => {
+    const run = vi.fn()
+    const registry = new CommandRegistry()
+    registry.register(
+      defineCommand({ name: 'answer-yes', mcp: 'never', doc: 'Allow the pending tool once.', run }),
+    )
+    await expect(registry.run('answer-yes', { source: 'config' })).rejects.toThrow(
+      /only you can answer.*the config/,
+    )
+    await expect(registry.run('answer-yes', { source: 'mcp', client: 'x' })).rejects.toThrow(
+      /an MCP client/,
+    )
+    expect(run).not.toHaveBeenCalled()
+    for (const source of ['key', 'palette', 'menu', 'test'] as const) {
+      await registry.run('answer-yes', { source })
+    }
+    expect(run).toHaveBeenCalledTimes(4)
+  })
 })

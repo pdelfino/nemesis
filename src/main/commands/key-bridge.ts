@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import type { BufferType } from '../../shared/keys'
 import { BINDINGS_CHANNEL, DISPATCH_LOG_CHANNEL, KEY_CHANNEL } from '../../shared/keys'
 import { handleIn, parseNothing } from '../ipc'
 import type { KeyDispatcher } from './dispatcher'
@@ -12,8 +13,16 @@ import { parseKeyPress } from './dispatcher'
  * One dispatcher per window (#70): a key reaches the dispatcher of the
  * window it was pressed in.
  */
-export function installKeyBridge(dispatcher: KeyDispatcher, contents: WebContents): KeyDispatcher {
-  handleIn(contents, KEY_CHANNEL, parseKeyPress, (press) => dispatcher.handle(press))
+export function installKeyBridge(
+  dispatcher: KeyDispatcher,
+  contents: WebContents,
+  modesOf?: (bufferType: BufferType | null) => readonly string[],
+): KeyDispatcher {
+  // The modes are read here from the window's own buffer list (#166), never
+  // taken from the renderer: a press names a buffer type and nothing else.
+  handleIn(contents, KEY_CHANNEL, parseKeyPress, (press) =>
+    dispatcher.handle(press, modesOf?.(press.bufferType)),
+  )
 
   // The renderer learns the shape of the keymaps, never the commands, so it
   // can leave every unbound key to the editor under it (#61).

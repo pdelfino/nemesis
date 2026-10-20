@@ -69,6 +69,18 @@ const zones = [
     allowed: ['electron', '../../shared/agent', '../buffers', './session'],
     reference: 'CLAUDE.md Layout',
   },
+  {
+    zone: 'src/main/hooks.ts',
+    file: 'src/main/hooks.ts',
+    forbidden: [
+      './agent/events',
+      './agent/permission-bridge',
+      './security/permissions',
+      '../preload/index',
+    ],
+    allowed: ['./commands/registry', '../shared/buffers', 'node:async_hooks'],
+    reference: 'ADR 0005',
+  },
 ]
 
 describe('import zones (CLAUDE.md Layout)', () => {
