@@ -37,8 +37,8 @@ column in an error are the line and column in your file.
 
 * What =nemesis= offers
 
-| Member                                     | What it does                                                                                          |
-|--------------------------------------------+-------------------------------------------------------------------------------------------------------|
+| Member                                      | What it does                                                                                          |
+|---------------------------------------------+-------------------------------------------------------------------------------------------------------|
 | =nemesis.defineCommand({ name, doc, run })= | A command, as the cockpit's are: a kebab-case name, a doc line for the palette, a body. M-x finds it. |
 | =nemesis.defineKeymap('user', spec)=        | Bindings in the =user= layer, chord to command name, in Emacs notation (ADR 0002).                    |
 | =nemesis.bindKey(chord, command)=           | One binding in the =user= layer.                                                                      |
@@ -47,12 +47,13 @@ column in an error are the line and column in your file.
 | =nemesis.buffers.list()=                    | The open buffers: id, kind, title.                                                                    |
 | =nemesis.commands.run(name)=                | Runs a command by name, once the cockpit is up.                                                       |
 | =nemesis.notice(text)=                      | A notice in the transcript, recorded in the session folder.                                           |
+| =nemesis.on(point, { name, doc, run })=     | A handler at a hook point (ADR 0005), with the source =config=. See Hooks below.                      |
+| =nemesis.off(point, name)=                  | Removes a handler by point and name.                                                                  |
 
 The =user= layer sits above the global map and below the per-buffer maps, so
 a chord there wins over the cockpit's global one. A config command cannot take
 a cockpit command's name: to change what a key does, bind it to a new name.
-=nemesis.hooks= arrives with ADR 0005's hook registry and =nemesis.defineMode=
-with ADR 0004's mode registry (ADR 0006, steps 2 and 3).
+=nemesis.defineMode= arrives with ADR 0004's mode registry (ADR 0006, step 3).
 
 ** The notification toggles
 
@@ -115,6 +116,74 @@ nemesis.defineKeymap('user', {
   'C-c n': 'count-buffers',
 })
 #+end_src
+
+* Hooks
+
+A hook is a declared point the cockpit fires, and a handler is a named
+function the config registers there (ADR 0005, #165). There is no advice:
+nothing wraps a command, a handler runs only where its point fires.
+
+| Point             | Kind        | Fires                                    | The event                                        |
+|-------------------+-------------+------------------------------------------+--------------------------------------------------|
+| =after-init=      | observer    | once, when the first window is up        | =commands= (names), =buffers=                    |
+| =buffer-created=  | observer    | a buffer opened                          | =buffer=                                         |
+| =buffer-switched= | observer    | the current buffer changed               | =from= (or =null=), =to=                         |
+| =buffer-killed=   | observer    | a buffer killed                          | =buffer=                                         |
+| =before-command=  | interceptor | before a command runs, from any caller   | =command=, =context=                             |
+| =after-command=   | observer    | after it ran; not when a hook refused it | =command=, =context=, =ok=, =durationMs=         |
+| =session-started= | observer    | a session's first frame                  | =sessionId=, =model=, =permissionMode=           |
+| =turn-ended=      | observer    | a turn ended                             | =sessionId=, =isError=, =durationMs=, =numTurns= |
+| =before-quit=     | observer    | the app is quitting                      | nothing                                          |
+
+An event holds names, ids, counts and buffer records, never prompt text,
+assistant text, tool input or page content.
+
+#+begin_src typescript
+// Say which buffer was just made. The name is kebab-case, like a command's:
+// it is what list-hooks shows, what a failure notice names, and what
+// nemesis.off and remove-hook take.
+nemesis.on('buffer-created', {
+  name: 'say-created',
+  doc: 'Says which buffer was made.',
+  run(event): void {
+    nemesis.notice(`created ${event.buffer.title} (${event.buffer.kind})`)
+  },
+})
+
+// The one interceptor: return { veto: true, reason } and the command does
+// not run; the reason is a notice in the transcript.
+nemesis.on('before-command', {
+  name: 'keep-the-transcript',
+  doc: 'Refuses kill-buffer while the transcript is the current buffer.',
+  run(event) {
+    if (event.command === 'kill-buffer' && event.context.bufferType === 'transcript') {
+      return { veto: true, reason: 'the transcript stays open' }
+    }
+    return undefined
+  },
+})
+#+end_src
+
+The rules:
+
+- Handlers of a point run oldest first: the cockpit's, then a mode's, then the
+  config's, each in the order =on= was called.
+- A handler may be =async=; each is awaited, two seconds at most for an
+  observer, thirty for =before-command=. The second argument is an
+  =AbortSignal= aborted at that limit. An observer past it is reported and
+  left behind; an interceptor past it refuses the command.
+- A handler that throws is reported in a notice with its point, name and
+  source, and the next one runs. It stays registered, so the notice comes
+  back until the file is fixed. A throw in =before-command= refuses nothing.
+- A point fired from inside one of its own handlers (a =before-command=
+  handler that runs a command) runs no handler the second time, and says so.
+- A second handler of the same name on a point is an error on the file's
+  line, as a misspelt point or a name that is not kebab-case is.
+- =reload-config= drops every =config= handler and registers the file's
+  again, so a handler runs once per event, however many reloads.
+- =M-x list-hooks= shows every handler in the help buffer, by point, with its
+  source; =M-x remove-hook= removes one chosen in the palette until the next
+  reload. =nemesis.on= and =nemesis.off= belong in the file: eval refuses them.
 
 * Reload
 

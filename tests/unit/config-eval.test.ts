@@ -105,6 +105,11 @@ describe('eval in the config scope', () => {
     const settings = await h.evaluator.evaluate(`${DEFINE}; nemesis.settings.set('theme', 'dark')`)
     expect(settings.ok).toBe(false)
     expect(settings.text).toMatch(/settings\.set is not applied at eval/)
+    const hook = await h.evaluator.evaluate(
+      `${DEFINE}; nemesis.on('buffer-created', { name: 'x', doc: 'X.', run() {} })`,
+    )
+    expect(hook.ok).toBe(false)
+    expect(hook.text).toMatch(/nemesis\.on and nemesis\.off are not applied at eval/)
     expect(h.registry.has('say-hi')).toBe(false)
     expect(h.journal.count).toBe(0)
   })

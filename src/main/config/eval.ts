@@ -102,6 +102,12 @@ export class ConfigEval {
           'nemesis.settings.set is not applied at eval: put it in init.ts and run reload-config',
         )
       }
+      // A handler from eval would be the `repl` source of ADR 0005, which waits for its own issue.
+      if (staging.hooks.size > 0 || staging.removals.length > 0) {
+        throw new ConfigError(
+          'nemesis.on and nemesis.off are not applied at eval: put them in init.ts and run reload-config',
+        )
+      }
       for (const binding of staging.bindings.values()) {
         if (!target.registry.has(binding.command) && !staging.commands.has(binding.command)) {
           throw new ConfigError(

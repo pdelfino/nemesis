@@ -2,6 +2,8 @@ import type { Command } from '../commands/registry'
 import { CommandError, defineCommand } from '../commands/registry'
 import type { Keymap } from '../commands/keymap'
 import { defineKeymap, KeymapError, normalizeChord } from '../commands/keymap'
+import type { HookHandler, HookPoint } from '../hooks'
+import { checkHandler, checkPointAndName, HookError } from '../hooks'
 import type { NotifyToggles, Settings } from '../settings'
 import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } from '../settings'
 
@@ -13,7 +15,8 @@ import { DEFAULT_NOTIFY_TOGGLES, NOTIFY_KEYS, parseSettings, SettingsError } fro
  * until the loader commits the whole load.
  *
  * The object reaches the command registry's shapes, the keymap builder, the
- * settings rules, a read of the buffer list, `commands.run` and `notice`, and
+ * settings rules, the hook points (#165), a read of the buffer list,
+ * `commands.run` and `notice`, and
  * nothing of src/main/agent/, src/main/security/ or src/preload/. The file is
  * trusted code all the same: node:vm is not a security boundary.
  */
@@ -46,6 +49,13 @@ export function siteIn(stack: string, file: string): CallSite | null {
   return { line: Number(match[1]), column: Number(match[2]) }
 }
 
+/** A hook handler the file registers, and where, so a clash at commit is reported on its line. */
+export interface StagedHook {
+  readonly point: HookPoint
+  readonly handler: HookHandler<HookPoint>
+  readonly site: CallSite | null
+}
+
 /** What a binding asked for, and where, so an unknown command is reported on its line. */
 export interface StagedBinding {
   readonly chord: string
@@ -61,6 +71,10 @@ export class ConfigStaging {
   readonly commands = new Map<string, Command>()
   readonly bindings = new Map<string, StagedBinding>()
   readonly overrides = new Map<keyof Settings, Settings[keyof Settings]>()
+  /** Hook handlers by `point name`, in the order the file registered them (#165). */
+  readonly hooks = new Map<string, StagedHook>()
+  /** Handlers of another source the file removes with `off`, applied at commit. */
+  readonly removals: { readonly point: HookPoint; readonly name: string }[] = []
   /** The user layer as built so far, so a conflict between two chords fails on the call that made it. */
   keymap: Keymap | null = null
   /** Set when the file's body has run: a definition from a command body later would be lost. */
@@ -101,6 +115,10 @@ export interface ConfigApi {
   defineCommand(spec: unknown): void
   defineKeymap(name: unknown, spec: unknown): void
   bindKey(chord: unknown, command: unknown): void
+  /** A handler at a hook point (ADR 0005), with the source `config`. */
+  on(point: unknown, spec: unknown): void
+  /** Removes a handler by point and name. */
+  off(point: unknown, name: unknown): void
   readonly settings: {
     set(key: unknown, value: unknown): void
     get(key: unknown): unknown
@@ -212,6 +230,40 @@ export function createConfigApi(staging: ConfigStaging, env: ConfigApiEnv): Conf
     bindKey(chord, command) {
       staging.open('bindKey')
       bind(staging, chord, command)
+    },
+    on(point, spec) {
+      staging.open('on')
+      if (!isRecord(spec)) throw new HookError('on takes a point and { name, doc, run }')
+      const { name, doc, run } = spec
+      checkHandler(point, name, doc, run)
+      const key = `${String(point)} ${String(name)}`
+      if (staging.hooks.has(key)) {
+        throw new HookError(`Hook "${String(point)}" already has a handler named "${String(name)}"`)
+      }
+      const body = run as (event: unknown, signal: AbortSignal) => unknown
+      staging.hooks.set(key, {
+        point: point as HookPoint,
+        handler: Object.freeze({
+          name: name as string,
+          doc: doc as string,
+          // The file sees a copy of the payload, as a command body sees a copy of its context.
+          run: async (event: unknown, signal: AbortSignal) => {
+            const result = await body.call(undefined, { ...(event as object) }, signal)
+            return isRecord(result) && result['veto'] === true
+              ? { veto: true as const, reason: String(result['reason'] ?? 'refused by the config') }
+              : undefined
+          },
+        }),
+        site: staging.site(),
+      })
+    },
+    off(point, name) {
+      staging.open('off')
+      checkPointAndName(point, name)
+      // A handler this file registered is simply not registered; any other waits for the commit.
+      if (!staging.hooks.delete(`${String(point)} ${String(name)}`)) {
+        staging.removals.push({ point: point as HookPoint, name: name as string })
+      }
     },
     settings: {
       set(key, value) {

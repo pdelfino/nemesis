@@ -141,3 +141,55 @@ test('a config file adds a command; reload-config picks up an edit and survives 
     await app.close()
   }
 })
+
+const ON_CREATED = `nemesis.on('buffer-created', {
+  name: 'say-created',
+  doc: 'Says which buffer was made.',
+  run(event: { buffer: { title: string } }): void {
+    nemesis.notice('created ' + event.buffer.title)
+  },
+})
+`
+
+// A config hook (#165, ADR 0005): the file's handler on buffer-created runs
+// when list-hooks opens the help buffer, list-hooks names it with its
+// source, and after reload-config it runs once, not once per load.
+test('a config on(buffer-created) handler runs, and after a reload it runs once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nemesis-e2e-hooks-'))
+  const path = join(dir, 'init.ts')
+  writeFileSync(path, ON_CREATED)
+  const { app } = await launchApp('nemesis-e2e-', [], {}, { NEMESIS_CONFIG_DIR: dir })
+  const created = async (page: Page): Promise<number> =>
+    (await transcriptLines(page)).filter((line) => line === 'created Help').length
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.locator('#prompt .cm-content')).toBeFocused()
+
+    await runCommand(page, 'list-hooks')
+    await expect(page.locator('#help')).toBeVisible()
+    await expect
+      .poll(() => page.locator('#help .cm-line').allTextContents())
+      .toEqual([
+        'Hooks',
+        '',
+        'buffer-created (observer)',
+        '  say-created (config): Says which buffer was made.',
+      ])
+    await expect.poll(() => created(page)).toBe(1)
+
+    await runCommand(page, 'reload-config')
+    await expect
+      .poll(() => transcriptLines(page))
+      .toContain(`Config reloaded from ${path}: 0 commands, 0 bindings, 0 settings overridden.`)
+    // The help buffer goes, so the next list-hooks makes it again.
+    await runCommand(page, 'kill-buffer')
+    await expect(page.locator('#help')).toBeHidden()
+    await runCommand(page, 'list-hooks')
+    await expect(page.locator('#help')).toBeVisible()
+    await expect.poll(() => created(page)).toBe(2)
+    expect(await page.locator('#help .cm-line').allTextContents()).toHaveLength(4)
+  } finally {
+    await app.close()
+  }
+})

@@ -1,5 +1,6 @@
 import type { BufferInfo, BufferList, BufferSpec } from '../shared/buffers'
 import type { BufferType } from '../shared/keys'
+import type { HookRegistry } from './hooks'
 
 /**
  * The buffer registry (#60). Nyxt and Emacs make everything a buffer, so the
@@ -41,6 +42,16 @@ export class BufferRegistry {
   private readonly listeners = new Set<BufferListener>()
   private currentId: string | null = null
   private counter = 0
+  /**
+   * The app's hooks (#165). The buffer points fire before announce(), so a
+   * synchronous handler's effect is in the same push the renderer gets; the
+   * registry stays synchronous and does not wait on an async handler.
+   */
+  private readonly hooks: HookRegistry | null
+
+  constructor(hooks: HookRegistry | null = null) {
+    this.hooks = hooks
+  }
 
   /** Opens a buffer and makes it current when nothing else is. */
   create(spec: BufferSpec): BufferInfo {
@@ -60,6 +71,8 @@ export class BufferRegistry {
     })
     this.buffers.push(buffer)
     if (this.currentId === null) this.currentId = buffer.id
+    if (this.hooks?.has('buffer-created') === true)
+      void this.hooks.fire('buffer-created', { buffer })
     this.announce()
     return buffer
   }
@@ -82,7 +95,11 @@ export class BufferRegistry {
     const buffer = this.get(id)
     if (buffer === undefined) throw new BufferError(`No buffer with id "${id}"`)
     if (this.currentId !== buffer.id) {
+      const from = this.current
       this.currentId = buffer.id
+      if (this.hooks?.has('buffer-switched') === true) {
+        void this.hooks.fire('buffer-switched', { from, to: buffer })
+      }
       this.announce()
     }
     return buffer
@@ -165,6 +182,9 @@ export class BufferRegistry {
       const next = this.buffers[index % Math.max(this.buffers.length, 1)]
       this.currentId = next?.id ?? null
     }
+    if (this.hooks?.has('buffer-killed') === true) {
+      void this.hooks.fire('buffer-killed', { buffer: killed })
+    }
     this.announce()
     return killed
   }
@@ -216,8 +236,8 @@ export function parseBufferSpec(payload: unknown): BufferSpec {
  * prompt below, the two sections src/renderer/index.html lays out. The prompt
  * is current, because that is where typing goes.
  */
-export function createCockpitBuffers(): BufferRegistry {
-  const buffers = new BufferRegistry()
+export function createCockpitBuffers(hooks: HookRegistry | null = null): BufferRegistry {
+  const buffers = new BufferRegistry(hooks)
   buffers.create({ kind: 'transcript', title: 'Transcript', elementId: 'transcript' })
   const prompt = buffers.create({ kind: 'prompt', title: 'Prompt', elementId: 'prompt' })
   buffers.switchTo(prompt.id)

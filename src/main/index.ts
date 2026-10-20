@@ -14,8 +14,10 @@ import {
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ClipboardImage } from './agent/images'
+import type { AgentEvent } from '../shared/agent'
 import type { EventSource } from './agent/session-bridge'
 import { createCockpit, mergeNotices, type Cockpit } from './cockpit'
+import { HOOK_COMMAND_DOCS, HookRegistry } from './hooks'
 import type { AgentsSource } from './agents'
 import { confirm, DOWNLOAD_SOURCE, EXTERNAL_SOURCE, WORKTREE_SOURCE } from './commands/confirm'
 import {
@@ -655,11 +657,37 @@ void app.whenReady().then(() => {
   // overrides are in force from the start and a failing file changes
   // nothing. Its `nemesis` object acts on the focused window (#70).
   const initFile = configPath({ home: app.getPath('home'), env: process.env, argv: process.argv })
+  // The hooks of ADR 0005 (#165): one registry for the app, fired from every
+  // window's buffers, commands and session. A failing handler's notice goes
+  // down the app's notices, to the focused window, like a config load's.
+  const hookListeners = new Set<(event: AgentEvent) => void>()
+  const hookNotices: EventSource = {
+    on: (listener) => {
+      hookListeners.add(listener)
+      return () => {
+        hookListeners.delete(listener)
+      }
+    },
+  }
+  const hooks = new HookRegistry((text) => {
+    for (const listener of [...hookListeners]) listener({ type: 'notice', text })
+  })
+  // before-quit waits on its handlers: the first quit is held, the handlers
+  // run each within its timeout, and the quit is asked again. The app's
+  // other before-quit work has already run on the first pass.
+  let quitHooksRan = false
+  app.on('before-quit', (event) => {
+    if (quitHooksRan || !hooks.has('before-quit')) return
+    quitHooksRan = true
+    event.preventDefault()
+    void hooks.fire('before-quit', {}).finally(() => app.quit())
+  })
   const config = new ConfigLoader({
     path: initFile,
     base: readSettings,
     buffers: () => focusedCockpit()?.buffers.list() ?? [],
     run: runInFocused,
+    hooks,
   })
   // The config's commands are committed to a registry of the cockpit's own
   // commands that no window drives, and copied from there into every
@@ -672,6 +700,11 @@ void app.whenReady().then(() => {
       run: () => runInFocused(RELOAD_CONFIG),
     }),
   )
+  // Every window registers its own list-hooks and remove-hook, over its help
+  // buffer and prompter; these keep the names the window's own.
+  for (const [name, doc] of Object.entries(HOOK_COMMAND_DOCS)) {
+    configRegistry.register(defineCommand({ name, doc, run: () => runInFocused(name) }))
+  }
   const ownCommands = new Set(configRegistry.list().map((command) => command.name))
   const syncConfigCommands = (registry: CommandRegistry): void => {
     const fromConfig = configRegistry.list().filter((command) => !ownCommands.has(command.name))
@@ -741,7 +774,15 @@ void app.whenReady().then(() => {
   // The app's own notices, a refused site permission or download, a
   // certificate error, a config load, go to the focused window's session
   // (#70), shown and recorded like any event there.
-  const appNotices = mergeNotices(permissionPolicy, downloads, external, transport, config, blocker)
+  const appNotices = mergeNotices(
+    permissionPolicy,
+    downloads,
+    external,
+    transport,
+    config,
+    blocker,
+    hookNotices,
+  )
   const noticesFor = (id: number): EventSource => ({
     on: (listener) =>
       appNotices.on((event) => {
@@ -989,6 +1030,7 @@ void app.whenReady().then(() => {
         pageDoor,
         completed,
         agents: agentsSource,
+        hooks,
       },
       place.cwd,
     )
@@ -1111,6 +1153,14 @@ void app.whenReady().then(() => {
     return restored
   }
   const first = restoreWindows() ?? openCockpit()
+  // after-init (ADR 0005): the first window's dispatcher is built, so a
+  // handler may run a command; its notices reach that window.
+  if (hooks.has('after-init')) {
+    void hooks.fire('after-init', {
+      commands: first.registry.list().map((command) => command.name),
+      buffers: first.buffers.list(),
+    })
+  }
   // A load error at start is shown once the first window can show it, and
   // the app runs on the defaults.
   if (!firstLoad.ok) {

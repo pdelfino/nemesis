@@ -31,6 +31,7 @@ import { EnvironmentBuffers } from './environment'
 import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import type { HelpBuffers, HelpListener } from './help'
+import { hookCommands, hooksSource, type HookRegistry } from './hooks'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { BufferTexts, diffText } from './mcp/buffer-texts'
 import { IN_APP_SERVER } from './mcp/catalog'
@@ -150,6 +151,8 @@ export interface CockpitShared {
   readonly completed?: CompletedRequests
   /** Every window's session, for the `agents` buffer (#157); without it the buffer lists none. */
   readonly agents?: AgentsSource
+  /** The app's hooks (#165, ADR 0005), fired from this window's buffers, commands and session. */
+  readonly hooks?: HookRegistry
 }
 
 /** Without the app there is no other window to list. */
@@ -191,7 +194,8 @@ export function createCockpit(
   })
   // The buffer list is the spine: the keymap and the palette act on it, so it
   // exists before the page that shows it (#60).
-  const buffers = createCockpitBuffers()
+  const hooks = shared.hooks ?? null
+  const buffers = createCockpitBuffers(hooks)
   installBufferBridge(buffers, contents)
   const prompter = new Prompter()
   // One agent session per window, in the window's folder (#87); the
@@ -284,6 +288,27 @@ export function createCockpit(
     open: (path) => shell.openPath(path),
   })
   agent.on((event) => diffs.observe(event))
+  // The session points of ADR 0005, read off the stream the transcript and
+  // the recorder read, after they read it. The payloads copy names, ids and
+  // counts only: a turn's result text never reaches a handler.
+  if (hooks !== null) {
+    agent.on((event) => {
+      if (event.type === 'started') {
+        void hooks.fire('session-started', {
+          sessionId: event.sessionId,
+          model: event.model,
+          permissionMode: event.permissionMode,
+        })
+      } else if (event.type === 'turn-end') {
+        void hooks.fire('turn-ended', {
+          sessionId: agent.sessionId,
+          isError: event.isError,
+          durationMs: event.durationMs,
+          numTurns: event.numTurns,
+        })
+      }
+    })
+  }
   agent.onHistory((history) => {
     for (const event of history) diffs.observe(event)
   })
@@ -767,6 +792,7 @@ export function createCockpit(
         : { ...shared.stores, exportPath: join(settings.sessionsDir, BOOKMARKS_EXPORT) },
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
+  if (hooks !== null) prompter.addSource(hooksSource(hooks))
   installPaletteBridge({
     contents,
     onDestroyed,
@@ -788,6 +814,10 @@ export function createCockpit(
   const dispatcher: KeyDispatcher = createCockpitDispatcher(deps)
   installKeyBridge(dispatcher, contents)
   dispatcher.registry.registerAll(shared.commands(deps.help))
+  if (hooks !== null) {
+    dispatcher.registry.registerAll(hookCommands(hooks, { help: deps.help, prompter }))
+    dispatcher.registry.useHooks(hooks)
+  }
   return {
     id: contents.id,
     name,

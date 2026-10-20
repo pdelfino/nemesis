@@ -1,4 +1,5 @@
 import type { BufferType } from '../../shared/keys'
+import type { HookRegistry } from '../hooks'
 
 /**
  * The command registry (#59). Every action in the cockpit is a named command,
@@ -51,6 +52,13 @@ export function defineCommand(command: Command): Command {
 
 export class CommandRegistry {
   private readonly commands = new Map<string, Command>()
+  /** The app's hooks (#165): before-command may refuse a run, after-command hears it. */
+  private hooks: HookRegistry | null = null
+
+  /** Fires the command points of ADR 0005 from `run`, whichever caller ran it. */
+  useHooks(hooks: HookRegistry): void {
+    this.hooks = hooks
+  }
 
   register(command: Command): Command {
     const existing = this.commands.get(command.name)
@@ -89,7 +97,33 @@ export class CommandRegistry {
     return Array.from(this.commands.values()).sort((a, b) => a.name.localeCompare(b.name))
   }
 
+  /**
+   * Runs a command. The hooks fire here, one level below the dispatcher, so
+   * a key, the palette, the menu and the config all pass them (ADR 0005).
+   */
   async run(name: string, context: CommandContext): Promise<void> {
-    await this.require(name).run(context)
+    const command = this.require(name)
+    const hooks = this.hooks
+    if (hooks?.has('before-command') === true) {
+      // The hook registry's notice says who refused and why; the command does not run.
+      if ((await hooks.fire('before-command', { command: name, context })) !== null) return
+    }
+    if (hooks?.has('after-command') !== true) {
+      await command.run(context)
+      return
+    }
+    const started = Date.now()
+    let ok = false
+    try {
+      await command.run(context)
+      ok = true
+    } finally {
+      await hooks.fire('after-command', {
+        command: name,
+        context,
+        ok,
+        durationMs: Date.now() - started,
+      })
+    }
   }
 }

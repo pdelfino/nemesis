@@ -147,6 +147,25 @@ export default tseslint.config(
     ]),
   },
   {
+    // ADR 0005: no hook reaches the permission path. Types of the agent's
+    // events cross, as every zone lets a type through; nothing else does.
+    files: ['src/main/hooks.ts'],
+    rules: zone([
+      {
+        group: [
+          './agent',
+          './agent/**',
+          './security',
+          './security/**',
+          '../preload',
+          '../preload/**',
+        ],
+        message:
+          'src/main/hooks.ts never reaches the agent, security or preload at run time (ADR 0005).',
+      },
+    ]),
+  },
+  {
     files: ['src/main/agent/**/*.ts'],
     rules: zone([
       {
