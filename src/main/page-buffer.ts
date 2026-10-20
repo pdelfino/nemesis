@@ -313,6 +313,8 @@ export interface PageCommands {
   find(text: string): void
   /** One of Chromium's zoom steps in or out, for the page's origin. */
   zoom(by: 1 | -1): void
+  /** The page's origin back to 100%. */
+  resetZoom(): void
   /** The page's selection to the clipboard. */
   copy(): void
   /** Puts `passthrough` in front of `document`, or takes it off. */
@@ -337,6 +339,7 @@ export const NO_PAGES: PageCommands = {
   scroll: noPages,
   find: noPages,
   zoom: noPages,
+  resetZoom: noPages,
   copy: noPages,
   togglePassthrough: noPages,
   toggleBlocker: noPages,
@@ -684,6 +687,11 @@ export class PageBuffers<V extends PageView> implements PageCommands {
     const contents = this.current().view.webContents
     contents.setZoomLevel(nextZoomLevel(contents.getZoomLevel(), by))
     // Chromium zooms every page of the origin in this session, so every page is read again.
+    this.readZoom()
+  }
+
+  resetZoom(): void {
+    this.current().view.webContents.setZoomLevel(0)
     this.readZoom()
   }
 

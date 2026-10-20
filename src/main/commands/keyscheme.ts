@@ -268,6 +268,10 @@ export interface CockpitDeps {
   readonly worktrees: Worktrees
   /** The window's page buffers, as open-url opens one (#119). */
   readonly pages: PageCommands
+  /** Puts text on the clipboard, as copy-url does (#173). */
+  readonly copyText: (text: string) => void
+  /** The text show-system-information shows and copies (#173). */
+  readonly systemText: () => string
   /**
    * The current page buffer's text and origin, for summarize-page (#55);
    * it rejects when the current buffer is not a page.
@@ -486,6 +490,8 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
     reviews: partial.reviews ?? new ReviewBuffers(buffers),
     worktrees: partial.worktrees ?? new Worktrees(),
     pages: partial.pages ?? NO_PAGES,
+    copyText: partial.copyText ?? (() => undefined),
+    systemText: partial.systemText ?? (() => 'No system information in this window'),
     pageText:
       partial.pageText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
@@ -544,6 +550,8 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     reviews,
     worktrees,
     pages,
+    copyText,
+    systemText,
     urls,
     stores,
   } = deps
@@ -1611,6 +1619,48 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'reset-page-zoom',
+      mcp: 'never',
+      doc: "Put the current page buffer's zoom back to 100%, for every page of its origin.",
+      run: () => {
+        pages.resetZoom()
+      },
+    }),
+    defineCommand({
+      name: 'copy-url',
+      mcp: 'never',
+      doc: "Copy the current page buffer's URL to the clipboard.",
+      run: () => {
+        if (buffers.current?.kind !== 'page') {
+          help.show('Nothing to copy: only a page buffer has a URL.')
+          return
+        }
+        copyText(pages.currentPage().url)
+      },
+    }),
+    defineCommand({
+      name: 'copy-title',
+      mcp: 'never',
+      doc: "Copy the current page buffer's title to the clipboard.",
+      run: () => {
+        if (buffers.current?.kind !== 'page') {
+          help.show('Nothing to copy: only a page buffer has a title.')
+          return
+        }
+        copyText(pages.currentPage().title)
+      },
+    }),
+    defineCommand({
+      name: 'show-system-information',
+      mcp: 'never',
+      doc: 'Show the versions of Nemesis, Electron, Chromium, Node and macOS and the settings file path, and copy them to the clipboard for a bug report.',
+      run: () => {
+        const text = systemText()
+        copyText(text)
+        help.show(text)
+      },
+    }),
+    defineCommand({
       name: 'copy-page-selection',
       mcp: 'never',
       doc: "Copy the current page buffer's selection to the clipboard.",
@@ -2145,6 +2195,9 @@ export const BUFFER_KEYMAPS: BufferKeymaps = {
     'C-c C-w': 'form-guide-mode',
     // Shares the page (#34); C-c C-s is the semantic view's (#122).
     'C-c S': 'share-page',
+    // Copy the page's URL and title (#173).
+    'C-c u': 'copy-url',
+    'C-c t': 'copy-title',
   }),
   // A diff buffer's file goes to the system on the Org key for opening a link (#68).
   diff: defineKeymap('diff', {
@@ -2198,6 +2251,7 @@ export const MODE_KEYMAPS: ModeKeymaps = {
       'C-s': 'find-in-page',
       'C-+': 'zoom-in',
       'C--': 'zoom-out',
+      'C-0': 'reset-page-zoom',
       'M-w': 'copy-page-selection',
       g: 'reload-page',
       'C-z': 'toggle-passthrough',

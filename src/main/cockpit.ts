@@ -1,4 +1,6 @@
 import { app, shell, WebContentsView, type BrowserWindow } from 'electron'
+import { execFileSync } from 'node:child_process'
+import { release } from 'node:os'
 import { join } from 'node:path'
 import type { ClipboardReader } from './agent/images'
 import { PermissionBridge } from './agent/permission-bridge'
@@ -57,6 +59,8 @@ import {
   type ReaderDocument,
 } from './pages/reader'
 import { Repl } from './repl'
+import { SETTINGS_FILE } from './settings'
+import { systemInformationText } from './system-information'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
 import type { SessionIndex } from './sessions'
@@ -171,6 +175,20 @@ export function mergeNotices(...sources: readonly EventSource[]): EventSource {
  * The folder a window's session runs in: the one the app was started in, or
  * a worktree's for a window new-window-in-worktree opened (#87).
  */
+/** The short commit of the checkout the app runs from, or null when it is not one (#173). */
+function buildCommit(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: app.getAppPath(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim()
+  } catch {
+    return null
+  }
+}
+
 export function createCockpit(
   window: BrowserWindow,
   name: string,
@@ -717,6 +735,20 @@ export function createCockpit(
     reviews,
     worktrees,
     pages,
+    copyText: shared.writeClipboardText,
+    systemText: () =>
+      systemInformationText(
+        {
+          version: app.getVersion(),
+          commit: buildCommit(),
+          electron: process.versions.electron,
+          chromium: process.versions.chrome,
+          node: process.versions.node,
+          os: release(),
+          settingsPath: join(app.getPath('userData'), SETTINGS_FILE),
+        },
+        shared.home,
+      ),
     // The current page's text for the agent (#55, #142): the door's reader
     // extraction, the page as the user sees it and the text attach-page-text
     // sends, under the origin of the committed URL main held. No second
