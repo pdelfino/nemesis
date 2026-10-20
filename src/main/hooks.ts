@@ -127,6 +127,20 @@ export const HOOK_POINTS: Readonly<Record<HookPoint, HookPointSpec>> = {
   'before-load': { kind: 'interceptor', timeoutMs: 0, synchronous: true },
 }
 
+/** One line per point, for describe-hook (#171). */
+export const HOOK_POINT_DOCS: Readonly<Record<HookPoint, string>> = {
+  'after-init': 'Fired once a window is up, with its commands and buffers.',
+  'buffer-created': 'Fired when a buffer is created.',
+  'buffer-switched': 'Fired when the point moves to another buffer.',
+  'buffer-killed': 'Fired when a buffer is killed.',
+  'before-command': 'Fired before a command runs; a handler may veto it with a reason.',
+  'after-command': 'Fired after a command ran, with whether it succeeded and how long it took.',
+  'session-started': 'Fired when an agent session starts, with its id, model and permission mode.',
+  'turn-ended': 'Fired when an agent turn ends, with its outcome, duration and turn count.',
+  'before-quit': 'Fired before the app quits.',
+  'before-load': 'Asked before a page buffer loads a URL; a handler may block it or answer another URL, which the page policy checks again.',
+}
+
 export interface HookListing {
   readonly point: HookPoint
   readonly name: string

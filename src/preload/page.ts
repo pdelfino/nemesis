@@ -20,9 +20,12 @@ import {
   MAX_MUTATION_SUMMARY,
   MUTATION_RING,
   decodeQuery,
+  decodeFieldWrite,
   MAX_QUERY_HTML,
   MAX_SELECT_OPTIONS,
   type DrawnLabel,
+  type FieldAnswer,
+  type FieldWriteAnswer,
   type FormAlert,
   type FormAnswer,
   type FormField,
@@ -61,8 +64,9 @@ import { isUserPageName, parseUserPageUrl, USER_PAGE_COMMAND_CHANNEL } from '../
 // looking for a bridge finds the same globals as a page with no preload.
 // It answers main and only main, by name, from the fixed table below; a
 // request carries no code, and nothing here evaluates text. `query`'s
-// selector, the one string a request carries (#141), goes to
-// `querySelectorAll` and nowhere else.
+// selector (#141) goes to `querySelectorAll` and nowhere else, and
+// `field-write`'s text (#178), the user's own from their editor, to a text
+// field's `value` and nowhere else.
 
 /** A rectangle as `getBoundingClientRect` reports it. */
 interface PageRect {
@@ -91,7 +95,10 @@ interface PageElement {
   hasAttribute(name: string): boolean
   querySelectorAll?(selector: string): ArrayLike<PageElement>
   /** An open shadow root; null on an element with none, or with a closed one (#143). */
-  readonly shadowRoot?: { readonly children: ArrayLike<PageElement> } | null
+  readonly shadowRoot?: {
+    readonly children: ArrayLike<PageElement>
+    readonly activeElement?: PageElement | null
+  } | null
   /** On a `<slot>`: what the page assigned to it, text nodes included, and the elements of that. */
   assignedNodes?(): ArrayLike<unknown>
   assignedElements?(): ArrayLike<PageElement>
@@ -1044,7 +1051,7 @@ function mutations(args: readonly number[]): MutationsAnswer {
 // that is, or holds, a secret field gives its number and no HTML; and since
 // an attribute selector can test a `value` attribute a character at a time,
 // a document where a secret field carries one answers no selector at all.
-// `select` is the door's one write: it sets a `<select>`'s chosen options by
+// `select` is one of the door's two writes (#178 adds the other): it sets a `<select>`'s chosen options by
 // index, as main matched the agent's values against `options`, and
 // dispatches `input` and `change` as a user's choice would. A secret field
 // is refused before its options are read.
@@ -1168,7 +1175,80 @@ function scrollTo(args: readonly number[]): ScrollToAnswer {
   return { status: 'ok' }
 }
 
-/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138, #29, #141). */
+// edit-with-external-editor (#178): the focused text field's value out, the
+// user's edit back in. The mask is decided before any value is read or
+// written, by the masking list of #94 on the field itself; a password field
+// is masked whatever its labels say.
+
+/** The `<input>` types whose value is free text: what an editor can edit. */
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set(['text', 'search', 'email', 'url', 'tel'])
+
+/** A text field this world reads and writes. */
+interface TextField extends PageElement {
+  value: string
+  matches(selector: string): boolean
+  dispatchEvent(event: unknown): boolean
+}
+
+/** Whether the element is a `<textarea>` or a text-like `<input>`, a password field included. */
+function isTextField(element: PageElement): element is TextField {
+  if (element.tagName === 'TEXTAREA') return true
+  if (element.tagName !== 'INPUT') return false
+  const type = (element.type ?? 'text').toLowerCase()
+  return type === 'password' || TEXT_INPUT_TYPES.has(type)
+}
+
+/** Why a text field cannot be edited, decided before its value is read; null when it can. */
+function fieldRefusal(element: TextField): 'masked' | 'readonly' | null {
+  if ((element.type ?? '').toLowerCase() === 'password' || isOwnSecret(element)) return 'masked'
+  if (element.readOnly === true || element.matches(':disabled')) return 'readonly'
+  return null
+}
+
+/** `field`: no args; the focused element, inside open shadow roots too. */
+function field(args: readonly number[]): FieldAnswer {
+  if (args.length !== 0) throw new TypeError('field takes no args')
+  let active = world.document.activeElement
+  while (active !== null && active.shadowRoot?.activeElement != null) {
+    active = active.shadowRoot.activeElement
+  }
+  if (active === null || !isTextField(active)) {
+    return { status: 'none', element: 0, total: 0, text: '' }
+  }
+  const refusal = fieldRefusal(active)
+  if (refusal !== null) return { status: refusal, element: 0, total: 0, text: '' }
+  const value = active.value
+  return {
+    status: 'ok',
+    element: elementId(active),
+    total: value.length,
+    text: value.slice(0, MAX_TEXT_CHARS),
+  }
+}
+
+/**
+ * `field-write`: the field's number, where this piece starts, whether it is
+ * the last, then the text. A first piece replaces the value; a later one
+ * follows only a value of the length the last piece left, so a page that
+ * changed the field between pieces gets `changed` and nothing more.
+ */
+function fieldWrite(args: readonly number[]): FieldWriteAnswer {
+  const { element: id, from, last, text: piece } = decodeFieldWrite(args)
+  const element = elementById(id)
+  if (element === null) return { status: 'gone', total: 0 }
+  if (!isTextField(element)) return { status: 'none', total: 0 }
+  const refusal = fieldRefusal(element)
+  if (refusal !== null) return { status: refusal, total: 0 }
+  if (from > 0 && element.value.length !== from) return { status: 'changed', total: 0 }
+  element.value = (from === 0 ? '' : element.value) + piece
+  if (last) {
+    element.dispatchEvent(new IsolatedEvent('input', { bubbles: true, composed: true }))
+    element.dispatchEvent(new IsolatedEvent('change', { bubbles: true }))
+  }
+  return { status: 'ok', total: element.value.length }
+}
+
+/** One handler per request name, fixed at build time; a consumer adds its own (#122, #123, #128, #94, #138, #29, #141, #176, #178). */
 const HANDLERS: {
   readonly [N in PageRequestName]: (args: readonly number[]) => PageAnswers[N]
 } = Object.freeze({
@@ -1187,6 +1267,8 @@ const HANDLERS: {
   options,
   select,
   'scroll-to': scrollTo,
+  field,
+  'field-write': fieldWrite,
 })
 
 ipcRenderer.on(PAGE_DOOR_REQUEST_CHANNEL, (_event, request: unknown) => {

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>external editor</title>
+  </head>
+  <body>
+    <!--
+      edit-with-external-editor (#178): a comment box the editor may take, a
+      password and a card number, filled, that it must never see, and a count
+      of the input events the page hears on the comment.
+    -->
+    <p>
+      <label for="comment">Comment</label>
+      <textarea id="comment" name="comment">A long comment</textarea>
+    </p>
+    <p>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" value="hunter2-secret-pw" />
+    </p>
+    <p>
+      <label for="card">Card number</label>
+      <input id="card" name="cardNumber" type="text" value="4111111111111111" />
+    </p>
+    <p id="inputs">0</p>
+    <script>
+      let inputs = 0
+      document.getElementById('comment').addEventListener('input', () => {
+        inputs += 1
+        document.getElementById('inputs').textContent = String(inputs)
+      })
+    </script>
+  </body>
+</html>

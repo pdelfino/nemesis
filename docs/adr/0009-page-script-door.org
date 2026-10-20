@@ -348,6 +348,23 @@ nothing in the document changes, and the answer is =ok= or =gone=. Main
 makes the element's number from a ref of the page's current document, so a
 heading of a document that has since navigated is refused before the request.
 
+Amendment of 2026-OCTOBER-20 (#178): =field= and =field-write= are request
+names with schemas, for =edit-with-external-editor= and nothing else; no MCP
+tool sends either. =field= takes no args and reads the focused text field (a
+=<textarea>= or a text-like =<input>=, inside open shadow roots), answering
+its element number and its value's first =MAX_TEXT_CHARS= characters, the
+rest read with =text=; a password field, or any field of the masking list of
+#94, is =masked= before its value is read. =field-write= is the door's second
+write, and its second exception to numbers-only: its args are the element's
+number, where the piece starts, a last flag, then text as UTF-16 code units,
+at most =MAX_PAGE_REQUEST_ARGS= numbers in all. The text is the user's, saved
+in their own editor, never a page's sent back unread; the preload assigns it
+to that field's =value=, which cannot call code, refuses a secret, read-only
+or disabled field the same way, and dispatches =input= and =change= after the
+last piece as typing would. Main writes into the element it read, under the
+document number it read it in, so a page that navigated while the editor ran
+is written nothing.
+
 Amendment of 2026-OCTOBER-20 (#181, option A, picked by Pedro in session on
 #163): the door gains one route in the other direction, for the config's
 pages, and only on them. A config page is HTML the config's =render= returns,

@@ -1,4 +1,5 @@
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { PermissionBridge } from '../agent/permission-bridge'
 import { PromptQueue } from '../agent/prompt-queue'
 import {
@@ -59,7 +60,22 @@ import { sessionName } from '../transcripts'
 import { describeSource, Verifier, verifyQuestion } from '../verify'
 import { Worktrees, type Worktree } from '../worktrees'
 import type { KeymapLayer } from './describe'
-import { bindingNote, bindingsText, describeCommand, describeKey } from './describe'
+import {
+  bindingNote,
+  bindingsText,
+  describeAnyCandidates,
+  describeBinding,
+  describeCommand,
+  describeHook,
+  describeKey,
+  describeMode,
+  describeSetting,
+  parseDescribeAnyId,
+  type Binding,
+  type SettingsInForce,
+} from './describe'
+import { HOOK_POINT_DOCS, type HookRegistry } from '../hooks'
+import { defaultSettings, SETTING_DOCS } from '../settings'
 import type { BufferType } from '../../shared/keys'
 import type { BufferKeymaps, Keymap, ModeKeymaps } from './keymap'
 import { defineKeymap, isShadowed, KeyResolver } from './keymap'
@@ -315,6 +331,12 @@ export interface CockpitDeps {
   readonly semanticText: () => Promise<string>
   /** The headings of the page or pages, to jump to (#176). */
   readonly headings: HeadingCommands
+  /**
+   * The current page's focused field in the external editor and back
+   * (#178); it says how it went in a notice, and rejects only when the
+   * current buffer is not a page.
+   */
+  readonly editField: () => Promise<void>
   /** Hint mode on the current page buffer (#123); each rejects when the current buffer is not a page. */
   readonly hints: HintCommands
   /** Reader mode on the current page or reader buffer (#128). */
@@ -327,6 +349,10 @@ export interface CockpitDeps {
   readonly stores: PageStores | null
   /** The modes the window's buffers are in (#166), which enable-mode and disable-mode switch. */
   readonly modes: BufferModes
+  /** The settings in force and their defaults, as describe-setting shows them (#171). */
+  readonly settings: SettingsInForce
+  /** The app's hooks (#165), whose handlers describe-hook lists; null without the app. */
+  readonly hooks: HookRegistry | null
 }
 
 /** The history and the bookmarks of the profile's database (#125), and where the export goes. */
@@ -537,13 +563,23 @@ export function resolveCockpitDeps(partial: Partial<CockpitDeps> = {}): CockpitD
       partial.semanticText ??
       (() => Promise.reject(new CommandError('No page buffers in this window'))),
     headings: partial.headings ?? NO_HEADINGS,
+    editField:
+      partial.editField ??
+      (() => Promise.reject(new CommandError('No page buffers in this window'))),
     hints: partial.hints ?? NO_HINTS,
     reader: partial.reader ?? NO_READER,
     formGuide: partial.formGuide ?? NO_FORM_GUIDE,
     urls: partial.urls ?? DEFAULT_URL_SOURCES,
     stores: partial.stores ?? null,
     modes: partial.modes ?? new BufferModes(cockpitModes, buffers),
+    // Without the app the defaults are in force, from the home folder's Documents.
+    settings: partial.settings ?? inForce(defaultSettings(join(homedir(), 'Documents'))),
+    hooks: partial.hooks ?? null,
   }
+}
+
+function inForce(defaults: SettingsInForce['defaults']): SettingsInForce {
+  return { current: () => defaults, defaults }
 }
 
 /**
@@ -578,6 +614,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
     pageText,
     semanticText,
     headings,
+    editField,
     hints,
     reader,
     formGuide,
@@ -647,6 +684,57 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       run: () => {
         const kind = buffers.current?.kind ?? null
         help.show(bindingsText(cockpitKeymapLayers(), registry, kind as BufferType | null))
+      },
+    }),
+    defineCommand({
+      name: 'describe-setting',
+      doc: 'Show what a setting does, its type, its default and its value in force.',
+      run: () => {
+        prompter.read({ source: SETTINGS_SOURCE, prompt: 'Describe setting:' }, (key) => {
+          help.show(describeSetting(deps.settings, key))
+        })
+      },
+    }),
+    defineCommand({
+      name: 'describe-mode',
+      mcp: 'free',
+      doc: 'Show what a mode does, the buffers it applies to, its keys and its hooks.',
+      run: () => {
+        prompter.read({ source: MODES_SOURCE, prompt: 'Describe mode:' }, (name) => {
+          help.show(describeMode(cockpitModes, cockpitKeymapLayers(), name))
+        })
+      },
+    }),
+    defineCommand({
+      name: 'describe-hook',
+      mcp: 'free',
+      doc: 'Show what a hook point is for, its kind and every handler on it.',
+      run: () => {
+        prompter.read({ source: HOOK_POINTS_SOURCE, prompt: 'Describe hook:' }, (point) => {
+          help.show(describeHook(deps.hooks?.list() ?? [], point))
+        })
+      },
+    }),
+    defineCommand({
+      name: 'describe-any',
+      doc: 'Describe a command, setting, mode, hook point or key binding, read from one list.',
+      run: () => {
+        prompter.read({ source: DESCRIBE_ANY_SOURCE, prompt: 'Describe:' }, (id) => {
+          const parsed = parseDescribeAnyId(id)
+          if (parsed === null) throw new CommandError(`Nothing to describe as "${id}"`)
+          const { kind, name } = parsed
+          help.show(
+            kind === 'command'
+              ? describeCommand(registry, cockpitKeymapLayers(), name)
+              : kind === 'setting'
+                ? describeSetting(deps.settings, name)
+                : kind === 'mode'
+                  ? describeMode(cockpitModes, cockpitKeymapLayers(), name)
+                  : kind === 'hook'
+                    ? describeHook(deps.hooks?.list() ?? [], name)
+                    : describeBinding(registry, JSON.parse(name) as Binding),
+          )
+        })
       },
     }),
     defineCommand({
@@ -1907,6 +1995,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'edit-with-external-editor',
+      mcp: 'never',
+      doc: "Edit the page's focused text field in the external editor (externalEditor, emacsclient by default); the text goes back when the editor exits. Password fields are refused.",
+      run: () => {
+        editField().catch(report('edit-with-external-editor'))
+      },
+    }),
+    defineCommand({
       name: 'export-page-text',
       mcp: 'never',
       doc: "Write the current page's main text as an Org file under the sessions folder, headed by its origin and the time.",
@@ -2030,6 +2126,12 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * and the URL open-url reads (#119), over the bookmarks, the history and
  * the search engines (#124).
  */
+/** The palette's reads of describe-setting, describe-mode, describe-hook and describe-any (#171). */
+export const SETTINGS_SOURCE = 'settings'
+export const MODES_SOURCE = 'modes'
+export const HOOK_POINTS_SOURCE = 'hook-points'
+export const DESCRIBE_ANY_SOURCE = 'describe-any'
+
 export function cockpitSources(
   registry: CommandRegistry,
   buffers: BufferRegistry,
@@ -2051,6 +2153,30 @@ export function cockpitSources(
   headings: Pick<HeadingCommands, 'candidates'> = NO_HEADINGS,
 ): readonly PaletteSource[] {
   return [
+    {
+      name: SETTINGS_SOURCE,
+      candidates: () =>
+        Object.entries(SETTING_DOCS).map(([key, { doc, type }]) => ({
+          id: key,
+          label: key,
+          doc,
+          detail: type,
+        })),
+    },
+    {
+      name: MODES_SOURCE,
+      candidates: () =>
+        cockpitModes.list().map((mode) => ({ id: mode.name, label: mode.name, doc: mode.doc })),
+    },
+    {
+      name: HOOK_POINTS_SOURCE,
+      candidates: () =>
+        Object.entries(HOOK_POINT_DOCS).map(([point, doc]) => ({ id: point, label: point, doc })),
+    },
+    {
+      name: DESCRIBE_ANY_SOURCE,
+      candidates: () => describeAnyCandidates(registry, cockpitKeymapLayers(), cockpitModes),
+    },
     {
       name: 'commands',
       candidates: () =>
@@ -2346,6 +2472,7 @@ export const GLOBAL_KEYMAP = defineKeymap('global', {
   'C-h x': 'describe-command',
   'C-h k': 'describe-key',
   'C-h b': 'describe-bindings',
+  'C-h a': 'describe-any',
 })
 
 /**

@@ -49,24 +49,30 @@ test('M-x reads a command, describe-command and describe-key answer in a help bu
     )
 
     // The query narrows the list; the highlight and its doc follow.
+    const described = [
+      'describe-any',
+      'describe-bindings',
+      'describe-command',
+      'describe-hook',
+      'describe-key',
+      'describe-mode',
+      'describe-setting',
+    ]
+    const marked = (name: string): string[] =>
+      described.map((each) => (each === name ? `${each} *` : each))
     await page.keyboard.type('desc')
-    await expect
-      .poll(() => candidates(page))
-      .toEqual(['describe-bindings *', 'describe-command', 'describe-key'])
+    await expect.poll(() => candidates(page)).toEqual(marked('describe-any'))
     await page.keyboard.press('Control+n')
-    await expect
-      .poll(() => candidates(page))
-      .toEqual(['describe-bindings', 'describe-command *', 'describe-key'])
+    await page.keyboard.press('Control+n')
+    await expect.poll(() => candidates(page)).toEqual(marked('describe-command'))
     await expect(doc).toHaveText('Show what a command does and the keys that run it.')
     await page.keyboard.press('Control+n')
-    await expect
-      .poll(() => candidates(page))
-      .toEqual(['describe-bindings', 'describe-command', 'describe-key *'])
+    await page.keyboard.press('Control+n')
+    await expect.poll(() => candidates(page)).toEqual(marked('describe-key'))
     await expect(doc).toHaveText('Show what the next key sequence runs.')
     await page.keyboard.press('Control+p')
-    await expect
-      .poll(() => candidates(page))
-      .toEqual(['describe-bindings', 'describe-command *', 'describe-key'])
+    await page.keyboard.press('Control+p')
+    await expect.poll(() => candidates(page)).toEqual(marked('describe-command'))
 
     // RET runs describe-command, which reads a command the same way.
     await page.keyboard.press('Enter')

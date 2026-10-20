@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -34,6 +35,11 @@ import { fixtureServer, launchNemesis } from './_harness'
  *    value attribute; `browser_select_option` is refused on a card expiry
  *    unasked, and after its yes chooses in the country dropdown, whose page
  *    hears `input` and `change`.
+ * 5. The door's other write holds (#178, ADR 0009's amendment):
+ *    `edit-with-external-editor` on a focused password field, or on a card
+ *    number the masking list of #94 covers, is refused with a notice before
+ *    any value is read: the editor never runs and the field keeps its value.
+ *    The comment box beside them is the control: the editor runs on it.
  */
 
 /** A request's outcome as the test hook reports it: the answer, or the consumer's error. */
@@ -454,5 +460,61 @@ test("the door's query and select hold against a hostile page", async () => {
     await client.close().catch(() => undefined)
     await nemesis.close()
     await fixtures.close()
+  }
+})
+
+test('edit-with-external-editor refuses a password field', async () => {
+  const fixtures = await fixtureServer()
+  const scratch = mkdtempSync(join(tmpdir(), 'nemesis-editor-'))
+  // The stand-in editor: it says it ran, and appends `!` to the file.
+  const ran = join(scratch, 'ran.txt')
+  const editor = join(scratch, 'editor.sh')
+  writeFileSync(editor, `#!/bin/sh\nprintf '%s\\n' "$1" >> '${ran}'\nprintf '!' >> "$1"\n`)
+  chmodSync(editor, 0o755)
+  const nemesis = await launchNemesis({ env: { NEMESIS_EXTERNAL_EDITOR: editor } })
+  const { window } = nemesis
+  try {
+    await window.evaluate(() => {
+      const w = globalThis as unknown as TestWindow
+      w.__agentEvents = []
+      w.nemesis.onAgentEvent((event) => w.__agentEvents?.push(event))
+    })
+    const notices = (): Promise<string[]> =>
+      window.evaluate(() =>
+        ((globalThis as unknown as TestWindow).__agentEvents ?? [])
+          .filter((event) => event.type === 'notice')
+          .map((event) => (event as { text?: string }).text ?? ''),
+      )
+    const buffer = await nemesis.openPageBuffer(fixtures.secureUrl('external-editor.html'))
+    expect(buffer.loadError).toBeNull()
+    const edit = async (): Promise<void> => {
+      await window.keyboard.press('Alt+x')
+      await expect(window.locator('#palette-input .cm-content')).toBeFocused()
+      await window.keyboard.type('edit-with-external-editor')
+      await window.keyboard.press('Enter')
+      await expect(window.locator('#palette')).toBeHidden()
+    }
+
+    for (const id of ['password', 'card']) {
+      await buffer.page.focus(`#${id}`)
+      const before = (await notices()).length
+      await edit()
+      await expect
+        .poll(async () => (await notices()).slice(before))
+        .toEqual(['Not sent to the editor: a password or other secret field is typed by hand'])
+      expect(existsSync(ran)).toBe(false)
+    }
+    expect(await buffer.page.inputValue('#password')).toBe('hunter2-secret-pw')
+    expect(await buffer.page.inputValue('#card')).toBe('4111111111111111')
+
+    // The control: the comment box goes to the editor and comes back edited.
+    await buffer.page.focus('#comment')
+    await edit()
+    await expect.poll(() => buffer.page.inputValue('#comment')).toBe('A long comment!')
+    expect(readFileSync(ran, 'utf8').split('\n').filter(Boolean)).toHaveLength(1)
+  } finally {
+    await nemesis.close()
+    await fixtures.close()
+    rmSync(scratch, { recursive: true, force: true })
   }
 })

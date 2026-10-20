@@ -1112,6 +1112,7 @@ void app.whenReady().then(() => {
         agents: agentsSource,
         hooks,
         openContextMenu,
+        downloads,
       },
       place.cwd,
     )

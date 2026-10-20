@@ -13,7 +13,8 @@
  * adds `reader`, the form guide (#94) adds `form`, the MCP page tier
  * (#138) adds `text`, its mutation feed (#29) adds `mutations`, and
  * `browser_query` and `browser_select_option` (#141) add `query`, `options`
- * and `select`, and `jump-to-heading` (#176) adds `scroll-to`.
+ * and `select`, `jump-to-heading` (#176) adds `scroll-to`, and
+ * `edit-with-external-editor` (#178) adds `field` and `field-write`.
  *
  * A request may carry `args`, numbers only (ADR 0009: "arguments, where one
  * exists, are numbers or ref ids main itself issued"): never code, never
@@ -28,8 +29,14 @@
  * the agent's CSS selector, at most MAX_QUERY_SELECTOR characters, as its
  * code points: text, but text main received from the agent, never from a
  * page, and the preload only hands it to `querySelectorAll`, which selects
- * and cannot call code. `select` is the door's one write: it sets a
+ * and cannot call code. `select` is one of the door's two writes: it sets a
  * `<select>`'s chosen options and dispatches `input` and `change`.
+ *
+ * A third, ADR 0009's amendment for #178. `field-write` carries text as
+ * UTF-16 code units: text the user saved in their own editor, never text a
+ * page sent main unasked, and the preload only assigns it to the `value` of
+ * the text field `field` named, which cannot call code. It is the door's
+ * other write, refused on a secret field like every read.
  */
 
 /** Main to the page preload: `{ id, name }`, no code and no free text. */
@@ -497,6 +504,39 @@ export interface ScrollToAnswer {
   readonly status: ScrollStatus
 }
 
+/**
+ * What a `field` read or a `field-write` found: done; nothing editable has
+ * the focus (or the element is no text field); a secret field, refused
+ * before any value is read; a read-only or disabled field; no element under
+ * that number; or a field whose value moved between two pieces of a write.
+ */
+export const FIELD_STATUSES = ['ok', 'none', 'masked', 'readonly', 'gone', 'changed'] as const
+
+export type FieldStatus = (typeof FIELD_STATUSES)[number]
+
+/**
+ * `field` (#178): the focused text field, a `<textarea>` or a text-like
+ * `<input>`. `element` is the preload's number for it, the snapshot's own
+ * (#122); `total` is the whole value's length and `text` its first
+ * MAX_TEXT_CHARS characters, the rest read with `text`. All empty and 0
+ * unless `status` is `ok`.
+ */
+export interface FieldAnswer {
+  readonly status: FieldStatus
+  readonly element: number
+  readonly total: number
+  readonly text: string
+}
+
+/** `field-write` (#178): how it went, and the value's length after it. */
+export interface FieldWriteAnswer {
+  readonly status: FieldStatus
+  readonly total: number
+}
+
+/** The most code units one `field-write` carries, after its three numbers. */
+export const MAX_FIELD_WRITE_CHARS = MAX_PAGE_REQUEST_ARGS - 3
+
 /** What each request name answers. */
 export interface PageAnswers {
   readonly ping: PingAnswer
@@ -511,6 +551,8 @@ export interface PageAnswers {
   readonly options: OptionsAnswer
   readonly select: SelectAnswer
   readonly 'scroll-to': ScrollToAnswer
+  readonly field: FieldAnswer
+  readonly 'field-write': FieldWriteAnswer
 }
 
 export type PageRequestName = keyof PageAnswers
@@ -677,6 +719,16 @@ export const PAGE_ANSWERS: {
   'scroll-to': Object.freeze({
     status: { kind: 'enum', values: SCROLL_STATUSES } as const,
   }),
+  field: Object.freeze({
+    status: { kind: 'enum', values: FIELD_STATUSES } as const,
+    element: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    total: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+    text: { kind: 'string', max: MAX_TEXT_CHARS } as const,
+  }),
+  'field-write': Object.freeze({
+    status: { kind: 'enum', values: FIELD_STATUSES } as const,
+    total: { kind: 'number', min: 0, max: Number.MAX_SAFE_INTEGER, integer: true } as const,
+  }),
 })
 
 /** What main sends. */
@@ -792,6 +844,51 @@ export function decodeQuery(args: readonly number[]): {
     selector += String.fromCharCode(code)
   }
   return { selector, limit }
+}
+
+/** One piece of a `field-write`. */
+export interface FieldWrite {
+  /** The preload's number for the field. */
+  readonly element: number
+  /** 0 replaces the value; otherwise the value's length after the last piece, which this one follows. */
+  readonly from: number
+  /** Whether this is the last piece, after which the page hears `input` and `change`. */
+  readonly last: boolean
+  readonly text: string
+}
+
+/**
+ * `field-write`'s args: the element, `from`, 1 or 0 for `last`, then the
+ * text's UTF-16 code units. Throws on an element or `from` out of range, or a
+ * text past MAX_FIELD_WRITE_CHARS.
+ */
+export function encodeFieldWrite(write: FieldWrite): readonly number[] {
+  if (!Number.isSafeInteger(write.element) || write.element < 1) {
+    throw new TypeError('The write has no usable element')
+  }
+  if (!Number.isSafeInteger(write.from) || write.from < 0) {
+    throw new TypeError('The write has no usable start')
+  }
+  if (write.text.length > MAX_FIELD_WRITE_CHARS) throw new TypeError('The write is too long')
+  const args = [write.element, write.from, write.last ? 1 : 0]
+  for (let index = 0; index < write.text.length; index += 1) args.push(write.text.charCodeAt(index))
+  return args
+}
+
+/** `field-write`'s args read back, as the page preload reads them. Throws on anything malformed. */
+export function decodeFieldWrite(args: readonly number[]): FieldWrite {
+  const [element, from, last, ...codes] = args
+  if (element === undefined || element < 1 || from === undefined || from < 0) {
+    throw new TypeError('field-write takes an element, a start, a last flag and the text')
+  }
+  if (last !== 0 && last !== 1) throw new TypeError('field-write has no usable last flag')
+  if (codes.length > MAX_FIELD_WRITE_CHARS) throw new TypeError('The write is too long')
+  let text = ''
+  for (const code of codes) {
+    if (code < 0 || code > 0xffff) throw new TypeError('The text is not code units')
+    text += String.fromCharCode(code)
+  }
+  return { element, from, last: last === 1, text }
 }
 
 /** A reply's envelope, its `data` not yet parsed. */

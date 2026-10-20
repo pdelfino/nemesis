@@ -2,7 +2,7 @@ import type { ElectronApplication } from '@playwright/test'
 import { expect, test, type Page } from './_test'
 import { launchApp, launchNemesis } from './_launch'
 import { fixtureServer } from './security/_harness'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -388,5 +388,60 @@ nemesis.addContextMenuCommand('Note link', 'note-link')
     await app.close()
     await fixtures.close()
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/** Runs `code` in the main world of the page view showing `url`: test-side setup and reads only. */
+function inPage(app: ElectronApplication, url: string, code: string): Promise<unknown> {
+  return app.evaluate(
+    ({ webContents }, { shown, code }) =>
+      webContents
+        .getAllWebContents()
+        .find((contents) => !contents.isDestroyed() && contents.getURL() === shown)
+        ?.executeJavaScript(code),
+    { shown: url, code },
+  )
+}
+
+test('edit-with-external-editor puts the edited text back in the focused field (#178)', async () => {
+  const fixtures = await fixtureServer()
+  const scratch = mkdtempSync(join(tmpdir(), 'nemesis-editor-'))
+  // The stand-in editor appends `!` to the file it is given, as a save would.
+  const editor = join(scratch, 'editor.sh')
+  writeFileSync(editor, `#!/bin/sh\nprintf '!' >> "$1"\n`)
+  chmodSync(editor, 0o755)
+  const { app } = await launchApp('nemesis-e2e-', [], {}, { NEMESIS_EXTERNAL_EDITOR: editor })
+  try {
+    const window = await app.firstWindow()
+    await window.waitForLoadState('domcontentloaded')
+    const url = fixtures.url('external-editor.html')
+    await window.keyboard.press('Alt+x')
+    await expect(window.locator('#palette-input .cm-content')).toBeFocused()
+    await window.keyboard.type('open-url')
+    await window.keyboard.press('Enter')
+    await expect(window.locator('#palette-prompt')).toContainText('URL')
+    await window.keyboard.type(url)
+    await window.keyboard.press('Enter')
+    await expect.poll(async () => (await current(window))?.url).toBe(url)
+    await expect.poll(() => inPage(app, url, "document.readyState === 'complete'")).toBe(true)
+    await inPage(app, url, "document.getElementById('comment').focus()")
+
+    await run(window, 'edit-with-external-editor')
+    await expect
+      .poll(() => inPage(app, url, "document.getElementById('comment').value"))
+      .toBe('A long comment!')
+    // The page heard the edit as typing.
+    expect(await inPage(app, url, "document.getElementById('inputs').textContent")).toBe('1')
+    // The file is gone from the profile once the editor exits.
+    const left = await app.evaluate(({ app: electron }) => {
+      const { readdirSync } = process.getBuiltinModule('node:fs')
+      const { join: joined } = process.getBuiltinModule('node:path')
+      return readdirSync(joined(electron.getPath('userData'), 'external-edit'))
+    })
+    expect(left).toEqual([])
+  } finally {
+    await app.close()
+    await fixtures.close()
+    rmSync(scratch, { recursive: true, force: true })
   }
 })

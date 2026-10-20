@@ -44,6 +44,7 @@ import { UrlFetcher } from './fetch-url'
 import { WorkingFiles } from './files'
 import type { HelpBuffers, HelpListener } from './help'
 import { MessageLog, messagesCommands } from './messages'
+import { downloadsCommands, type DownloadsSource } from './downloads-list'
 import { hookCommands, hooksSource, type HookRegistry } from './hooks'
 import { fetchIssueWithGh, IssueAttachment } from './issues'
 import { BufferTexts, diffText } from './mcp/buffer-texts'
@@ -59,6 +60,7 @@ import {
   type PagePolicies,
 } from './page-buffer'
 import type { PageScriptDoor } from './page-door'
+import { editExternally, editFocusedField } from './external-editor'
 import { encodeQuery, type PageAnswers, type PageRequestName } from '../shared/page-door'
 import type { PageBlocker } from './pages/blocker'
 import { PageHints } from './pages/hints'
@@ -79,7 +81,7 @@ import {
   type ReaderDocument,
 } from './pages/reader'
 import { Repl } from './repl'
-import { SETTINGS_FILE } from './settings'
+import { defaultSettings, SETTINGS_FILE } from './settings'
 import { systemInformationText } from './system-information'
 import { ReviewBuffers } from './reviews'
 import { Screenshots, SCREENSHOTS_FOLDER, type WindowCapturer } from './screenshots'
@@ -182,6 +184,8 @@ export interface CockpitShared {
   readonly hooks?: HookRegistry
   /** Pops a page's context menu over the window (#180); a log under test. */
   readonly openContextMenu?: (window: BrowserWindow, items: readonly ContextMenuItem[]) => void
+  /** The app's download policy (#177), for list-downloads; without it the commands are not registered. */
+  readonly downloads?: DownloadsSource
 }
 
 /** Without the app there is no other window to list. */
@@ -953,6 +957,31 @@ export function createCockpit(
         if (answer.status !== 'ok') throw new CommandError('That heading is gone from the page')
       },
     },
+    // edit-with-external-editor (#178): the focused field through the door,
+    // edited in a file of the profile. Under test NEMESIS_EXTERNAL_EDITOR
+    // stands in for the setting, so a spec runs a script of its own.
+    editField: async () => {
+      const pageId = currentPageId()
+      const say = (text: string): void => {
+        for (const listener of hintListeners) listener({ type: 'notice', text })
+      }
+      const standIn =
+        process.env['NODE_ENV'] === 'test' ? process.env['NEMESIS_EXTERNAL_EDITOR'] : undefined
+      const editor = standIn || config.settings.externalEditor
+      try {
+        say(
+          await editFocusedField({
+            field: () => askDocument(pageId, 'field', []),
+            text: (element, from, chars) => askDocument(pageId, 'text', [element, from, chars]),
+            write: (args) => askDocument(pageId, 'field-write', args),
+            document: () => semantic.currentDocument(pageId),
+            edit: (text) => editExternally(text, { profileDir: app.getPath('userData'), editor }),
+          }),
+        )
+      } catch (error) {
+        say(error instanceof Error ? error.message : String(error))
+      }
+    },
     hints: {
       start: async (action) => hints.start(currentPageId(), action),
       type: async (key) => hints.type(currentPageId(), key),
@@ -977,6 +1006,12 @@ export function createCockpit(
       shared.stores === null
         ? null
         : { ...shared.stores, exportPath: join(settings.sessionsDir, BOOKMARKS_EXPORT) },
+    // What describe-setting shows (#171): the settings read at use time, and the first run's.
+    settings: {
+      current: () => config.settings,
+      defaults: defaultSettings(app.getPath('documents')),
+    },
+    hooks,
   })
   for (const source of CONFIRM_SOURCES) prompter.addSource(source)
   if (hooks !== null) prompter.addSource(hooksSource(hooks))
@@ -1002,6 +1037,16 @@ export function createCockpit(
   installKeyBridge(dispatcher, contents, (type) => modesFor(buffers.snapshot(), type))
   dispatcher.registry.registerAll(shared.commands(deps.help))
   dispatcher.registry.registerAll(messagesCommands(messages, deps.help))
+  if (shared.downloads !== undefined) {
+    // Reveal selects the file in Finder and opens nothing: Gatekeeper decides on open (#177, T2).
+    dispatcher.registry.registerAll(
+      downloadsCommands(shared.downloads, {
+        help: deps.help,
+        prompter,
+        reveal: (path) => shell.showItemInFolder(path),
+      }),
+    )
+  }
   if (hooks !== null) {
     dispatcher.registry.registerAll(hookCommands(hooks, { help: deps.help, prompter }))
     dispatcher.registry.useHooks(hooks)
