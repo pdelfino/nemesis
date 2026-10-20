@@ -13,6 +13,22 @@
     --line: #3a3a3a;
   }
 }
+/* The Emacs keymap draws its own cursor, a pink block (.cm-fat-cursor); Pedro
+   wants a dot. The gradient paints a circle as wide as the character under the
+   cursor, centred in the block the keymap positions, so the geometry stays its
+   own. !important because the keymap's theme sits at the highest precedence. */
+.cm-editor .cm-fat-cursor {
+  background: radial-gradient(circle closest-side, #ff9696 100%, transparent 100%) !important;
+}
+.cm-editor:not(.cm-focused) .cm-fat-cursor {
+  outline: none !important;
+  background: radial-gradient(
+    circle closest-side,
+    transparent calc(100% - 1.5px),
+    #ff9696 calc(100% - 1.5px) 100%,
+    transparent 100%
+  ) !important;
+}
 html,
 body {
   margin: 0;
