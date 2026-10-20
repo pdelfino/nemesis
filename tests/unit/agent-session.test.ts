@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { SDKAssistantMessage, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { mockDriver } from '../../src/main/agent/mock'
-import type { AgentSession } from '../../src/main/agent/session'
+import type { AgentDriver, AgentSession } from '../../src/main/agent/session'
 import {
+  CLAUDE_CODE_PROMPT,
   compactCommand,
   contextWindowOf,
   createAgentSession,
@@ -70,6 +71,28 @@ describe('an agent session', () => {
     expect(agent.model).toBe('claude-mock-1')
     expect(agent.permissionMode).toBe('default')
     await agent.stop()
+  })
+
+  it("runs with Claude Code's system prompt unless a narrow session passes its own (#188)", async () => {
+    const mock = mockDriver()
+    const seen: unknown[] = []
+    const driver: AgentDriver = {
+      query: (params) => {
+        seen.push(params.options.systemPrompt)
+        return mock.query(params)
+      },
+    }
+    const cockpit = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    await cockpit.send('hi')
+    await cockpit.stop()
+    const narrow = createAgentSession({
+      cwd: '/tmp/nemesis-unit',
+      driver,
+      systemPrompt: 'Guide only.',
+    })
+    await narrow.send('hi')
+    await narrow.stop()
+    expect(seen).toEqual([CLAUDE_CODE_PROMPT, 'Guide only.'])
   })
 
   it('streams the assistant reply and ends the turn', async () => {

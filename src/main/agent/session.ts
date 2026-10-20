@@ -85,6 +85,9 @@ export interface ToolCall {
 }
 
 /** The slice of the SDK the cockpit uses. `mock.ts` is the other implementation. */
+/** Claude Code's own system prompt, what the CLI in a terminal runs with (#188). */
+export const CLAUDE_CODE_PROMPT = { type: 'preset', preset: 'claude_code' } as const
+
 export interface AgentDriver {
   query(params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }): AgentQueryHandle
 }
@@ -581,9 +584,9 @@ export class AgentSession {
       ...(this.options.model === undefined ? {} : { model: this.options.model }),
       ...(this.options.mcpServers === undefined ? {} : { mcpServers: this.options.mcpServers }),
       ...(this.options.hooks === undefined ? {} : { hooks: this.options.hooks }),
-      ...(this.options.systemPrompt === undefined
-        ? {}
-        : { systemPrompt: this.options.systemPrompt }),
+      // Left out, the SDK sends one line of its own, not Claude Code's prompt,
+      // so the cockpit asks for the preset by name (#188).
+      systemPrompt: this.options.systemPrompt ?? CLAUDE_CODE_PROMPT,
       ...(this.options.tools === undefined ? {} : { tools: [...this.options.tools] }),
       ...(this.options.persistSession === undefined
         ? {}
