@@ -48,8 +48,8 @@ describe('docs/mcp.org', () => {
     expect(doc).toContain(`The current version is ${CATALOG_VERSION}.`)
   })
 
-  it('is linked from README.org and has no em-dash', () => {
-    const readme = readFileSync(join(__dirname, '..', '..', 'README.org'), 'utf8')
+  it('is linked from README.md and has no em-dash', () => {
+    const readme = readFileSync(join(__dirname, '..', '..', 'README.md'), 'utf8')
     expect(readme).toContain('docs/mcp.org')
     expect(doc).not.toContain('—')
   })

@@ -1,6 +1,6 @@
 # Nemesis: instructions for Claude Code
 
-Read `README.org` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #43; every unit of work is an issue with `## Verify` and `## Do not touch`.
+Read `README.md` for what this is and `SECURITY.org` before touching anything under `src/main/security/`, `src/preload/` or `src/main/agent/`. The plan is GitHub issue #43; every unit of work is an issue with `## Verify` and `## Do not touch`.
 
 `docs/handoff.org` is where the work stood at the last handoff between machines: what waits on Pedro, what comes next, how to set up a fresh clone and land work. Read it at the start of an interactive session; it is dated, and `git log` and the open issues are newer. Rewrite it when the work moves to another machine.
 
