@@ -148,11 +148,13 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
 
   // What a command adds goes after the text typed, on a paragraph of its own
   // (#81), or at the point when it completes what is being typed there (#83).
+  // Only steer-prompt (#194) replaces it all, once the text it read was sent.
   window.nemesis.onPromptInsert((insert) => {
     if (insert.at === 'point') insertAtPoint(insert.text)
+    else if (insert.at === 'all') replaceText(insert.text)
     else appendText(insert.text)
     parkDraft()
-    say('Added to the prompt.')
+    say(insert.at === 'all' ? 'Sent.' : 'Added to the prompt.')
   })
 
   // The current buffer carries the point (#60): focus follows it.

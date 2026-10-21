@@ -25,7 +25,8 @@ import type { AgentSession } from './session'
  *
  * One prompt goes to the agent at a time. The SDK would take a second user
  * message mid-turn, but the cockpit wants to show what waits and in what
- * order, so the queue is held here and advanced when a turn ends.
+ * order, so the queue is held here and advanced when a turn ends. Only
+ * `steer` (#194) sends mid-turn, on purpose, past what waits.
  *
  * Images attached to the prompt being composed (#83) wait here too, as PNG
  * bytes behind a marker line in the text. The send takes the images whose
@@ -167,6 +168,27 @@ export class PromptQueue {
   }
 
   /**
+   * Sends the prompt into the running turn (#194), past the queue, with the
+   * SDK's `next` priority: the turn takes it after the tool call under way.
+   * With no turn running it is an ordinary submit. The images whose marker
+   * is in the text go with it; a failed send keeps them attached.
+   */
+  async steer(text: string): Promise<PromptReceipt> {
+    if (!this.busy) return this.submit(text)
+    this.counter += 1
+    const images = this.attachedImages.filter((image) => text.includes(image.marker))
+    this.attachedImages = []
+    try {
+      await this.session.send(text, images.map(imageBlock), 'next')
+    } catch (error) {
+      this.attachedImages = [...images]
+      throw error
+    }
+    this.remember(text)
+    return { id: `p${this.counter}`, status: 'sent', position: 0 }
+  }
+
+  /**
    * Takes a queued prompt back out of the queue (#193): its text and its
    * images, which keep the markers they were queued with.
    */
@@ -242,7 +264,7 @@ export class PromptQueue {
    * file mention (#83); the draft parked here follows when the editor parks
    * it again, so nothing typed since is overwritten.
    */
-  insert(text: string, at?: 'point'): void {
+  insert(text: string, at?: 'point' | 'all'): void {
     const insert: PromptInsert = at === undefined ? { text } : { text, at }
     for (const listener of [...this.insertListeners]) listener(insert)
   }

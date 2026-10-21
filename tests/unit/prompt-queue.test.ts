@@ -9,7 +9,11 @@ import {
 import { mockDriver } from '../../src/main/agent/mock'
 import type { PromptTarget } from '../../src/main/agent/prompt-queue'
 import { parseDraft, parsePromptText, PromptQueue } from '../../src/main/agent/prompt-queue'
-import { createAgentSession, type UserImageBlock } from '../../src/main/agent/session'
+import {
+  createAgentSession,
+  type UserImageBlock,
+  type UserPriority,
+} from '../../src/main/agent/session'
 import { MAX_PROMPT_LENGTH } from '../../src/shared/agent'
 
 // The queue is the main-process half of the prompt buffer (#61): one prompt
@@ -22,9 +26,15 @@ class FakeSession implements PromptTarget {
   /** The image blocks that came with each send, by position in `sent`. */
   readonly images: (readonly UserImageBlock[])[] = []
   private readonly listeners = new Set<AgentEventListener>()
+  /** The priority of each send, by position in `sent` (#194). */
+  readonly priorities: (UserPriority | undefined)[] = []
   failNext: Error | null = null
 
-  send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
+  send(
+    text: string,
+    images: readonly UserImageBlock[] = [],
+    priority?: UserPriority,
+  ): Promise<void> {
     if (this.failNext !== null) {
       const error = this.failNext
       this.failNext = null
@@ -32,6 +42,7 @@ class FakeSession implements PromptTarget {
     }
     this.sent.push(text)
     this.images.push(images)
+    this.priorities.push(priority)
     return Promise.resolve()
   }
 
@@ -426,6 +437,43 @@ describe('editing the queue (#193)', () => {
       'draft\n[image 1: 1280x800 png, 4 KB]\n\nqueued\n[image 2: 1280x800 png, 2 KB]',
     )
     expect(session.images[1]).toHaveLength(2)
+  })
+})
+
+describe('steering the running turn (#194)', () => {
+  it('sends past the queue with next, images included; the queued prompt still goes after the turn', async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    await queue.submit('running')
+    await queue.submit('queued')
+    const marker = queue.attachImage(png(2048)).marker
+    expect(await queue.steer(`turn left\n${marker}`)).toMatchObject({
+      status: 'sent',
+      position: 0,
+    })
+    expect(session.sent).toEqual(['running', `turn left\n${marker}`])
+    expect(session.priorities).toEqual([undefined, 'next'])
+    expect(session.images[1]).toHaveLength(1)
+    expect(queue.attached()).toEqual([])
+    expect(queue.state()).toEqual({ busy: true, queued: [{ id: 'p2', text: 'queued' }] })
+    expect(queue.history()).toContain(`turn left\n${marker}`)
+
+    session.endTurn()
+    await settle()
+    expect(session.sent).toEqual(['running', `turn left\n${marker}`, 'queued'])
+    expect(session.priorities[2]).toBeUndefined()
+  })
+
+  it('is an ordinary send when no turn runs, and keeps the images when the send fails', async () => {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    expect(await queue.steer('hello')).toMatchObject({ status: 'sent' })
+    expect(session.priorities).toEqual([undefined])
+
+    const marker = queue.attachImage(png(2048)).marker
+    session.failNext = new Error('closed')
+    await expect(queue.steer(`again\n${marker}`)).rejects.toThrow('closed')
+    expect(queue.attached().map((image) => image.marker)).toEqual([marker])
   })
 })
 

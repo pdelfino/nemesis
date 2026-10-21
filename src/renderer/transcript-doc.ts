@@ -194,7 +194,13 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
   }
   switch (event.type) {
     case 'user-text':
-      return appendBlock(state, 'user', HEADERS.user, event.text)
+      // A prompt sent into a running turn (#194) is still the user's, marked so.
+      return appendBlock(
+        state,
+        'user',
+        event.steered === true ? `${HEADERS.user} (mid-turn)` : HEADERS.user,
+        event.text,
+      )
     case 'assistant-text':
       return transcript.open
         ? extendBlock(state, event.text)

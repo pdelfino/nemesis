@@ -51,7 +51,9 @@ import type { AgentDriver, AgentQueryHandle, RewindFilesOptions } from './sessio
  *                 result and `Investigated: X`
  *   `stream: ...` text frames `... 1`, `... 2`, one every few ms, until the
  *                 turn is interrupted; the turn then ends as the CLI ends an
- *                 interrupted one, with an error result (#84)
+ *                 interrupted one, with an error result (#84). A message sent
+ *                 with `next` priority meanwhile is answered inside the turn,
+ *                 `You said: <it>`, and the turn ends with that (#194)
  *   `usage: N`    the reply, with N tokens in the context from here on (#80)
  *   `/compact ...` a compact boundary, then a result, the context back to
  *                 the size of a fresh session, as the CLI does (#80)
@@ -286,6 +288,11 @@ class MockQuery implements AgentQueryHandle {
   private readonly turnOf = new Map<string, number>()
   /** The allowed Edit calls, by the turn that made them, until a rewind forgets them (#99). */
   private edits: { readonly turn: number; readonly file: string }[] = []
+  /** The messages read and not yet answered, oldest first (#194). */
+  private readonly inbox: SDKUserMessage[] = []
+  private inputEnded = false
+  /** Wakes the turn loop when a message arrives or the input ends. */
+  private wake: (() => void) | null = null
 
   constructor(prompt: AsyncIterable<SDKUserMessage>, options: Options, sessionId: string) {
     this.prompt = prompt
@@ -351,13 +358,52 @@ class MockQuery implements AgentQueryHandle {
 
   async *[Symbol.asyncIterator](): AsyncGenerator<SDKMessage> {
     yield this.init()
-    for await (const message of this.prompt) {
-      if (this.closed) return
+    void this.pump()
+    for (;;) {
+      const message = await this.nextMessage()
+      if (message === null || this.closed) return
       RECEIVED.push(receivedOf(message))
       this.turn = new AbortController()
       if (message.uuid !== undefined) this.turnOf.set(message.uuid, this.turns + 1)
       yield* this.answer(promptText(message))
     }
+  }
+
+  /**
+   * Reads the input as it comes, turn or no turn, as the CLI does, so a
+   * message sent with `next` priority mid-turn is seen by the turn (#194).
+   */
+  private async pump(): Promise<void> {
+    for await (const message of this.prompt) {
+      this.inbox.push(message)
+      this.wake?.()
+    }
+    this.inputEnded = true
+    this.wake?.()
+  }
+
+  /** The oldest message not yet answered, or null once the input has ended. */
+  private async nextMessage(): Promise<SDKUserMessage | null> {
+    for (;;) {
+      const next = this.inbox.shift()
+      if (next !== undefined) return next
+      if (this.inputEnded) return null
+      await new Promise<void>((resolve) => {
+        this.wake = resolve
+      })
+      this.wake = null
+    }
+  }
+
+  /** A message sent with `next` priority that the running turn has not taken yet (#194). */
+  private takeSteered(): SDKUserMessage | null {
+    const index = this.inbox.findIndex((message) => message.priority === 'next')
+    if (index === -1) return null
+    const [message] = this.inbox.splice(index, 1)
+    if (message === undefined) return null
+    RECEIVED.push(receivedOf(message))
+    if (message.uuid !== undefined) this.turnOf.set(message.uuid, this.turns)
+    return message
   }
 
   private async *answer(prompt: string): AsyncGenerator<SDKMessage> {
@@ -387,6 +433,14 @@ class MockQuery implements AgentQueryHandle {
       for (let n = 1; n <= STREAM_LIMIT && !signal.aborted; n += 1) {
         yield this.assistant([{ type: 'text', text: `${word} ${n}`, citations: null }])
         await sleep(STREAM_INTERVAL_MS, signal)
+        // A steered message is answered inside this turn, which then ends (#194).
+        const steered = this.takeSteered()
+        if (steered !== null) {
+          const reply = `You said: ${promptText(steered)}`
+          yield this.assistant([{ type: 'text', text: reply, citations: null }])
+          yield this.result(reply)
+          return
+        }
       }
       yield signal.aborted ? this.interruptedResult() : this.result(`${word} done`)
       return

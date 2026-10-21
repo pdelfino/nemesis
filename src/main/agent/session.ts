@@ -50,6 +50,13 @@ export type UserImageBlock = Extract<
   { type: 'image' }
 >
 
+/**
+ * When a user message sent while a turn runs reaches the agent, as the SDK's
+ * type spells it (#194). The cockpit sends `next` only: the running tool call
+ * finishes, then the turn takes the message.
+ */
+export type UserPriority = NonNullable<SDKUserMessage['priority']>
+
 /** Anything the session can talk to: the real SDK query, or the mock. */
 export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>
@@ -522,11 +529,19 @@ export class AgentSession {
    * message; the events, the checkpoint and the transcript carry the text
    * alone, whose marker lines stand for them.
    */
-  async send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
+  async send(
+    text: string,
+    images: readonly UserImageBlock[] = [],
+    priority?: UserPriority,
+  ): Promise<void> {
     if (this.handle === null) await this.start()
+    // A message with a priority sent while a turn runs reaches that turn at
+    // the next point it can take one (#194), as the CLI does with a prompt
+    // typed mid-turn; the transcript marks it.
+    const steered = priority !== undefined && this.inTurn
     // The user's turn joins the stream before anything the agent answers to
     // it, so a listener reads the conversation in order (#62).
-    this.emit({ type: 'user-text', text })
+    this.emit(steered ? { type: 'user-text', text, steered: true } : { type: 'user-text', text })
     // The message goes out under a uuid of ours, so the checkpoint it opens
     // can be named back to the SDK (#84). The query is already bound to its
     // session, so the frame carries no session id.
@@ -541,7 +556,8 @@ export class AgentSession {
         at: Date.now(),
       })
     }
-    this.toolCalls.length = 0
+    // A steered message joins the running turn, whose tool calls go on.
+    if (!steered) this.toolCalls.length = 0
     this.inTurn = true
     this.input.push({
       type: 'user',
@@ -551,6 +567,7 @@ export class AgentSession {
       },
       parent_tool_use_id: null,
       uuid,
+      ...(priority === undefined ? {} : { priority }),
     })
   }
 

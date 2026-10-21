@@ -181,3 +181,47 @@ test('merge-queued-prompts makes the prompts waiting behind a turn one prompt', 
     await app.close()
   }
 })
+
+// Steering (#194): a prompt sent with steer-prompt during a turn goes past
+// the prompt queued behind it, the turn answers it before it ends, and the
+// queued prompt still goes after the turn.
+test('steer-prompt sends into the running turn, past the queue', async () => {
+  const app = await launchNemesis()
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const editor = page.locator('#prompt .cm-content')
+    await expect(editor).toBeFocused()
+    await page.evaluate(() => {
+      const w = globalThis as unknown as TestWindow
+      w.__agentEvents = []
+      w.nemesis.onAgentEvent((event) => w.__agentEvents?.push(event))
+    })
+    const queued = page.locator('#prompt-queued li')
+
+    for (const text of ['stream: tick', 'alpha']) {
+      await expect(editor).toBeFocused()
+      await page.keyboard.type(text)
+      await page.keyboard.press('Control+c')
+      await page.keyboard.press('Control+c')
+      await expect.poll(() => lines(page)).toEqual([''])
+    }
+    await expect(queued).toHaveText(['Queued: alpha'])
+
+    // The command reads the draft the editor parked.
+    await page.keyboard.type('beta')
+    await expect.poll(() => promptDraft(page)).toBe('beta')
+    await runCommand(page, 'steer-prompt')
+
+    await expect.poll(() => userTexts(page)).toEqual(['stream: tick', 'beta', 'alpha'])
+    await expect.poll(() => assistantTexts(page)).toContain('You said: beta')
+    await expect.poll(() => assistantTexts(page)).toContain('You said: alpha')
+    const texts = await assistantTexts(page)
+    expect(texts.indexOf('You said: beta')).toBeLessThan(texts.indexOf('You said: alpha'))
+    await expect(queued).toHaveCount(0)
+    await expect.poll(() => lines(page)).toEqual([''])
+    await expect(page.locator('#transcript .cm-line', { hasText: 'You (mid-turn)' })).toHaveCount(1)
+  } finally {
+    await app.close()
+  }
+})

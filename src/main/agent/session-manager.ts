@@ -19,6 +19,7 @@ import type {
   Checkpoint,
   ToolCall,
   UserImageBlock,
+  UserPriority,
 } from './session'
 import { AgentSessionError, createAgentSession, denyEveryTool, resolveDriver } from './session'
 import { checkPassed, gatePrompt } from '../verify'
@@ -492,8 +493,12 @@ export class SessionManager {
   }
 
   /** The prompt queue sends through here; a fresh session starts on demand. */
-  async send(text: string, images: readonly UserImageBlock[] = []): Promise<void> {
-    await (await this.current()).send(text, images)
+  async send(
+    text: string,
+    images: readonly UserImageBlock[] = [],
+    priority?: UserPriority,
+  ): Promise<void> {
+    await (await this.current()).send(text, images, priority)
   }
 
   /** The guide's Esc: stop the running turn, keep the session (#84). */

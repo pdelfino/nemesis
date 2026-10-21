@@ -46,6 +46,7 @@ const ASKED_TOOLS = ['Bash', 'Write', 'Edit', 'mcp__nemesis__browser_snapshot']
 export interface AgentEvent {
   readonly type: string
   readonly text?: string
+  readonly steered?: boolean
   readonly isError?: boolean
   readonly outcome?: string
   readonly requestId?: string

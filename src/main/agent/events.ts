@@ -53,6 +53,8 @@ export interface AgentStartedEvent {
 export interface AgentUserTextEvent {
   readonly type: 'user-text'
   readonly text: string
+  /** Sent into a turn that was running, past the queue (#194). */
+  readonly steered?: true | undefined
 }
 
 /**

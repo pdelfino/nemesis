@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { SDKAssistantMessage, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type {
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk'
 import { mockDriver } from '../../src/main/agent/mock'
 import type { AgentDriver, AgentSession } from '../../src/main/agent/session'
 import {
@@ -549,6 +553,62 @@ describe('the context meter and compaction (#80)', () => {
     expect(first.sessionId).toBe('mock-session')
     await fork.stop()
     await first.stop()
+  })
+})
+
+describe('steering a running turn (#194)', () => {
+  /** The mock, with every user message the session wrote recorded as it was written. */
+  function recording(): { driver: AgentDriver; written: SDKUserMessage[] } {
+    const base = mockDriver()
+    const written: SDKUserMessage[] = []
+    const driver: AgentDriver = {
+      query: ({ prompt, options }) => {
+        async function* tap(): AsyncGenerator<SDKUserMessage> {
+          for await (const message of prompt) {
+            written.push(message)
+            yield message
+          }
+        }
+        return base.query({ prompt: tap(), options })
+      },
+    }
+    return { driver, written }
+  }
+
+  it('writes no priority on a plain send', async () => {
+    const { driver, written } = recording()
+    const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    const events = collect(agent)
+    await agent.send('hello')
+    await agent.waitForTurn()
+    expect(written).toHaveLength(1)
+    expect(written[0]).not.toHaveProperty('priority')
+    expect(events.find((event) => event.type === 'user-text')).toEqual({
+      type: 'user-text',
+      text: 'hello',
+    })
+    await agent.stop()
+  })
+
+  it('writes the priority on the message, and the running turn answers it before it ends', async () => {
+    const { driver, written } = recording()
+    const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    const events = collect(agent)
+    await agent.send('stream: tick')
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.type === 'assistant-text')).toBe(true)
+    })
+    const turn = agent.waitForTurn()
+    await agent.send('turn left', [], 'next')
+    expect(await turn).toMatchObject({ isError: false, result: 'You said: turn left' })
+    expect(written.map((message) => message.priority)).toEqual([undefined, 'next'])
+    // The transcript marks it: the user's text, sent into the running turn.
+    expect(events.filter((event) => event.type === 'user-text')).toEqual([
+      { type: 'user-text', text: 'stream: tick' },
+      { type: 'user-text', text: 'turn left', steered: true },
+    ])
+    expect(kinds(events).filter((kind) => kind === 'turn-end')).toHaveLength(1)
+    await agent.stop()
   })
 })
 

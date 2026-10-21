@@ -276,7 +276,15 @@ export interface CockpitDeps {
    */
   readonly prompts: Pick<
     PromptQueue,
-    'submit' | 'insert' | 'attachImage' | 'draft' | 'state' | 'edit' | 'remove' | 'mergeAll'
+    | 'submit'
+    | 'steer'
+    | 'insert'
+    | 'attachImage'
+    | 'draft'
+    | 'state'
+    | 'edit'
+    | 'remove'
+    | 'mergeAll'
   >
   /** The sessions folder, as `resume-session` lists and reads it (#67). */
   readonly sessions: SessionSource
@@ -1292,6 +1300,31 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         }
         if (merged === 0) help.show('No prompt is queued.')
         else if (merged === 1) help.show('One prompt is queued; there is nothing to merge it with.')
+      },
+    }),
+    defineCommand({
+      name: 'steer-prompt',
+      doc: 'Send the prompt into the running turn, past the queue; the agent takes it after the tool call under way. With no turn running it is an ordinary send.',
+      run: () => {
+        // It changes what the agent receives, so the MCP class is the default
+        // yes (#194). The text is the draft the editor parked; once it is
+        // sent, the editor is emptied, as a send empties it.
+        const text = prompts.draft
+        if (text.trim().length === 0) {
+          help.show('Nothing to steer with: the prompt is empty.')
+          return
+        }
+        prompts
+          .steer(text)
+          .then(() => {
+            prompts.insert('', 'all')
+          })
+          .catch((error: unknown) => {
+            // The draft stays in the editor, so nothing typed is lost.
+            help.show(
+              `The prompt was not sent: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          })
       },
     }),
     defineCommand({

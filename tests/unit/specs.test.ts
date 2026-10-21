@@ -193,6 +193,9 @@ describe('the three commands and the fresh session', () => {
         edit: () => undefined,
         remove: () => undefined,
         mergeAll: () => 0,
+        steer: () => {
+          throw new Error('unused')
+        },
       },
     })
     const registry = createCockpitRegistry(deps)
