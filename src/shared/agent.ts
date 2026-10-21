@@ -116,12 +116,17 @@ export const TRANSCRIPT_GOTO_CHANNEL = 'nemesis:transcript-goto' as const
  * what is typed; the main process never rewrites the draft itself. A file
  * mention (#83) goes `at` the point instead, where the `@` was typed. The
  * one exception is `steer-prompt` (#194): it sends the draft it read and
- * then empties the editor, an insert of nothing over `all` of it.
+ * then empties the editor of what it sent, an insert of nothing over `all` of it.
  */
 export interface PromptInsert {
   readonly text: string
   /** Where the text goes: after everything typed, at the point, or in place of all of it. */
   readonly at?: 'point' | 'all'
+  /**
+   * With `all`: the text that was sent. The editor drops only that, so
+   * anything typed after the draft was read stays (#194).
+   */
+  readonly sent?: string
 }
 
 /** The main process pushes text for the prompt buffer to append. */

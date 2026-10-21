@@ -1317,7 +1317,7 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
         prompts
           .steer(text)
           .then(() => {
-            prompts.insert('', 'all')
+            prompts.insert('', 'all', text)
           })
           .catch((error: unknown) => {
             // The draft stays in the editor, so nothing typed is lost.

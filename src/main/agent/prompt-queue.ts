@@ -264,8 +264,9 @@ export class PromptQueue {
    * file mention (#83); the draft parked here follows when the editor parks
    * it again, so nothing typed since is overwritten.
    */
-  insert(text: string, at?: 'point' | 'all'): void {
-    const insert: PromptInsert = at === undefined ? { text } : { text, at }
+  insert(text: string, at?: 'point' | 'all', sent?: string): void {
+    const insert: PromptInsert =
+      at === undefined ? { text } : sent === undefined ? { text, at } : { text, at, sent }
     for (const listener of [...this.insertListeners]) listener(insert)
   }
 

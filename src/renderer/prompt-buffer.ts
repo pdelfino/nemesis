@@ -151,8 +151,14 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
   // Only steer-prompt (#194) replaces it all, once the text it read was sent.
   window.nemesis.onPromptInsert((insert) => {
     if (insert.at === 'point') insertAtPoint(insert.text)
-    else if (insert.at === 'all') replaceText(insert.text)
-    else appendText(insert.text)
+    else if (insert.at === 'all') {
+      // Only what was sent goes: text typed after the draft was read stays.
+      const doc = view.state.doc.toString()
+      const sent = insert.sent
+      if (sent === undefined || doc === sent) replaceText(insert.text)
+      else if (doc.startsWith(sent))
+        replaceText(insert.text + doc.slice(sent.length).replace(/^\n+/, ''))
+    } else appendText(insert.text)
     parkDraft()
     say(insert.at === 'all' ? 'Sent.' : 'Added to the prompt.')
   })
