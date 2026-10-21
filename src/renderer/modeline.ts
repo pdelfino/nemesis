@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../shared/agent'
+import { describeModel, type AgentEvent } from '../shared/agent'
 import { APP_NAME } from '../shared/api'
 import type { BufferList } from '../shared/buffers'
 import { describeContext } from '../shared/context'
@@ -18,6 +18,9 @@ import type { KeyBindings } from '../shared/keys'
  * the window title, `<name> · Nemesis`, while the named session is up.
  * The stop gate (#113) is the fifth: `gate` while it is on, with the retry
  * count against the cap once a red check has gone back to the session.
+ * The model (#190) is the sixth, next to the meter: the one the session
+ * started on, then the one `set-model` switched to, with the effort level
+ * once `set-effort` set one; blank when the session stops.
  */
 export function installModeline(): void {
   const meter = document.getElementById('context-meter')
@@ -37,6 +40,19 @@ export function installModeline(): void {
     gate.title = event.on
       ? `Stop gate: every turn ends with the check; a red one goes back as the next prompt, ${event.cap} times at most. M-x toggle-stop-gate turns it off.`
       : ''
+  })
+  const model = document.getElementById('session-model')
+  if (model === null) throw new Error('index.html has no #session-model')
+  let shown: SessionModel = NO_MODEL
+  window.nemesis.onAgentEvent((event) => {
+    const next = sessionModel(shown, event)
+    if (next === shown) return
+    shown = next
+    model.textContent = describeModel(shown.model, shown.effort)
+    model.title =
+      shown.model === null && shown.effort === null
+        ? ''
+        : 'Model and effort of this session. M-x set-model and set-effort switch them.'
   })
   // The eval journal (#72): the definitions made at eval not yet promoted to
   // init.ts or discarded, blank at none.
@@ -86,6 +102,32 @@ export function modeNames(list: BufferList | null, bindings: KeyBindings | null)
   if (list === null || bindings === null) return ''
   const current = list.buffers.find((buffer) => buffer.id === list.currentId)
   return (current?.modes ?? []).filter((name) => bindings.byMode[name]?.visible === true).join(' ')
+}
+
+/** The model and effort the mode line shows (#190); null for not known or the default. */
+export interface SessionModel {
+  readonly model: string | null
+  readonly effort: string | null
+}
+
+export const NO_MODEL: SessionModel = { model: null, effort: null }
+
+/**
+ * The mode line's model after one event (#190), the same object when it does
+ * not change it. A `started` names the model and leaves the effort, since a
+ * switch can come before the SDK's init frame; a `stopped` clears both.
+ */
+export function sessionModel(state: SessionModel, event: AgentEvent): SessionModel {
+  switch (event.type) {
+    case 'started':
+      return { model: event.model, effort: state.effort }
+    case 'model':
+      return { model: event.model, effort: event.effort }
+    case 'stopped':
+      return NO_MODEL
+    default:
+      return state
+  }
 }
 
 /** `gate`, `gate 2/3` once retries were sent, blank when off. */

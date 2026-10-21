@@ -61,6 +61,7 @@ const KNOWN_TYPES: Readonly<Record<AgentEvent['type'], true>> = {
   evidence: true,
   named: true,
   'stop-gate': true,
+  model: true,
 }
 
 interface LogEntry {

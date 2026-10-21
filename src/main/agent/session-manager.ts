@@ -1,5 +1,6 @@
-import type { RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
+import type { ModelInfo, RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
 import type {
+  AgentEffortLevel,
   AgentEvent,
   AgentEventListener,
   AgentEvidenceEvent,
@@ -106,6 +107,9 @@ export type RewindTarget = 'conversation' | 'code' | 'both'
 export type SessionHistoryListener = (history: readonly AgentEvent[]) => void
 
 export const REWIND_TARGETS: readonly RewindTarget[] = ['conversation', 'code', 'both']
+
+/** Every effort level the SDK takes, lowest first: the choice when the model lists none of its own (#190). */
+export const EFFORT_LEVELS: readonly AgentEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 /**
  * The guide's callout, the first time plan mode goes on in a session (#82):
@@ -255,6 +259,10 @@ export class SessionManager {
   private gateRetryText: string | null = null
   /** Moves when the session stops, so a check that outlived its session sends nothing. */
   private gateEpoch = 0
+  /** What the last `supportedModels()` answered, for the palette (#190). */
+  private modelList: readonly ModelInfo[] = []
+  /** What the last `effortLevels()` answered, for the palette (#190). */
+  private effortList: readonly AgentEffortLevel[] = []
 
   constructor(options: SessionManagerOptions) {
     this.options = options
@@ -329,6 +337,62 @@ export class SessionManager {
     this.mode = mode
     if (this.session !== null) await this.session.setPermissionMode(mode)
     this.emit({ type: 'permission-mode', mode })
+  }
+
+  /** The current session's model, or the setting's before one has started (#190). */
+  get model(): string | null {
+    return this.session?.model ?? this.options.model
+  }
+
+  /** The current session's effort level, null while the model's default applies (#190). */
+  get effort(): AgentEffortLevel | null {
+    return this.session?.effort ?? null
+  }
+
+  /** The models the last `supportedModels()` listed, for the palette to read (#190). */
+  get models(): readonly ModelInfo[] {
+    return this.modelList
+  }
+
+  /** The effort levels the last `effortLevels()` listed, for the palette to read (#190). */
+  get efforts(): readonly AgentEffortLevel[] {
+    return this.effortList
+  }
+
+  /** What the current session can switch to (#190); asks the SDK, starting a session if none runs. */
+  async supportedModels(): Promise<readonly ModelInfo[]> {
+    this.modelList = await (await this.current()).supportedModels()
+    return this.modelList
+  }
+
+  /**
+   * The effort levels the current session's model takes (#190), or every
+   * level the SDK knows when it does not name the model.
+   */
+  async effortLevels(): Promise<readonly AgentEffortLevel[]> {
+    this.effortList = (await (await this.current()).effortLevels()) ?? EFFORT_LEVELS
+    return this.effortList
+  }
+
+  /**
+   * Switches the current session's model (#190). The session only: the
+   * `model` setting stays what new sessions start with. The mode line and
+   * the transcript hear it down the stream.
+   */
+  async setModel(model: string): Promise<void> {
+    const session = await this.current()
+    await session.setModel(model)
+    this.emit({ type: 'model', model: session.model, effort: session.effort })
+  }
+
+  /**
+   * Sets the current session's effort level (#190); a level its model does
+   * not list is refused with an AgentSessionError that says which it lists.
+   */
+  async setEffort(level: AgentEffortLevel): Promise<void> {
+    const session = await this.current()
+    await session.setEffort(level)
+    this.emit({ type: 'model', model: session.model, effort: session.effort })
   }
 
   /**

@@ -19,7 +19,12 @@ import {
   type TransactionSpec,
 } from '@codemirror/state'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
-import { requestKeys, type AgentEvent, type AgentQuestion } from '../shared/agent'
+import {
+  describeModelSwitch,
+  requestKeys,
+  type AgentEvent,
+  type AgentQuestion,
+} from '../shared/agent'
 import { checkEvidenceHeader, looksLikeEvidence, toolEvidenceHeader } from '../shared/evidence'
 
 /**
@@ -264,6 +269,8 @@ export function transactionFor(state: EditorState, event: AgentEvent): Transacti
       return appendBlock(state, 'note', `Permission mode: ${event.mode}`, '')
     case 'named':
       return appendBlock(state, 'note', `Session named: ${event.name}`, '')
+    case 'model':
+      return appendBlock(state, 'note', describeModelSwitch(event), '')
     case 'context-usage':
     case 'stop-gate':
       // The mode line shows the meter and the gate; the document has nothing to add.

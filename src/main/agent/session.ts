@@ -1,5 +1,6 @@
 import type {
   CanUseTool,
+  ModelInfo,
   ModelUsage,
   Options,
   RewindFilesResult,
@@ -12,6 +13,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   AgentEvent,
+  AgentEffortLevel,
   AgentEventListener,
   AgentPermissionMode,
   AgentTurnEndEvent,
@@ -52,6 +54,10 @@ export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>
   setPermissionMode(mode: AgentPermissionMode): Promise<void>
   setModel(model?: string): Promise<void>
+  /** The models the session may switch to, each with the effort levels it takes (#190). */
+  supportedModels(): Promise<ModelInfo[]>
+  /** The session-scoped flag layer; the cockpit sets the effort level through it (#190). */
+  applyFlagSettings(settings: { effortLevel?: AgentEffortLevel | null }): Promise<void>
   /**
    * Restores the files the agent touched since the user message named (#84);
    * a dry run reports what would change and touches nothing (#99).
@@ -393,6 +399,8 @@ export class AgentSession {
   private reader: Promise<void> | null = null
   private sessionIdValue: string | null
   private modelValue: string | null
+  /** The effort level set in this session, or null for the model's default (#190). */
+  private effortValue: AgentEffortLevel | null = null
   private permissionModeValue: AgentPermissionMode
   private interrupted = false
   private inTurn = false
@@ -423,6 +431,11 @@ export class AgentSession {
   /** The model the SDK reported, or the one that was asked for before it answered. */
   get model(): string | null {
     return this.modelValue
+  }
+
+  /** The effort level set in this session, or null while the model's default applies. */
+  get effort(): AgentEffortLevel | null {
+    return this.effortValue
   }
 
   get permissionMode(): AgentPermissionMode {
@@ -557,6 +570,44 @@ export class AgentSession {
     if (this.handle !== null) await this.handle.setModel(model)
   }
 
+  /** What the SDK offers to switch to (#190). The list lives on the query, so it starts one. */
+  async supportedModels(): Promise<readonly ModelInfo[]> {
+    return (await this.started()).supportedModels()
+  }
+
+  /**
+   * The effort levels the current model lists (#190), or null when the SDK
+   * names no model by that id, or none is known yet: the SDK then decides.
+   * A row matches by its own value or by the id its alias resolves to.
+   */
+  async effortLevels(): Promise<readonly AgentEffortLevel[] | null> {
+    const model = this.modelValue
+    if (model === null) return null
+    const info = (await this.supportedModels()).find(
+      (row) => row.value === model || row.resolvedModel === model,
+    )
+    if (info === undefined) return null
+    return info.supportsEffort === false ? [] : (info.supportedEffortLevels ?? [])
+  }
+
+  /**
+   * Sets the effort level for the rest of the session (#190), through the
+   * SDK's flag layer: nothing is written to a settings file. A level the
+   * current model does not list is refused before the SDK hears of it.
+   */
+  async setEffort(level: AgentEffortLevel): Promise<void> {
+    const levels = await this.effortLevels()
+    if (levels !== null && !levels.includes(level)) {
+      throw new AgentSessionError(
+        levels.length === 0
+          ? `${this.modelValue} takes no effort level`
+          : `${this.modelValue} takes no ${level} effort; it lists ${levels.join(', ')}`,
+      )
+    }
+    await (await this.started()).applyFlagSettings({ effortLevel: level })
+    this.effortValue = level
+  }
+
   /** Interrupt the agent and close the stream. Safe to call twice. */
   async stop(): Promise<void> {
     const handle = this.handle
@@ -572,6 +623,14 @@ export class AgentSession {
     await this.reader
     this.handle = null
     this.reader = null
+  }
+
+  /** The live query, started on demand. */
+  private async started(): Promise<AgentQueryHandle> {
+    if (this.handle === null) await this.start()
+    const handle = this.handle
+    if (handle === null) throw new AgentSessionError('The session did not start')
+    return handle
   }
 
   private sdkOptions(): Options {

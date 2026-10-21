@@ -944,6 +944,62 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
       },
     }),
     defineCommand({
+      name: 'set-model',
+      doc: 'Switch the current session to another model; the model setting stays the default for new sessions.',
+      run: () => {
+        // The list is the SDK's, asked first; the palette reads it off the
+        // manager (#190). A model change costs money, so the MCP class is
+        // the default yes.
+        agent
+          .supportedModels()
+          .then((models) => {
+            if (models.length === 0) {
+              help.show('The session lists no model to switch to.')
+              return
+            }
+            prompter.read({ source: 'models', prompt: 'Set model:' }, async (id) => {
+              try {
+                await agent.setModel(id)
+              } catch (error) {
+                help.show(
+                  `The model was not switched: ${error instanceof Error ? error.message : String(error)}`,
+                )
+              }
+            })
+          })
+          .catch(report('set-model'))
+      },
+    }),
+    defineCommand({
+      name: 'set-effort',
+      doc: "Set the current session's effort level, from the levels its model lists; for this session only.",
+      run: () => {
+        // The levels are the current model's own (#190); one it does not
+        // list is refused by the session with a message, here in the help
+        // buffer, since the palette has closed by then.
+        agent
+          .effortLevels()
+          .then((levels) => {
+            if (levels.length === 0) {
+              help.show(`${agent.model ?? 'The model'} takes no effort level.`)
+              return
+            }
+            prompter.read({ source: 'effort-levels', prompt: 'Set effort:' }, async (id) => {
+              const level = levels.find((candidate) => candidate === id)
+              if (level === undefined) return
+              try {
+                await agent.setEffort(level)
+              } catch (error) {
+                help.show(
+                  `The effort was not set: ${error instanceof Error ? error.message : String(error)}`,
+                )
+              }
+            })
+          })
+          .catch(report('set-effort'))
+      },
+    }),
+    defineCommand({
       name: 'approve-plan',
       mcp: 'never',
       doc: 'Approve the plan in the current plan buffer, as edited; the session leaves plan mode.',
@@ -2210,6 +2266,25 @@ export function cockpitSources(
           id: checkpoint.uuid,
           label: describeCheckpoint(checkpoint),
           doc: `Checkpoint ${checkpoint.index}`,
+        })),
+    },
+    {
+      name: 'models',
+      candidates: () =>
+        agent.models.map((model) => ({
+          id: model.value,
+          label: model.displayName,
+          doc: model.description,
+          detail: model.value === agent.model ? `${model.value}, current` : model.value,
+        })),
+    },
+    {
+      name: 'effort-levels',
+      candidates: () =>
+        agent.efforts.map((level) => ({
+          id: level,
+          label: level,
+          doc: `${level} effort for this session${level === agent.effort ? ', current' : ''}`,
         })),
     },
     {

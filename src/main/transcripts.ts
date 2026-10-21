@@ -255,6 +255,9 @@ export class OrgTranscript {
       case 'stop-gate':
         // The log keeps the numbers; a person reading the Org file does not need them.
         return ''
+      case 'model':
+        // A switch is for the session that made it (#190): the recorder never writes it.
+        return ''
     }
   }
 
@@ -345,7 +348,10 @@ export class SessionRecorder {
   }
 
   record(event: AgentEvent): void {
-    if (this.broken) return
+    // A model or effort switch is for the running session only (#190): the
+    // session folder's format stays what it was, and a resume starts on the
+    // `model` setting again, as the log would otherwise contradict.
+    if (this.broken || event.type === 'model') return
     try {
       if (event.type === 'started') {
         if (this.folderValue !== null && this.folderValue.sessionId !== event.sessionId) {

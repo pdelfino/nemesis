@@ -85,6 +85,13 @@ body {
 #context-meter[data-level='full'] {
   color: #b32424;
 }
+/* The session's model and effort (#190): shown while a session runs. */
+#session-model {
+  white-space: nowrap;
+}
+#session-model:empty {
+  display: none;
+}
 /* The eval journal's count (#72): shown while a definition waits to be promoted. */
 #journal-count {
   white-space: nowrap;

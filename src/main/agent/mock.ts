@@ -1,4 +1,5 @@
 import type {
+  ModelInfo,
   ModelUsage,
   NonNullableUsage,
   Options,
@@ -77,12 +78,31 @@ import type { AgentDriver, AgentQueryHandle, RewindFilesOptions } from './sessio
  * `edit:` since the user message named, one line in and one out each, and
  * touches nothing; the real run forgets those edits, so the next preview is
  * empty. The query knows only the messages it read itself, so a checkpoint
- * from before a resume is refused with a reason, as the SDK refuses. One
+ * from before a resume is refused with a reason, as the SDK refuses. The
+ * query offers two models to switch to (#190), the default without `max`
+ * effort and a second with it. One
  * driver numbers its sessions: the first is `mock-session`, the next
  * `mock-session-2`, so a fresh session after `new-task` has an id of its own.
  */
 
 const MOCK_MODEL = 'claude-mock-1'
+/** What `supportedModels()` lists (#190): the default takes no `max`, so a refusal has a case. */
+const MOCK_MODELS: readonly ModelInfo[] = [
+  {
+    value: MOCK_MODEL,
+    displayName: 'Mock One',
+    description: 'The mock default',
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high'],
+  },
+  {
+    value: 'claude-mock-2',
+    displayName: 'Mock Two',
+    description: 'A mock model with every effort level',
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+]
 const MOCK_SESSION_ID = 'mock-session'
 const MOCK_TOOLS = [
   'Read',
@@ -289,6 +309,15 @@ class MockQuery implements AgentQueryHandle {
 
   setModel(model?: string): Promise<void> {
     this.model = model ?? MOCK_MODEL
+    return Promise.resolve()
+  }
+
+  supportedModels(): Promise<ModelInfo[]> {
+    return Promise.resolve(MOCK_MODELS.map((info) => ({ ...info })))
+  }
+
+  /** The mock's answers do not depend on effort, so the level is taken and dropped. */
+  applyFlagSettings(): Promise<void> {
     return Promise.resolve()
   }
 

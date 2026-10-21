@@ -719,3 +719,41 @@ describe('the stop gate', () => {
     await agent.stop()
   })
 })
+
+describe('the model and the effort of the current session (#190)', () => {
+  it('switches both for the session only and says so down the stream', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    const turn = nextTurn(agent)
+    await agent.send('hello')
+    await turn
+    expect((await agent.supportedModels()).map((model) => model.value)).toEqual([
+      'claude-mock-1',
+      'claude-mock-2',
+    ])
+    expect(agent.models).toHaveLength(2)
+    await agent.setModel('claude-mock-2')
+    expect(await agent.effortLevels()).toContain('max')
+    await agent.setEffort('max')
+    expect(events.filter((event) => event.type === 'model')).toEqual([
+      { type: 'model', model: 'claude-mock-2', effort: null },
+      { type: 'model', model: 'claude-mock-2', effort: 'max' },
+    ])
+    // A fresh session starts on the setting again, at the model's default effort.
+    await agent.newTask()
+    expect(agent.model).toBeNull()
+    expect(agent.effort).toBeNull()
+    await agent.stop()
+  })
+
+  it('refuses an effort the model does not list, and emits nothing', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    const turn = nextTurn(agent)
+    await agent.send('hello')
+    await turn
+    await expect(agent.setEffort('xhigh')).rejects.toThrow(/takes no xhigh effort/)
+    expect(events.some((event) => event.type === 'model')).toBe(false)
+    await agent.stop()
+  })
+})

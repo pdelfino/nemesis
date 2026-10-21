@@ -1,4 +1,4 @@
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 
 /**
  * What the cockpit sees of an agent session (#58). Buffers, the transcript and
@@ -9,6 +9,9 @@ import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 
 /** The SDK's permission modes, under the name the cockpit uses for them. */
 export type AgentPermissionMode = PermissionMode
+
+/** The SDK's effort levels (#190), under the name the cockpit uses for them. */
+export type AgentEffortLevel = EffortLevel
 
 /** One MCP server as the init frame reports it (#86): its config name and its connection status. */
 export interface AgentMcpServer {
@@ -263,6 +266,20 @@ export interface AgentStopGateEvent {
   readonly cap: number
 }
 
+/**
+ * The model or the effort level of the running session changed (#190):
+ * `set-model` and `set-effort` switch them mid-session. The mode line shows
+ * both from this and from `started`; the transcript notes it. The switch is
+ * for this session only, so the recorder leaves it out of the session log.
+ */
+export interface AgentModelEvent {
+  readonly type: 'model'
+  /** Null when the session has not yet said which model it runs. */
+  readonly model: string | null
+  /** Null while the model's default effort applies. */
+  readonly effort: AgentEffortLevel | null
+}
+
 export type AgentEvent =
   | AgentStartedEvent
   | AgentUserTextEvent
@@ -283,6 +300,7 @@ export type AgentEvent =
   | AgentEvidenceEvent
   | AgentNamedEvent
   | AgentStopGateEvent
+  | AgentModelEvent
 
 export type AgentEventListener = (event: AgentEvent) => void
 

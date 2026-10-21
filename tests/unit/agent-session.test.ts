@@ -550,3 +550,82 @@ describe('the context meter and compaction (#80)', () => {
     await first.stop()
   })
 })
+
+describe('switching the model and the effort mid-session (#190)', () => {
+  /** The mock, with the live query's two switches spied on. */
+  function spied(): {
+    driver: AgentDriver
+    setModel: ReturnType<typeof vi.fn>
+    applyFlagSettings: ReturnType<typeof vi.fn>
+  } {
+    const base = mockDriver()
+    const setModel = vi.fn()
+    const applyFlagSettings = vi.fn()
+    const driver: AgentDriver = {
+      query: (params) => {
+        const handle = base.query(params)
+        const ownSetModel = handle.setModel.bind(handle)
+        const ownApply = handle.applyFlagSettings.bind(handle)
+        handle.setModel = (model) => {
+          setModel(model)
+          return ownSetModel(model)
+        }
+        handle.applyFlagSettings = (settings) => {
+          applyFlagSettings(settings)
+          return ownApply(settings)
+        }
+        return handle
+      },
+    }
+    return { driver, setModel, applyFlagSettings }
+  }
+
+  it('lists the models with the effort levels each takes', async () => {
+    const agent = session()
+    const models = await agent.supportedModels()
+    expect(models.map((model) => model.value)).toEqual(['claude-mock-1', 'claude-mock-2'])
+    expect(models[1]?.supportedEffortLevels).toContain('max')
+    await agent.stop()
+  })
+
+  it('calls setModel on the live query', async () => {
+    const { driver, setModel } = spied()
+    const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    await agent.send('hello')
+    await agent.waitForTurn()
+    await agent.setModel('claude-mock-2')
+    expect(setModel).toHaveBeenCalledWith('claude-mock-2')
+    expect(agent.model).toBe('claude-mock-2')
+    await agent.stop()
+  })
+
+  it('sets the effort through applyFlagSettings with the level', async () => {
+    const { driver, applyFlagSettings } = spied()
+    const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    await agent.send('hello')
+    await agent.waitForTurn()
+    expect(agent.effort).toBeNull()
+    await agent.setEffort('high')
+    expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'high' })
+    expect(agent.effort).toBe('high')
+    await agent.stop()
+  })
+
+  it('refuses an effort level the model does not list, with a message, and tells the SDK nothing', async () => {
+    const { driver, applyFlagSettings } = spied()
+    const agent = createAgentSession({ cwd: '/tmp/nemesis-unit', driver })
+    await agent.send('hello')
+    await agent.waitForTurn()
+    expect(await agent.effortLevels()).toEqual(['low', 'medium', 'high'])
+    await expect(agent.setEffort('max')).rejects.toThrow(
+      'claude-mock-1 takes no max effort; it lists low, medium, high',
+    )
+    expect(applyFlagSettings).not.toHaveBeenCalled()
+    expect(agent.effort).toBeNull()
+    // The second model lists it.
+    await agent.setModel('claude-mock-2')
+    await agent.setEffort('max')
+    expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
+    await agent.stop()
+  })
+})

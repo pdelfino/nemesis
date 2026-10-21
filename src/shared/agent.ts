@@ -74,6 +74,16 @@ export function requestKeys(toolName: string): string {
     : `y allow once, n deny, a allow ${toolName} for this session`
 }
 
+/** What the mode line shows of the session's model (#190): the model, and the effort once one is set. */
+export function describeModel(model: string | null, effort: string | null): string {
+  return [model, effort].filter((part) => part !== null && part !== '').join(' · ')
+}
+
+/** The transcript's note for a model or effort switch (#190). */
+export function describeModelSwitch(event: Extract<AgentEvent, { type: 'model' }>): string {
+  return `Model: ${event.model ?? 'the CLI default'}, ${event.effort === null ? 'default effort' : `effort ${event.effort}`}`
+}
+
 /** A prompt, or a draft, longer than this is refused rather than truncated. */
 export const MAX_PROMPT_LENGTH = 1_000_000
 
