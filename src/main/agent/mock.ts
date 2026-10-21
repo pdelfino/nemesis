@@ -12,6 +12,7 @@ import type {
   SDKResultMessage,
   SDKSystemMessage,
   SDKUserMessage,
+  SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { UUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -80,7 +81,7 @@ import type { AgentDriver, AgentQueryHandle, RewindFilesOptions } from './sessio
  * empty. The query knows only the messages it read itself, so a checkpoint
  * from before a resume is refused with a reason, as the SDK refuses. The
  * query offers two models to switch to (#190), the default without `max`
- * effort and a second with it. One
+ * effort and a second with it, and two slash commands to complete (#192). One
  * driver numbers its sessions: the first is `mock-session`, the next
  * `mock-session-2`, so a fresh session after `new-task` has an id of its own.
  */
@@ -101,6 +102,20 @@ const MOCK_MODELS: readonly ModelInfo[] = [
     description: 'A mock model with every effort level',
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+  },
+]
+/** What `supportedCommands()` lists (#192): a built-in and a skill, each with a description. */
+const MOCK_COMMANDS: readonly SlashCommand[] = [
+  {
+    name: 'compact',
+    description: 'Clear the conversation but keep a summary in context',
+    argumentHint: '<instructions>',
+    builtin: true,
+  },
+  {
+    name: 'mock-skill',
+    description: 'A mock skill from the project',
+    argumentHint: '',
   },
 ]
 const MOCK_SESSION_ID = 'mock-session'
@@ -318,6 +333,10 @@ class MockQuery implements AgentQueryHandle {
 
   supportedModels(): Promise<ModelInfo[]> {
     return Promise.resolve(MOCK_MODELS.map((info) => ({ ...info })))
+  }
+
+  supportedCommands(): Promise<SlashCommand[]> {
+    return Promise.resolve(MOCK_COMMANDS.map((command) => ({ ...command })))
   }
 
   /** The mock's answers do not depend on effort, so the level is taken and dropped. */

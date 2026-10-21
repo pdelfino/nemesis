@@ -75,6 +75,8 @@ describe('the shape of a keymap', () => {
       'passthrough',
       'form-guide',
     ])
+    // `@` mentions a file (#83), `/` completes a slash command (#192).
+    expect(bindings.byBufferType.prompt).toEqual({ chords: ['@', '/'], prefixes: [] })
     expect(JSON.stringify(bindings)).not.toContain('switch-buffer')
   })
 })
@@ -82,7 +84,7 @@ describe('the shape of a keymap', () => {
 describe('what the renderer hands over', () => {
   const bindings: KeyBindings = {
     global: { chords: ['C-c C-c', 'C-g', 'M-x'], prefixes: ['C-c'] },
-    byBufferType: { prompt: { chords: ['@'], prefixes: [] } },
+    byBufferType: { prompt: { chords: ['@', '/'], prefixes: [] } },
     byMode: {
       permission: { keys: { chords: ['y'], prefixes: [] }, modal: true, visible: true },
       plan: { keys: { chords: ['C-c C-k'], prefixes: ['C-c'] }, modal: false, visible: true },
@@ -106,6 +108,8 @@ describe('what the renderer hands over', () => {
     expect(startsCockpitChord('y', bindings, 'permission', [])).toBe(false)
     expect(startsCockpitChord('y', bindings, 'prompt')).toBe(false)
     expect(startsCockpitChord('@', bindings, 'prompt')).toBe(true)
+    expect(startsCockpitChord('/', bindings, 'prompt')).toBe(true)
+    expect(startsCockpitChord('/', bindings, 'transcript')).toBe(false)
     expect(startsCockpitChord('y', bindings, null)).toBe(false)
   })
 

@@ -41,7 +41,7 @@ export interface PromptBuffer {
   readonly view: EditorView
   /** Acts on a command the main process dispatched from a key (#59). */
   onCommand(outcome: KeyOutcome, bufferType: BufferType | null): void
-  /** Whether a bound printable key in the prompt is text here: `@` inside a word is (#83). */
+  /** Whether a bound printable key in the prompt is text here: `@` inside a word is (#83), `/` after any text (#192). */
   keepsAsText(press: KeyPress): boolean
 }
 
@@ -291,9 +291,15 @@ export async function installPromptBuffer(): Promise<PromptBuffer> {
       // The `@` key opened the file list in the main process and typed nothing
       // here, so the character lands now; the pick follows it at the point (#83).
       else if (outcome.command === 'complete-file' && outcome.chord === '@') insertAtPoint('@')
+      // The same for `/` and the slash command list (#192).
+      else if (outcome.command === 'complete-slash-command' && outcome.chord === '/')
+        insertAtPoint('/')
     },
     keepsAsText(press) {
-      return press.bufferType === 'prompt' && !atWordStart()
+      if (press.bufferType !== 'prompt') return false
+      // `/` opens the list only as the first character of an empty prompt (#192).
+      if (press.key === '/') return view.state.doc.length > 0
+      return !atWordStart()
     },
   }
 }

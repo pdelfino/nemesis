@@ -1,4 +1,4 @@
-import type { ModelInfo, RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
+import type { ModelInfo, RewindFilesResult, SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AgentEffortLevel,
   AgentEvent,
@@ -263,6 +263,8 @@ export class SessionManager {
   private modelList: readonly ModelInfo[] = []
   /** What the last `effortLevels()` answered, for the palette (#190). */
   private effortList: readonly AgentEffortLevel[] = []
+  /** What the last `supportedCommands()` answered, for the palette (#192). */
+  private commandList: readonly SlashCommand[] = []
 
   constructor(options: SessionManagerOptions) {
     this.options = options
@@ -357,6 +359,32 @@ export class SessionManager {
   /** The effort levels the last `effortLevels()` listed, for the palette to read (#190). */
   get efforts(): readonly AgentEffortLevel[] {
     return this.effortList
+  }
+
+  /** The slash commands the last `supportedCommands()` listed, for the palette to read (#192). */
+  get commands(): readonly SlashCommand[] {
+    return this.commandList
+  }
+
+  /**
+   * What `/` completes in the prompt (#192): the SDK's list while a session
+   * runs, the names of its init frame when the SDK does not answer, and
+   * null before a session has started. It never starts one: a completion
+   * is no reason to spend a session.
+   */
+  async supportedCommands(): Promise<readonly SlashCommand[] | null> {
+    const started = this.startedEvent
+    if (this.session === null || started === null) return null
+    try {
+      this.commandList = await this.session.supportedCommands()
+    } catch {
+      this.commandList = (started.slashCommands ?? []).map((name) => ({
+        name,
+        description: '',
+        argumentHint: '',
+      }))
+    }
+    return this.commandList
   }
 
   /** What the current session can switch to (#190); asks the SDK, starting a session if none runs. */

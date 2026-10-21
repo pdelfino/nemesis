@@ -757,3 +757,26 @@ describe('the model and the effort of the current session (#190)', () => {
     await agent.stop()
   })
 })
+
+describe('the slash commands `/` completes (#192)', () => {
+  it('lists none before a session starts, and starts none to ask', async () => {
+    const agent = manager()
+    const events = collect(agent)
+    expect(await agent.supportedCommands()).toBeNull()
+    expect(agent.sessionId).toBeNull()
+    expect(events.some((event) => event.type === 'started')).toBe(false)
+  })
+
+  it("lists the SDK's commands, each with its description, once a session runs", async () => {
+    const agent = manager()
+    const turn = nextTurn(agent)
+    await agent.send('hello')
+    await turn
+    const commands = (await agent.supportedCommands()) ?? []
+    expect(commands.map((command) => command.name)).toEqual(['compact', 'mock-skill'])
+    expect(commands.every((command) => command.description.length > 0)).toBe(true)
+    expect(agent.commands).toEqual(commands)
+    await agent.stop()
+    expect(await agent.supportedCommands()).toBeNull()
+  })
+})

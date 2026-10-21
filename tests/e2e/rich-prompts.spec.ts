@@ -304,3 +304,67 @@ test('@ mentions a file at the point, an attached image reaches the SDK as a blo
     await fixtures.close()
   }
 })
+
+// Slash commands (#192): `/` as the first character of an empty prompt lists
+// the session's slash commands, as the Claude Code CLI does, and the pick
+// goes in as `/name `; after any text `/` is a plain character, and the
+// prompt reaches the SDK as typed. Before a session there is no list to show.
+test('/ in an empty prompt completes a slash command, / after text is a plain character', async () => {
+  const { app } = await launchApp('nemesis-e2e-')
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const prompt = page.locator('#prompt .cm-content')
+    const palette = page.locator('#palette')
+    const note = page.locator('#prompt-note')
+    await expect(prompt).toBeFocused()
+
+    // No session yet: the help buffer says so and the `/` stays typed.
+    await page.keyboard.type('/')
+    await expect(page.locator('#help .cm-content')).toContainText('No session yet')
+    await expect(palette).toBeHidden()
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('k')
+    await page.keyboard.press('Control+x')
+    await page.keyboard.press('b')
+    await expect(prompt).toBeFocused()
+    await expect.poll(() => promptLines(page)).toEqual(['/'])
+    await page.keyboard.press('Control+g')
+    await expect.poll(() => promptLines(page)).toEqual([''])
+
+    // A first prompt starts the session.
+    await page.keyboard.type('hello')
+    await page.keyboard.press('Control+c')
+    await page.keyboard.press('Control+c')
+    await expect(note).toHaveText('Sent.')
+    await expect.poll(() => transcriptLines(page)).toContain('You said: hello')
+
+    // `/` in the empty prompt: the list is the SDK's, the `/` is typed, the
+    // pick follows it with a space and the point is back in the prompt.
+    await page.keyboard.type('/')
+    await expect(palette).toBeVisible()
+    await expect(page.locator('#palette-prompt')).toHaveText('Slash command:')
+    await expect.poll(() => candidates(page)).toEqual(['/compact *', '/mock-skill'])
+    await expect.poll(() => promptLines(page)).toEqual(['/'])
+    await page.keyboard.type('mock-skill')
+    await expect.poll(async () => (await candidates(page))[0]).toBe('/mock-skill *')
+    await page.keyboard.press('Enter')
+    await expect(palette).toBeHidden()
+    await expect(prompt).toBeFocused()
+    await expect.poll(() => promptLines(page)).toEqual(['/mock-skill '])
+
+    // After text `/` is a character: no palette opens.
+    await page.keyboard.type('see a/b')
+    await expect.poll(() => promptLines(page)).toEqual(['/mock-skill see a/b'])
+    await expect(palette).toBeHidden()
+
+    // The text goes to the SDK as typed.
+    await page.keyboard.press('Control+c')
+    await page.keyboard.press('Control+c')
+    await expect
+      .poll(async () => (await received(app)).at(-1)?.blocks[0]?.text)
+      .toBe('/mock-skill see a/b')
+  } finally {
+    await app.close()
+  }
+})

@@ -161,7 +161,9 @@ import { CommandError, CommandRegistry, defineCommand } from './registry'
  * a window of the screen in the prompt as an image. The guide's specific,
  * rich prompts (#83): `complete-file`, on `@` at the start of a word in
  * the prompt buffer, reads a file of the working directory off the palette
- * and puts `@path` at the point; `attach-image` on `C-c C-i` takes the
+ * and puts `@path` at the point; `complete-slash-command` (#192), on `/`
+ * as the first character of an empty prompt, reads one of the session's
+ * slash commands off the palette and puts `/name ` there; `attach-image` on `C-c C-i` takes the
  * image on the clipboard for the next prompt, a marker line in its place;
  * `fetch-url` on `C-c C-u` reads an https URL, the ones in the prompt as
  * candidates, and puts the page's text in the prompt wrapped as untrusted
@@ -1172,6 +1174,34 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             })
           })
           .catch(report('complete-file'))
+      },
+    }),
+    defineCommand({
+      name: 'complete-slash-command',
+      doc: "Put one of the session's slash commands in the prompt: / as the first character of an empty prompt opens the list.",
+      run: (context) => {
+        // As `@` does for files: the `/` key typed its `/` in the prompt
+        // buffer, so the pick adds the name after it (#192).
+        const typed = context.source === 'key' && context.chord === '/'
+        agent
+          .supportedCommands()
+          .then((commands) => {
+            if (commands === null) {
+              help.show(
+                'No session yet: its slash commands are listed once it starts. Type the command, or send a prompt first.',
+              )
+              return
+            }
+            if (commands.length === 0) {
+              help.show('The session lists no slash command.')
+              return
+            }
+            prompter.read({ source: 'slash-commands', prompt: 'Slash command:' }, (name) => {
+              prompts.insert(`${typed ? '' : '/'}${name} `, 'point')
+              switchToPrompt()
+            })
+          })
+          .catch(report('complete-slash-command'))
       },
     }),
     defineCommand({
@@ -2279,6 +2309,16 @@ export function cockpitSources(
         })),
     },
     {
+      name: 'slash-commands',
+      candidates: () =>
+        agent.commands.map((command) => ({
+          id: command.name,
+          label: `/${command.name}`,
+          doc: command.description,
+          ...(command.argumentHint === '' ? {} : { detail: command.argumentHint }),
+        })),
+    },
+    {
       name: 'effort-levels',
       candidates: () =>
         agent.efforts.map((level) => ({
@@ -2656,8 +2696,11 @@ export const cockpitModes = createModeRegistry()
 const KIND_KEYMAPS: BufferKeymaps = {
   // In the prompt buffer `@` at the start of a word mentions a file (#83);
   // the renderer keeps it as text inside a word, so an address stays one.
+  // `/` completes a slash command only as the first character of an empty
+  // prompt, as in the Claude Code CLI; anywhere else it is text (#192).
   prompt: defineKeymap('prompt', {
     '@': 'complete-file',
+    '/': 'complete-slash-command',
   }),
   // C-x C-f opens a URL in a page buffer (#119), from a page or the
   // transcript, and C-x 4 C-f, Emacs's find-file-other-window, in a new

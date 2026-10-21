@@ -7,6 +7,7 @@ import type {
   SDKAssistantMessage,
   SDKMessage,
   SDKUserMessage,
+  SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -56,6 +57,8 @@ export interface AgentQueryHandle extends AsyncIterable<SDKMessage> {
   setModel(model?: string): Promise<void>
   /** The models the session may switch to, each with the effort levels it takes (#190). */
   supportedModels(): Promise<ModelInfo[]>
+  /** The slash commands the session takes, skills included, each with its description and argument hint (#192). */
+  supportedCommands(): Promise<SlashCommand[]>
   /** The session-scoped flag layer; the cockpit sets the effort level through it (#190). */
   applyFlagSettings(settings: { effortLevel?: AgentEffortLevel | null }): Promise<void>
   /**
@@ -590,6 +593,11 @@ export class AgentSession {
   /** What the SDK offers to switch to (#190). The list lives on the query, so it starts one. */
   async supportedModels(): Promise<readonly ModelInfo[]> {
     return (await this.started()).supportedModels()
+  }
+
+  /** What `/` completes in the prompt (#192). The list lives on the query, so it starts one. */
+  async supportedCommands(): Promise<readonly SlashCommand[]> {
+    return (await this.started()).supportedCommands()
   }
 
   /**
