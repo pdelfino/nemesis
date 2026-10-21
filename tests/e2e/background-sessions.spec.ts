@@ -96,7 +96,9 @@ test('a background session runs hidden, asks as any other, shows on open-agent, 
     await expect.poll(allWindows).toBe(3)
     await expect
       .poll(async () => (await agentLines(first))[6])
-      .toMatch(/^Window 3 \(background\) {2}session \S{8} +finished, after \d+s, 0 tool calls$/)
+      .toMatch(
+        /^Window 3 \(background\) {2}session \S{8} +finished, after \d+s, 0 tool calls, ≈\$0\.02$/,
+      )
 
     // close-background-session lists the background ones only, and ends one after a yes.
     await runCommand(first, 'close-background-session')

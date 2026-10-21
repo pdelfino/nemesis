@@ -64,6 +64,7 @@ describe('AgentStatus', () => {
       turnStartedAt: null,
       lastTurnMs: null,
       toolCalls: 0,
+      costUsd: null,
     })
     status.observe({
       type: 'started',
@@ -103,6 +104,7 @@ describe('AgentStatus', () => {
       turnStartedAt: null,
       lastTurnMs: 12_000,
       toolCalls: 2,
+      costUsd: null,
     })
     // The next turn counts its own calls.
     status.observe(userText)
@@ -148,6 +150,15 @@ describe('AgentStatus', () => {
     expect(status.snapshot.state).toBe('working')
   })
 
+  it('keeps the session cost from the last result, until the session stops (#191)', () => {
+    const status = new AgentStatus()
+    status.observe(userText)
+    status.observe({ ...(turnEnd() as object), costUsd: 0.5, turnCostUsd: 0.5 } as AgentEvent)
+    expect(status.snapshot.costUsd).toBe(0.5)
+    status.observe({ type: 'stopped', reason: 'ended' })
+    expect(status.snapshot.costUsd).toBeNull()
+  })
+
   it('says when it changed, and not for events it ignores', () => {
     const status = new AgentStatus()
     let changes = 0
@@ -177,6 +188,7 @@ function line(overrides: Partial<AgentLine> = {}): AgentLine {
     turnStartedAt: null,
     lastTurnMs: null,
     toolCalls: 0,
+    costUsd: null,
     ...overrides,
   }
 }
@@ -227,6 +239,14 @@ describe('renderAgents', () => {
       { here: 1, home: '', now: 0 },
     )
     expect(text.split('\n')[4]).toMatch(/^Window 2 \(background\) {2}Nemesis {2}idle$/)
+  })
+
+  it('shows a session cost after its state (#191)', () => {
+    const text = renderAgents(
+      [line(), line({ windowId: 2, windowName: 'Window 2', background: true, costUsd: 0.42 })],
+      { here: 1, home: '', now: 0 },
+    )
+    expect(text.split('\n')[4]).toMatch(/^Window 2 \(background\) {2}Nemesis {2}idle, ≈\$0\.42$/)
   })
 
   it('groups a fan-out run under a heading with its counts, after the other sessions (#160)', () => {

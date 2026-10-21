@@ -10,6 +10,7 @@ import {
   denyEveryTool,
   eventsFromMessage,
   isCompactCommand,
+  turnCost,
   usedTokensOf,
 } from '../../src/main/agent/session'
 import type {
@@ -627,5 +628,34 @@ describe('switching the model and the effort mid-session (#190)', () => {
     await agent.setEffort('max')
     expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
     await agent.stop()
+  })
+})
+
+// The session's cost (#191): every result carries the SDK's running total,
+// and the turn-end the session emits for it carries that total and the
+// difference from the result before.
+describe('the session cost (#191)', () => {
+  it('gives the second total and the difference as the last turn, for two results in a row', async () => {
+    const agent = session()
+    const events = collect(agent)
+    await agent.send('hello')
+    await agent.waitForTurn()
+    expect(events.filter((event) => event.type === 'turn-end').at(-1)).toMatchObject({
+      costUsd: 0.02,
+      turnCostUsd: 0.02,
+    })
+    await agent.send('again')
+    await agent.waitForTurn()
+    expect(events.filter((event) => event.type === 'turn-end').at(-1)).toMatchObject({
+      costUsd: 0.04,
+      turnCostUsd: 0.02,
+    })
+    await agent.stop()
+  })
+
+  it('takes the turn as the difference, and a total that went down as a turn of its own', () => {
+    expect(turnCost(0, 0.25)).toEqual({ costUsd: 0.25, turnCostUsd: 0.25 })
+    expect(turnCost(0.25, 0.75)).toEqual({ costUsd: 0.75, turnCostUsd: 0.5 })
+    expect(turnCost(0.75, 0.5)).toEqual({ costUsd: 0.5, turnCostUsd: 0.5 })
   })
 })

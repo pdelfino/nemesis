@@ -183,3 +183,42 @@ test('the context meter follows usage, compact and clear are keys, a side questi
     await app.close()
   }
 })
+
+// The session's cost next to the meter (#191): hidden until the first
+// result, the SDK's running total after every turn with the last turn's
+// share in the tooltip, blank once the session stops, and never in the log.
+test('the mode line shows the session cost after a turn, and the log keeps none', async () => {
+  const { app, sessionsDir } = await launchApp()
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.locator('#prompt .cm-content')).toBeFocused()
+    const cost = page.locator('#session-cost')
+    await expect(cost).toHaveText('')
+    await expect(cost).toBeHidden()
+
+    // The mock adds two cents a turn.
+    await send(page, 'hello')
+    await expect(page.locator('#transcript .cm-content')).toContainText('You said: hello')
+    await expect(cost).toHaveText('≈$0.02')
+    await expect(cost).toBeVisible()
+    await send(page, 'again')
+    await expect(page.locator('#transcript .cm-content')).toContainText('You said: again')
+    await expect(cost).toHaveText('≈$0.04')
+    await expect(cost).toHaveAttribute(
+      'title',
+      "Session cost so far: $0.0400, the SDK's estimate at list price. Last turn: $0.0200.",
+    )
+
+    const log = readFileSync(join(sessionsDir, 'mock-session', 'events.jsonl'), 'utf8')
+    expect(log).toContain('"type":"turn-end"')
+    expect(log).not.toContain('costUsd')
+
+    // C-c C-l stops the session: the cost goes with it.
+    await page.keyboard.press('Control+c')
+    await page.keyboard.press('Control+l')
+    await expect(cost).toHaveText('')
+  } finally {
+    await app.close()
+  }
+})

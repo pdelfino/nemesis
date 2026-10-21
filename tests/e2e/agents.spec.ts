@@ -78,7 +78,7 @@ test("C-x 5 a lists every window's session with its state, follows it, and RET o
     await first.bringToFront()
     await expect
       .poll(async () => (await agentLines(first))[4])
-      .toMatch(/^Window 2 {9}session \S{8} +finished, after \d+s, 1 tool call$/)
+      .toMatch(/^Window 2 {9}session \S{8} +finished, after \d+s, 1 tool call, ≈\$0\.02$/)
     await expect.poll(async () => (await agentLines(first))[0]).toBe('Agents: 2 sessions')
 
     // RET asks which session, and the pick brings that window forward on its prompt.

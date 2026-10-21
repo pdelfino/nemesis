@@ -46,3 +46,18 @@ export function describeContext(usedTokens: number, windowTokens: number): Conte
     level: levelOf(percent),
   }
 }
+
+/**
+ * A cost as the mode line and the agents list show it (#191): `≈$0.42`, the
+ * sign saying it is the SDK's estimate at list price, not a bill. Under a
+ * cent it reads `<$0.01`, so a cheap turn does not look free.
+ */
+export function formatCost(usd: number): string {
+  if (usd > 0 && usd < 0.01) return '<$0.01'
+  return `≈$${usd.toFixed(2)}`
+}
+
+/** The tooltip on the cost: what the number is, and the last turn's share of it. */
+export function describeCost(costUsd: number, turnCostUsd: number): string {
+  return `Session cost so far: $${costUsd.toFixed(4)}, the SDK's estimate at list price. Last turn: $${turnCostUsd.toFixed(4)}.`
+}

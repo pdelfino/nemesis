@@ -1,7 +1,7 @@
 import { describeModel, type AgentEvent } from '../shared/agent'
 import { APP_NAME } from '../shared/api'
 import type { BufferList } from '../shared/buffers'
-import { describeContext } from '../shared/context'
+import { describeContext, describeCost, formatCost } from '../shared/context'
 import type { KeyBindings } from '../shared/keys'
 
 /**
@@ -21,6 +21,9 @@ import type { KeyBindings } from '../shared/keys'
  * The model (#190) is the sixth, next to the meter: the one the session
  * started on, then the one `set-model` switched to, with the effort level
  * once `set-effort` set one; blank when the session stops.
+ * The cost (#191) is the seventh, next to the meter: the session's total
+ * so far from the last turn's result, its tooltip the last turn's share;
+ * hidden until the first result and blank when the session stops.
  */
 export function installModeline(): void {
   const meter = document.getElementById('context-meter')
@@ -40,6 +43,17 @@ export function installModeline(): void {
     gate.title = event.on
       ? `Stop gate: every turn ends with the check; a red one goes back as the next prompt, ${event.cap} times at most. M-x toggle-stop-gate turns it off.`
       : ''
+  })
+  const cost = document.getElementById('session-cost')
+  if (cost === null) throw new Error('index.html has no #session-cost')
+  window.nemesis.onAgentEvent((event) => {
+    if (event.type === 'stopped') {
+      cost.textContent = ''
+      cost.title = ''
+    } else if (event.type === 'turn-end' && event.costUsd !== undefined) {
+      cost.textContent = formatCost(event.costUsd)
+      cost.title = describeCost(event.costUsd, event.turnCostUsd ?? 0)
+    }
   })
   const model = document.getElementById('session-model')
   if (model === null) throw new Error('index.html has no #session-model')

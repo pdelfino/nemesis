@@ -69,7 +69,7 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   }
 
   agent.on((event) => {
-    recorder.record(event)
+    recorder.record(withoutCost(event))
     broadcast(AGENT_EVENT_CHANNEL, event)
   })
   agent.onHistory((history) => {
@@ -110,4 +110,14 @@ export function installSessionBridge(options: SessionBridgeOptions): PromptQueue
   })
 
   return queue
+}
+
+/**
+ * The event as the session folder keeps it: a turn's cost (#191) is for the
+ * screen, and the log's format stays what it was before the cost was shown.
+ */
+export function withoutCost(event: AgentEvent): AgentEvent {
+  if (event.type !== 'turn-end') return event
+  const { type, isError, result, durationMs, numTurns } = event
+  return { type, isError, result, durationMs, numTurns }
 }

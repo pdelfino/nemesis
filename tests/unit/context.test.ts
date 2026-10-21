@@ -3,6 +3,8 @@ import {
   CONTEXT_FULL_PERCENT,
   CONTEXT_WARN_PERCENT,
   describeContext,
+  describeCost,
+  formatCost,
   formatTokens,
   levelOf,
 } from '../../src/shared/context'
@@ -46,5 +48,21 @@ describe('the context meter', () => {
     expect(levelOf(CONTEXT_WARN_PERCENT)).toBe('high')
     expect(levelOf(CONTEXT_FULL_PERCENT - 1)).toBe('high')
     expect(levelOf(CONTEXT_FULL_PERCENT)).toBe('full')
+  })
+})
+
+// The cost next to the meter (#191): an estimate, so the sign says so.
+describe('the session cost', () => {
+  it('reads as an estimate in cents, a cheap turn not as free', () => {
+    expect(formatCost(0)).toBe('≈$0.00')
+    expect(formatCost(0.004)).toBe('<$0.01')
+    expect(formatCost(0.42)).toBe('≈$0.42')
+    expect(formatCost(12.5)).toBe('≈$12.50')
+  })
+
+  it('says in the tooltip it is the SDK estimate at list price, with the last turn', () => {
+    expect(describeCost(0.04, 0.02)).toBe(
+      "Session cost so far: $0.0400, the SDK's estimate at list price. Last turn: $0.0200.",
+    )
   })
 })

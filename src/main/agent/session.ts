@@ -198,6 +198,21 @@ export function contextWindowOf(
   return best?.contextWindow ?? null
 }
 
+/**
+ * The cost a result reports (#191): `total_cost_usd` is the session's total
+ * so far, so the turn's own is the difference from the one before. A total
+ * that went down (a CLI that started counting again) is a turn of its own.
+ */
+export function turnCost(
+  previousUsd: number,
+  totalUsd: number,
+): { readonly costUsd: number; readonly turnCostUsd: number } {
+  return {
+    costUsd: totalUsd,
+    turnCostUsd: totalUsd >= previousUsd ? totalUsd - previousUsd : totalUsd,
+  }
+}
+
 function tokensOf(usage: ModelUsage): number {
   return usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens
 }
@@ -411,6 +426,8 @@ export class AgentSession {
   /** The last request's tokens and the model's window, for the meter (#80). */
   private usedTokens: number | null = null
   private windowTokens: number | null = null
+  /** The session's cost after the last result (#191), so the next one gives the turn's. */
+  private costUsd = 0
 
   constructor(options: AgentSessionOptions) {
     this.options = options
@@ -703,6 +720,12 @@ export class AgentSession {
             this.toolCalls.push({ name: event.name, input: event.input })
           } else if (event.type === 'turn-end') {
             this.inTurn = false
+            if (message.type === 'result') {
+              const cost = turnCost(this.costUsd, message.total_cost_usd)
+              this.costUsd = cost.costUsd
+              this.emit({ ...event, ...cost })
+              continue
+            }
           }
           this.emit(event)
         }

@@ -93,13 +93,21 @@ export interface AgentToolResultEvent extends AgentChildEvent {
   readonly text: string
 }
 
-/** The turn is over. `result` is the assistant's final text, or the errors. */
+/**
+ * The turn is over. `result` is the assistant's final text, or the errors.
+ * The cost (#191) is the SDK's estimate at list price, from the result's
+ * `total_cost_usd`: the session's total so far and what this turn added. The
+ * mode line and the agents list show it; the bridge leaves it out of the
+ * session log, so the folder's format stays what it was.
+ */
 export interface AgentTurnEndEvent {
   readonly type: 'turn-end'
   readonly isError: boolean
   readonly result: string
   readonly durationMs: number
   readonly numTurns: number
+  readonly costUsd?: number | undefined
+  readonly turnCostUsd?: number | undefined
 }
 
 /** The stream itself failed. The session is over; the message is safe to show. */

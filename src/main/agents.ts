@@ -1,5 +1,6 @@
 import type { AgentState, AgentsContent } from '../shared/agents'
 import type { BufferInfo } from '../shared/buffers'
+import { formatCost } from '../shared/context'
 import type { SessionAttentionEvent } from '../shared/notify'
 import { sessionLabel } from './agent/attention'
 import type { AgentEvent } from './agent/events'
@@ -15,7 +16,7 @@ import { formatElapsed } from './notify/text'
  *
  * Only counts and times are kept, never the text of an event, so the buffer
  * carries nothing of any transcript: a window's name, the session's name,
- * its folder, its state, the elapsed time and the tool calls.
+ * its folder, its state, the elapsed time, the tool calls and the cost (#191).
  */
 
 /** One session's state as the `agents` buffer reads it. */
@@ -28,6 +29,8 @@ export interface AgentSnapshot {
   readonly lastTurnMs: number | null
   /** Tool calls in the running turn, or in the last one between turns. */
   readonly toolCalls: number
+  /** The session's cost so far, the SDK's estimate (#191); null before the first result. */
+  readonly costUsd: number | null
 }
 
 export type AgentStatusListener = () => void
@@ -48,6 +51,7 @@ export class AgentStatus {
   private turnStartedAt: number | null = null
   private lastTurnMs: number | null = null
   private toolCalls = 0
+  private costUsd: number | null = null
 
   constructor(now: () => number = Date.now) {
     this.now = now
@@ -67,6 +71,7 @@ export class AgentStatus {
       turnStartedAt: this.turnStartedAt,
       lastTurnMs: this.lastTurnMs,
       toolCalls: this.toolCalls,
+      costUsd: this.costUsd,
     }
   }
 
@@ -101,6 +106,7 @@ export class AgentStatus {
         break
       case 'turn-end':
         this.endTurn()
+        if (event.costUsd !== undefined) this.costUsd = event.costUsd
         if (this.open.size === 0) this.state = 'idle'
         break
       case 'error':
@@ -111,6 +117,7 @@ export class AgentStatus {
         this.endTurn()
         this.open.clear()
         this.sessionId = null
+        this.costUsd = null
         this.state = 'idle'
         break
       default:
@@ -211,7 +218,10 @@ export function renderAgents(
   const windowWidth = Math.max(...windows.map((name) => name.length))
   const sessionWidth = Math.max(...lines.map((line) => line.session.length))
   const row = (line: AgentLine, index: number): string => {
-    const state = [line.state, detail(line, options.now)].filter((part) => part !== '').join(', ')
+    const cost = line.costUsd === null ? '' : formatCost(line.costUsd)
+    const state = [line.state, detail(line, options.now), cost]
+      .filter((part) => part !== '')
+      .join(', ')
     const first = `${(windows[index] ?? '').padEnd(windowWidth)}  ${line.session.padEnd(sessionWidth)}  ${state}`
     return `${first}\n${' '.repeat(windowWidth + 2)}${shortFolder(line.cwd, options.home)}`
   }

@@ -117,6 +117,8 @@ const MOCK_TOOLS = [
 const MOCK_FILE = '/mock/notes.txt'
 const MOCK_FILE_TEXT = 'alpha\nbeta\ngamma\n'
 const MOCK_DURATION_MS = 1
+/** What every mock turn adds to the session's cost (#191), so the mode line has one to show. */
+const MOCK_TURN_COST_USD = 0.02
 /** How often a `stream:` turn yields a text frame. */
 const STREAM_INTERVAL_MS = 20
 /** A `stream:` turn nobody interrupts still ends, so a spec cannot hang on it. */
@@ -258,6 +260,8 @@ class MockQuery implements AgentQueryHandle {
   private turn = new AbortController()
   private counter = 0
   private turns = 0
+  /** The session's total so far, as the CLI reports it on every result (#191). */
+  private costUsd = 0
   private model: string
   private permissionMode: NonNullable<Options['permissionMode']>
   private closed = false
@@ -703,7 +707,7 @@ class MockQuery implements AgentQueryHandle {
       num_turns: this.turns,
       result: text,
       stop_reason: 'end_turn',
-      total_cost_usd: 0,
+      total_cost_usd: (this.costUsd += MOCK_TURN_COST_USD),
       usage: usageOf(this.contextTokens),
       modelUsage: { [this.model]: modelUsageOf(this.contextTokens) },
       permission_denials: [],
@@ -722,7 +726,7 @@ class MockQuery implements AgentQueryHandle {
       is_error: true,
       num_turns: this.turns,
       stop_reason: null,
-      total_cost_usd: 0,
+      total_cost_usd: this.costUsd,
       usage: usageOf(this.contextTokens),
       modelUsage: { [this.model]: modelUsageOf(this.contextTokens) },
       permission_denials: [],

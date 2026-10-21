@@ -85,6 +85,13 @@ body {
 #context-meter[data-level='full'] {
   color: #b32424;
 }
+/* The session's cost (#191): shown once a turn has reported one. */
+#session-cost {
+  white-space: nowrap;
+}
+#session-cost:empty {
+  display: none;
+}
 /* The session's model and effort (#190): shown while a session runs. */
 #session-model {
   white-space: nowrap;
