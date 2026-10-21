@@ -312,6 +312,123 @@ describe('images attached to the prompt (#83)', () => {
   })
 })
 
+describe('editing the queue (#193)', () => {
+  /** A queue busy with a first prompt, then each prompt queued with its images. */
+  async function queueBehindATurn(
+    prompts: readonly { text: string; images?: readonly ClipboardImage[] }[],
+  ): Promise<{ session: FakeSession; queue: PromptQueue; ids: string[] }> {
+    const session = new FakeSession()
+    const queue = new PromptQueue(session)
+    await queue.submit('running')
+    const ids: string[] = []
+    for (const { text, images = [] } of prompts) {
+      const markers = images.map((image) => queue.attachImage(image).marker)
+      const receipt = await queue.submit([text, ...markers].join('\n'))
+      ids.push(receipt.id)
+    }
+    return { session, queue, ids }
+  }
+
+  it('take returns the text and the images, and the queue shrinks and still advances', async () => {
+    const { session, queue, ids } = await queueBehindATurn([
+      { text: 'first', images: [png(2048)] },
+      { text: 'second' },
+    ])
+    const states = vi.fn()
+    queue.subscribe(states)
+
+    const taken = queue.take(ids[0] ?? '')
+    expect(taken.text).toBe('first\n[image 1: 1280x800 png, 2 KB]')
+    expect(taken.images.map((image) => image.png.byteLength)).toEqual([2048])
+    expect(queue.state().queued).toEqual([{ id: ids[1], text: 'second' }])
+    expect(states).toHaveBeenLastCalledWith(queue.state())
+    expect(() => queue.take(ids[0] ?? '')).toThrow(/no longer in the queue/)
+
+    session.endTurn()
+    await settle()
+    expect(session.sent).toEqual(['running', 'second'])
+  })
+
+  it('remove drops one and the queue still advances', async () => {
+    const { session, queue, ids } = await queueBehindATurn([
+      { text: 'first' },
+      { text: 'second' },
+      { text: 'third' },
+    ])
+    queue.remove(ids[1] ?? '')
+    expect(queue.state().queued.map((prompt) => prompt.text)).toEqual(['first', 'third'])
+
+    session.endTurn()
+    await settle()
+    session.endTurn()
+    await settle()
+    expect(session.sent).toEqual(['running', 'first', 'third'])
+  })
+
+  it('merge gives one prompt in order with every image, renumbered, and the queue still advances', async () => {
+    const { session, queue, ids } = await queueBehindATurn([
+      { text: 'first', images: [png(2048)] },
+      { text: 'second' },
+      { text: 'third', images: [png(3072, 32, 16)] },
+    ])
+    expect(queue.mergeAll()).toBe(3)
+    const merged =
+      'first\n[image 1: 1280x800 png, 2 KB]\n\nsecond\n\nthird\n[image 2: 32x16 png, 3 KB]'
+    expect(queue.state().queued).toEqual([{ id: ids[0], text: merged }])
+
+    session.endTurn()
+    await settle()
+    expect(session.sent).toEqual(['running', merged])
+    expect(session.images[1]).toHaveLength(2)
+    const sizes = (session.images[1] ?? []).map((block) =>
+      block.source.type === 'base64' ? Buffer.from(block.source.data, 'base64').byteLength : -1,
+    )
+    expect(sizes).toEqual([2048, 3072])
+    session.endTurn()
+    await settle()
+    expect(queue.state()).toEqual({ busy: false, queued: [] })
+  })
+
+  it('merge leaves an empty queue and a single prompt as they are, and refuses past the image cap', async () => {
+    const { queue } = await queueBehindATurn([{ text: 'only' }])
+    expect(queue.mergeAll()).toBe(1)
+    expect(queue.state().queued.map((prompt) => prompt.text)).toEqual(['only'])
+    expect(new PromptQueue(new FakeSession()).mergeAll()).toBe(0)
+
+    const crowded = await queueBehindATurn([
+      { text: 'a', images: [png(10), png(10), png(10)] },
+      { text: 'b', images: [png(10), png(10)] },
+    ])
+    expect(() => crowded.queue.mergeAll()).toThrow(/5 images/)
+    expect(crowded.queue.state().queued).toHaveLength(2)
+  })
+
+  it('edit puts the text after the draft and re-attaches its images after those of the draft', async () => {
+    const { session, queue, ids } = await queueBehindATurn([
+      { text: 'queued', images: [png(2048)] },
+    ])
+    const inserts: string[] = []
+    queue.onInsert((insert) => inserts.push(insert.text))
+    queue.attachImage(png(4096))
+    inserts.length = 0
+
+    queue.edit(ids[0] ?? '')
+    expect(inserts).toEqual(['queued\n[image 2: 1280x800 png, 2 KB]'])
+    expect(queue.state().queued).toEqual([])
+    expect(queue.attached().map((image) => image.marker)).toEqual([
+      '[image 1: 1280x800 png, 4 KB]',
+      '[image 2: 1280x800 png, 2 KB]',
+    ])
+
+    session.endTurn()
+    await settle()
+    await queue.submit(
+      'draft\n[image 1: 1280x800 png, 4 KB]\n\nqueued\n[image 2: 1280x800 png, 2 KB]',
+    )
+    expect(session.images[1]).toHaveLength(2)
+  })
+})
+
 describe('what the main process accepts from a page', () => {
   it('validates the prompt payload', () => {
     expect(parsePromptText('hello')).toBe('hello')

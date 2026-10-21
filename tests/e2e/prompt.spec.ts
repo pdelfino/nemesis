@@ -119,3 +119,65 @@ test('the prompt buffer edits like Emacs, sends on C-c C-c, recalls on M-p and k
     await app.close()
   }
 })
+
+/** Runs a command by name through M-x. */
+async function runCommand(page: Page, name: string): Promise<void> {
+  await page.keyboard.press('Alt+x')
+  await expect(page.locator('#palette-input .cm-content')).toBeFocused()
+  await page.keyboard.type(name)
+  await expect
+    .poll(() =>
+      page
+        .locator('#palette-candidates li[aria-selected="true"]')
+        .evaluate((item) => item.firstChild?.textContent ?? ''),
+    )
+    .toBe(name)
+  await page.keyboard.press('Enter')
+}
+
+/** Every prompt the agent was sent, through the public bridge. */
+function userTexts(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    ((globalThis as unknown as TestWindow).__agentEvents ?? [])
+      .filter((event) => event.type === 'user-text')
+      .map((event) => event.text ?? ''),
+  )
+}
+
+// The queue can be edited (#193): two prompts typed while a turn streams
+// are merged into one, and when the turn ends the agent receives that one.
+test('merge-queued-prompts makes the prompts waiting behind a turn one prompt', async () => {
+  const app = await launchNemesis()
+  try {
+    const page = await app.firstWindow()
+    await page.waitForLoadState('domcontentloaded')
+    const editor = page.locator('#prompt .cm-content')
+    await expect(editor).toBeFocused()
+    await page.evaluate(() => {
+      const w = globalThis as unknown as TestWindow
+      w.__agentEvents = []
+      w.nemesis.onAgentEvent((event) => w.__agentEvents?.push(event))
+    })
+    const queued = page.locator('#prompt-queued li')
+
+    for (const text of ['stream: tick', 'alpha', 'beta']) {
+      await expect(editor).toBeFocused()
+      await page.keyboard.type(text)
+      await page.keyboard.press('Control+c')
+      await page.keyboard.press('Control+c')
+      await expect.poll(() => lines(page)).toEqual([''])
+    }
+    await expect(queued).toHaveText(['Queued: alpha', 'Queued: beta'])
+
+    await runCommand(page, 'merge-queued-prompts')
+    await expect(queued).toHaveText(['Queued: alpha'])
+
+    // C-g ends the streaming turn, and the queue sends what waits.
+    await expect(editor).toBeFocused()
+    await page.keyboard.press('Control+g')
+    await expect.poll(() => userTexts(page)).toEqual(['stream: tick', 'alpha\n\nbeta'])
+    await expect(queued).toHaveCount(0)
+  } finally {
+    await app.close()
+  }
+})

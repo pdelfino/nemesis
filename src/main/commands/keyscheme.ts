@@ -274,7 +274,10 @@ export interface CockpitDeps {
    * or is added to (#81); where an image waits for the send and the draft
    * whose URLs `fetch-url` offers are read (#83).
    */
-  readonly prompts: Pick<PromptQueue, 'submit' | 'insert' | 'attachImage' | 'draft'>
+  readonly prompts: Pick<
+    PromptQueue,
+    'submit' | 'insert' | 'attachImage' | 'draft' | 'state' | 'edit' | 'remove' | 'mergeAll'
+  >
   /** The sessions folder, as `resume-session` lists and reads it (#67). */
   readonly sessions: SessionSource
   /** The transcripts on disk, as `search-transcripts` scans them (#69). */
@@ -1229,6 +1232,66 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
             switchToPrompt()
           })
           .catch(report('attach-image'))
+      },
+    }),
+    defineCommand({
+      name: 'edit-queued-prompt',
+      doc: 'Take a queued prompt back into the editor, after the draft, with its images; it leaves the queue.',
+      run: () => {
+        // The queue edits (#193) change what is sent to the agent, so the
+        // MCP class is the default yes. The palette has closed by the time
+        // the pick lands, so a refusal goes to the help buffer.
+        if (prompts.state().queued.length === 0) {
+          help.show('No prompt is queued.')
+          return
+        }
+        prompter.read({ source: QUEUED_PROMPTS_SOURCE, prompt: 'Edit queued prompt:' }, (id) => {
+          try {
+            prompts.edit(id)
+          } catch (error) {
+            help.show(
+              `The prompt was not taken back: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            return
+          }
+          switchToPrompt()
+        })
+      },
+    }),
+    defineCommand({
+      name: 'remove-queued-prompt',
+      doc: 'Drop a queued prompt and its images before it is sent.',
+      run: () => {
+        if (prompts.state().queued.length === 0) {
+          help.show('No prompt is queued.')
+          return
+        }
+        prompter.read({ source: QUEUED_PROMPTS_SOURCE, prompt: 'Remove queued prompt:' }, (id) => {
+          try {
+            prompts.remove(id)
+          } catch (error) {
+            help.show(
+              `The prompt was not removed: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          }
+        })
+      },
+    }),
+    defineCommand({
+      name: 'merge-queued-prompts',
+      doc: 'Make every queued prompt one, in order, separated by a blank line, with every image.',
+      run: () => {
+        let merged: number
+        try {
+          merged = prompts.mergeAll()
+        } catch (error) {
+          help.show(
+            `The queued prompts were not merged: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          return
+        }
+        if (merged === 0) help.show('No prompt is queued.')
+        else if (merged === 1) help.show('One prompt is queued; there is nothing to merge it with.')
       },
     }),
     defineCommand({
@@ -2212,6 +2275,14 @@ export function cockpitCommands(deps: CockpitDeps, registry: CommandRegistry): r
  * and the URL open-url reads (#119), over the bookmarks, the history and
  * the search engines (#124).
  */
+/** The palette's read of the queue edits (#193). */
+export const QUEUED_PROMPTS_SOURCE = 'queued-prompts'
+
+/** A prompt's first line that holds text, as the palette lists it. */
+function firstLine(text: string): string {
+  return text.split('\n').find((line) => line.trim().length > 0) ?? text
+}
+
 /** The palette's reads of describe-setting, describe-mode, describe-hook and describe-any (#171). */
 export const SETTINGS_SOURCE = 'settings'
 export const MODES_SOURCE = 'modes'
@@ -2228,7 +2299,7 @@ export function cockpitSources(
   verifier: Verifier,
   screenshots: Screenshots,
   files: WorkingFiles,
-  prompts: Pick<PromptQueue, 'draft'>,
+  prompts: Pick<PromptQueue, 'draft' | 'state'>,
   environment: EnvironmentBuffers,
   repl: Repl,
   windows: CockpitWindows,
@@ -2288,6 +2359,16 @@ export function cockpitSources(
           doc: `${other.buffer.kind} buffer in ${other.windowName}${other.current ? ', current there' : ''}`,
         })),
       ],
+    },
+    {
+      // The prompts waiting behind the running turn (#193), by first line.
+      name: QUEUED_PROMPTS_SOURCE,
+      candidates: () =>
+        prompts.state().queued.map((prompt, index) => ({
+          id: prompt.id,
+          label: firstLine(prompt.text),
+          doc: `Queued prompt ${index + 1}`,
+        })),
     },
     {
       name: 'checkpoints',

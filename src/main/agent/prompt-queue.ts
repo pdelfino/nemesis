@@ -61,6 +61,8 @@ export class PromptQueue {
   private attachedImages: PromptImage[] = []
   private draftText = ''
   private busy = false
+  /** The prompt whose send is under way: still at the head, but no longer to be edited. */
+  private sending: string | null = null
   private counter = 0
 
   constructor(session: PromptTarget) {
@@ -164,6 +166,68 @@ export class PromptQueue {
       : { id: prompt.id, status: 'queued', position }
   }
 
+  /**
+   * Takes a queued prompt back out of the queue (#193): its text and its
+   * images, which keep the markers they were queued with.
+   */
+  take(id: string): { readonly text: string; readonly images: readonly PromptImage[] } {
+    const { index, prompt } = this.waiting(id)
+    this.queued.splice(index, 1)
+    this.announce()
+    return { text: prompt.text, images: prompt.images }
+  }
+
+  /** Drops a queued prompt and its images (#193). */
+  remove(id: string): void {
+    this.take(id)
+  }
+
+  /**
+   * Takes a queued prompt back into the editor (#193): its images join the
+   * ones attached to the draft, renumbered after them, and its text goes
+   * after the draft, so nothing typed is lost. Refused, with the prompt left
+   * in the queue, when the images would pass the cap.
+   */
+  edit(id: string): void {
+    const { images } = this.waiting(id).prompt
+    if (this.attachedImages.length + images.length > MAX_IMAGES_PER_PROMPT) {
+      throw new CommandError(
+        `The draft and the queued prompt carry ${this.attachedImages.length + images.length} images; a prompt carries ${MAX_IMAGES_PER_PROMPT} at most`,
+      )
+    }
+    const restored = renumber([this.take(id)], this.attachedImages.length)
+    this.attachedImages.push(...restored.images)
+    this.insert(restored.texts.join(''))
+  }
+
+  /**
+   * Makes every waiting prompt one (#193), in order, separated by a blank
+   * line, with every image, renumbered so no two markers are the same. The
+   * merged prompt takes the place of the first. Returns how many prompts
+   * were merged; refused when the images would pass the cap.
+   */
+  mergeAll(): number {
+    const start = this.queued.findIndex((entry) => entry.id !== this.sending)
+    if (start === -1) return 0
+    const waiting = this.queued.slice(start)
+    const [first] = waiting
+    if (first === undefined || waiting.length < 2) return waiting.length
+    const count = waiting.reduce((sum, entry) => sum + entry.images.length, 0)
+    if (count > MAX_IMAGES_PER_PROMPT) {
+      throw new CommandError(
+        `The queued prompts carry ${count} images; a prompt carries ${MAX_IMAGES_PER_PROMPT} at most`,
+      )
+    }
+    const merged = renumber(waiting, 0)
+    this.queued.splice(start, waiting.length, {
+      id: first.id,
+      text: merged.texts.join('\n\n'),
+      images: merged.images,
+    })
+    this.announce()
+    return waiting.length
+  }
+
   /** The IPC bridge subscribes, so the renderer shows what waits. */
   subscribe(listener: PromptQueueListener): () => void {
     this.listeners.add(listener)
@@ -203,11 +267,14 @@ export class PromptQueue {
       return
     }
     this.setBusy(true)
+    this.sending = next.id
     try {
       await this.session.send(next.text, next.images.map(imageBlock))
     } catch (error) {
       this.setBusy(false)
       throw error
+    } finally {
+      this.sending = null
     }
     this.queued.shift()
     this.announce()
@@ -217,6 +284,16 @@ export class PromptQueue {
     if (this.sent[this.sent.length - 1] === text) return
     this.sent.push(text)
     if (this.sent.length > HISTORY_LIMIT) this.sent.shift()
+  }
+
+  /** A waiting prompt and where it is; the one being sent is not waiting any more. */
+  private waiting(id: string): { index: number; prompt: PendingPrompt } {
+    const index = this.queued.findIndex((entry) => entry.id === id)
+    const prompt = this.queued[index]
+    if (prompt === undefined || id === this.sending) {
+      throw new CommandError('That prompt is no longer in the queue')
+    }
+    return { index, prompt }
   }
 
   private forget(id: string): void {
@@ -233,6 +310,36 @@ export class PromptQueue {
     const snapshot = this.state()
     for (const listener of this.listeners) listener(snapshot)
   }
+}
+
+/**
+ * Gives the images of several prompts fresh numbers after `after`, in
+ * order, and rewrites each marker in its own prompt's text to match, in
+ * one pass so a new marker is never mistaken for an old one.
+ */
+function renumber(
+  prompts: readonly { readonly text: string; readonly images: readonly PromptImage[] }[],
+  after: number,
+): { texts: string[]; images: PromptImage[] } {
+  const images: PromptImage[] = []
+  const texts = prompts.map(({ text, images: own }) => {
+    if (own.length === 0) return text
+    const markers = new Map<string, string>()
+    for (const image of own) {
+      const index = after + images.length + 1
+      const { png, width, height } = image
+      const fresh: PromptImage = { png, width, height, index, marker: imageMarker(index, image) }
+      images.push(fresh)
+      markers.set(image.marker, fresh.marker)
+    }
+    const pattern = new RegExp([...markers.keys()].map(escapeRegExp).join('|'), 'g')
+    return text.replace(pattern, (marker) => markers.get(marker) ?? marker)
+  })
+  return { texts, images }
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function describe(error: unknown): string {

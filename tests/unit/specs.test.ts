@@ -189,6 +189,10 @@ describe('the three commands and the fresh session', () => {
           throw new Error('unused')
         },
         draft: '',
+        state: () => ({ busy: false, queued: [] }),
+        edit: () => undefined,
+        remove: () => undefined,
+        mergeAll: () => 0,
       },
     })
     const registry = createCockpitRegistry(deps)
